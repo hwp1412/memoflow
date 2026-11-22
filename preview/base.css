@@ -1,0 +1,156 @@
+/* Browser preview shim: supplies the Obsidian variables MemoFlow relies on. */
+
+:root {
+  --font-interface: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-text: var(--font-interface);
+  --background-primary: #ffffff;
+  --background-secondary: #f6f4ef;
+  --text-normal: #2a251d;
+  --text-muted: #7b7263;
+  --background-modifier-border: rgba(42, 37, 29, 0.12);
+  --interactive-accent: #3e5c76;
+  color-scheme: light;
+}
+
+body.theme-dark {
+  --background-primary: #1b1a17;
+  --background-secondary: #22201c;
+  --text-normal: #ede6d6;
+  --text-muted: #a79d8c;
+  --background-modifier-border: rgba(237, 230, 214, 0.14);
+  --interactive-accent: #9db8ce;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body.mf-preview {
+  background: #ded8ca;
+  font-family: var(--font-interface);
+}
+
+body.mf-preview.theme-dark {
+  background: #0f0e0c;
+}
+
+body.mf-preview #app {
+  min-height: 100vh;
+}
+
+body.mf-preview .mf-view {
+  min-height: 100vh;
+  height: auto;
+  overflow: visible;
+}
+
+body.mf-preview.mf-preview-narrow #app {
+  width: min(820px, 100%);
+  margin: 0 auto;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+body.mf-preview.mf-preview-fixed-width #app {
+  width: var(--mf-preview-width, 390px);
+  margin: 0 auto;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.preview-controls {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid rgba(42, 37, 29, 0.16);
+  border-radius: 999px;
+  background: rgba(251, 248, 241, 0.94);
+  box-shadow: 0 10px 30px -16px rgba(0, 0, 0, 0.45);
+  transform: translateX(-50%);
+  backdrop-filter: blur(10px);
+}
+
+body.theme-dark .preview-controls {
+  border-color: rgba(237, 230, 214, 0.16);
+  background: rgba(31, 29, 25, 0.94);
+}
+
+.preview-controls button {
+  height: 30px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #7b7263;
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+body.theme-dark .preview-controls button {
+  color: #a79d8c;
+}
+
+.preview-controls button:hover,
+.preview-controls button.is-active {
+  background: rgba(42, 37, 29, 0.08);
+  color: #2a251d;
+}
+
+body.theme-dark .preview-controls button:hover,
+body.theme-dark .preview-controls button.is-active {
+  background: rgba(237, 230, 214, 0.1);
+  color: #ede6d6;
+}
+
+.preview-controls .preview-sep {
+  width: 1px;
+  height: 16px;
+  background: rgba(42, 37, 29, 0.14);
+  margin: 0 3px;
+}
+
+body.theme-dark .preview-controls .preview-sep {
+  background: rgba(237, 230, 214, 0.14);
+}
+
+.preview-toast {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 120;
+  max-width: 320px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: #2f3b44;
+  color: #f6f1e7;
+  font-family: var(--font-interface);
+  font-size: 11.5px;
+  line-height: 1.5;
+  box-shadow: 0 12px 28px -16px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.preview-toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+body.preview-bare .preview-controls,
+body.preview-bare .preview-toast {
+  display: none;
+}
