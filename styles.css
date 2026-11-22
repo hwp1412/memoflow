@@ -1,0 +1,179 @@
+/* Incremental Reading sidebar */
+.ir-queue-root { padding: 8px; font-size: var(--font-ui-small); }
+.ir-queue-header { font-weight: 600; margin-bottom: 8px; }
+.ir-queue-section { margin-bottom: 12px; }
+.ir-queue-section-title { font-weight: 600; opacity: 0.7; margin-bottom: 4px; }
+.ir-queue-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; cursor: pointer; content-visibility: auto; contain-intrinsic-size: auto 28px; }
+.ir-queue-row:hover { background: var(--background-modifier-hover); }
+.ir-queue-row-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ir-queue-row-pri { font-variant-numeric: tabular-nums; opacity: 0.7; }
+.ir-queue-row-stall { color: var(--text-accent); }
+.ir-queue-show-more { width: 100%; margin-top: 8px; }
+.ir-queue-filter { width: 100%; margin-bottom: 8px; }
+.ir-timeline-panel { border-top: 1px solid var(--background-modifier-border); padding-top: 8px; margin-top: 8px; }
+.ir-timeline-row { padding: 2px 4px; cursor: pointer; }
+.ir-timeline-row:hover { background: var(--background-modifier-hover); }
+.ir-settings-section { margin-bottom: 16px; }
+.ir-settings-section input.is-invalid { border-color: var(--text-error); }
+.ir-settings-section input[type='text'] { width: min(360px, 42vw); }
+
+/* Extract notes — colour variables are set per Markdown view from plugin settings. */
+.ir-extract-view .markdown-preview-sizer,
+.ir-extract-view .cm-content {
+  background: var(--ir-extract-highlight-background, rgba(255, 209, 102, 0.18));
+  box-shadow: inset 4px 0 0 var(--ir-extract-highlight-color, #ffd166);
+  border-radius: 4px;
+}
+.ir-excerpt-text {
+  color: inherit;
+  background: var(--ir-extract-highlight-background, rgba(255, 209, 102, 0.18));
+  box-shadow: inset 0 -2px 0 var(--ir-extract-highlight-color, #ffd166);
+  border-radius: 2px;
+  padding: 0 0.08em;
+}
+
+/* In-app quickstart and user guide */
+.ir-guide-modal { max-height: 72vh; overflow-y: auto; }
+.ir-guide-modal h3 { margin-top: 20px; }
+.ir-guide-modal table { width: 100%; border-collapse: collapse; }
+.ir-guide-modal th,
+.ir-guide-modal td { padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border); text-align: left; }
+.ir-guide-modal code { white-space: nowrap; }
+
+/* Incremental Reading knowledge tree */
+.ir-tree-root { padding: 8px; font-size: var(--font-ui-small); }
+.ir-tree-toolbar { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.ir-tree-toolbar button { padding: 2px 8px; }
+.ir-tree-filter { flex: 1; min-width: 120px; }
+.ir-tree-type-filter { min-width: 110px; }
+.ir-tree-bulk { display: flex; align-items: center; gap: 6px; min-height: 30px; margin: 0 0 8px; padding: 4px 6px; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); }
+.ir-tree-bulk.is-active { border-color: var(--interactive-accent); }
+.ir-tree-bulk-count { min-width: 68px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.ir-tree-bulk button { padding: 2px 8px; }
+.ir-tree-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 10px; }
+.ir-tree-summary button { padding: 3px 8px; border: 0; border-radius: 999px; background: var(--background-secondary); color: var(--text-muted); cursor: pointer; }
+.ir-tree-summary button:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.ir-tree-body { user-select: none; }
+.ir-tree-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; cursor: pointer; border-radius: 4px; }
+.ir-tree-row:hover { background: var(--background-modifier-hover); }
+.ir-tree-row.is-selected { background: color-mix(in srgb, var(--interactive-accent) 18%, transparent); }
+.ir-tree-row.ir-tree-drop { outline: 2px solid var(--interactive-accent); }
+.ir-tree-twisty { width: 14px; display: inline-block; text-align: center; opacity: 0.7; }
+.ir-tree-select { flex: 0 0 auto; margin: 0 1px 0 0; cursor: pointer; }
+.ir-tree-icon { width: 16px; }
+.ir-tree-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ir-tree-pri { font-variant-numeric: tabular-nums; opacity: 0.6; }
+.ir-tree-count { font-variant-numeric: tabular-nums; opacity: 0.5; font-size: 0.85em; }
+.ir-tree-count-warn { color: var(--text-warning); opacity: 1; font-weight: 600; }
+.ir-tree-status { font-size: 0.72em; padding: 1px 5px; border-radius: 999px; color: var(--text-muted); background: var(--background-secondary); }
+.ir-tree-status.is-inbox { color: var(--text-accent); }
+.ir-tree-status.is-done { color: var(--text-success); }
+.ir-tree-warn { color: var(--text-warning); }
+.ir-tree-unfiled > .ir-tree-title { font-style: italic; opacity: 0.8; }
+.ir-tree-actions { display: inline-flex; flex: 0 0 auto; gap: 2px; }
+.ir-tree-actions button { padding: 0 5px; line-height: 1.3; font-size: 0.85em; }
+.ir-tree-row:focus { outline: 2px solid var(--interactive-accent); outline-offset: -2px; }
+.ir-tree-compact .ir-tree-pri,
+.ir-tree-compact .ir-tree-count { display: none; }
+.ir-tree-compact .ir-tree-row { padding: 1px 2px; }
+
+/* Tree row indent scales with --ir-tree-depth (set inline per row) */
+.ir-tree-row { padding-left: calc(var(--ir-tree-depth, 0) * 16px + 4px); }
+
+/* Main learning dashboard */
+.ir-dashboard-root { padding: clamp(16px, 3vw, 36px); overflow-y: auto; height: 100%; }
+.ir-dashboard-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+.ir-dashboard-head h1 { margin: 0; }
+.ir-dashboard-head p { color: var(--text-muted); margin-top: 5px; }
+.ir-dashboard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ir-dashboard-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 10px; margin: 22px 0; }
+.ir-dashboard-metric { background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 14px; }
+.ir-dashboard-metric-value { font-size: 1.8em; font-weight: 700; }
+.ir-dashboard-metric-label { color: var(--text-muted); font-size: 0.85em; }
+.ir-dashboard-metric.is-danger { border-color: var(--text-error); }
+.ir-dashboard-metric.is-warning { border-color: var(--text-warning); }
+.ir-dashboard-metric.is-success { border-color: var(--text-success); }
+.ir-dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(240px, 1fr); gap: 14px; }
+.ir-dashboard-panel { background: var(--background-primary-alt); border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 16px; }
+.ir-dashboard-panel h2 { margin-top: 0; font-size: 1.05em; }
+.ir-dashboard-session-row { display: flex; gap: 9px; align-items: center; padding: 7px 5px; border-bottom: 1px solid var(--background-modifier-border); cursor: pointer; }
+.ir-dashboard-session-row:hover { background: var(--background-modifier-hover); }
+.ir-dashboard-session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ir-dashboard-session-kind { color: var(--text-muted); font-size: 0.75em; text-transform: uppercase; }
+.ir-dashboard-health-row { display: flex; justify-content: space-between; padding: 5px 0; text-transform: capitalize; }
+.ir-dashboard-note { color: var(--text-muted); font-size: 0.85em; margin-top: 16px; }
+.ir-dashboard-analytics { margin-top: 24px; scroll-margin-top: 18px; }
+.ir-dashboard-analytics > h2 { margin: 0 0 12px; font-size: 1.25em; }
+.ir-dashboard-analytics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.ir-dashboard-panel h3 { margin: 0 0 14px; font-size: 1em; }
+.ir-dashboard-panel-wide { grid-column: 1 / -1; }
+.ir-dashboard-chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.ir-dashboard-chart-head h3 { margin-bottom: 0; }
+.ir-dashboard-chart-head span { color: var(--text-muted); font-size: 0.82em; }
+.ir-dashboard-activity-chart { display: grid; grid-template-columns: repeat(14, minmax(12px, 1fr)); gap: clamp(3px, 1vw, 9px); height: 190px; margin-top: 16px; }
+.ir-dashboard-activity-column { min-width: 0; display: grid; grid-template-rows: 20px 1fr 25px; align-items: end; text-align: center; }
+.ir-dashboard-activity-value { color: var(--text-normal); font-size: 0.75em; font-variant-numeric: tabular-nums; }
+.ir-dashboard-activity-value.is-zero { color: transparent; }
+.ir-dashboard-activity-track { height: 100%; display: flex; align-items: flex-end; justify-content: center; border-bottom: 1px solid var(--background-modifier-border); }
+.ir-dashboard-activity-bar { width: min(28px, 72%); min-height: 2px; border-radius: 5px 5px 2px 2px; background: linear-gradient(180deg, var(--interactive-accent-hover), var(--interactive-accent)); transition: height 180ms ease; }
+.ir-dashboard-activity-label { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 0.65em; white-space: nowrap; padding-top: 5px; }
+.ir-dashboard-distribution { display: grid; gap: 12px; }
+.ir-dashboard-distribution-heading { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 4px; color: var(--text-muted); font-size: 0.82em; }
+.ir-dashboard-distribution-heading span:last-child { color: var(--text-normal); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ir-dashboard-distribution-track { height: 9px; overflow: hidden; border-radius: 999px; background: var(--background-modifier-border); }
+.ir-dashboard-distribution-bar { height: 100%; border-radius: inherit; background: var(--text-muted); transition: width 180ms ease; }
+.ir-dashboard-distribution-bar.is-danger { background: var(--text-error); }
+.ir-dashboard-distribution-bar.is-warning { background: var(--text-warning); }
+.ir-dashboard-distribution-bar.is-success { background: var(--text-success); }
+.ir-dashboard-distribution-bar.is-accent { background: var(--interactive-accent); }
+@media (max-width: 700px) {
+  .ir-dashboard-grid, .ir-dashboard-analytics-grid { grid-template-columns: 1fr; }
+  .ir-dashboard-panel-wide { grid-column: auto; }
+  .ir-dashboard-activity-chart { gap: 3px; }
+  .ir-dashboard-activity-label { font-size: 0.58em; }
+}
+
+/* In-plugin PDF reader */
+.ir-pdf-root { height: 100%; display: flex; flex-direction: column; background: var(--background-primary); }
+.ir-pdf-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--background-modifier-border); }
+.ir-pdf-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ir-pdf-page { width: 72px; }
+.ir-pdf-frame { flex: 1; width: 100%; border: 0; background: #525659; }
+
+/* Generic helpers */
+.ir-hidden { display: none; }
+.ir-fullwidth { width: 100%; }
+.ir-modal-input { width: 100%; margin-bottom: 12px; }
+.ir-modal-textarea { width: 100%; min-height: 200px; margin-bottom: 12px; }
+
+/* Image occlusion — shared by the editor modal and the code-block renderer */
+.ir-occ-modal { max-width: 90vw; }
+.ir-occ-help { font-size: 0.85em; opacity: 0.75; }
+.ir-occ-wrap { position: relative; display: inline-block; max-width: 100%; user-select: none; cursor: crosshair; }
+.ir-occ-img { max-width: 85vw; max-height: 70vh; display: block; }
+.ir-occ-img-fluid { display: block; max-width: 100%; height: auto; }
+.ir-occ-overlay { position: absolute; inset: 0; }
+.ir-occ-overlay-static { pointer-events: none; }
+.ir-occ-btnrow { margin-top: 14px; gap: 8px; }
+.ir-occ-btn-row { margin-top: 8px; }
+.ir-occ-status { margin-top: 8px; font-size: 0.85em; opacity: 0.75; }
+
+/* Occlusion cover rectangle — position via --ir-x/y/w/h, colour via --ir-cover-bg */
+.ir-occ-cover {
+  position: absolute;
+  left: var(--ir-x); top: var(--ir-y);
+  width: var(--ir-w); height: var(--ir-h);
+  background: var(--ir-cover-bg, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-sizing: border-box;
+}
+.ir-occ-cover-plain { border: 1px solid rgba(0, 0, 0, 0.2); }
+.ir-occ-cover-hidden { background: #000; }
+.ir-occ-cover-current { border: 2px solid #d44; }
+.ir-occ-overlay.ir-occ-revealed .ir-occ-cover-hidden { background: transparent; }
+.ir-occ-label {
+  position: absolute; left: 4px; bottom: 2px;
+  font-size: 0.75em; color: #000;
+  background: rgba(255, 255, 255, 0.85);
+  padding: 0 4px; border-radius: 2px; pointer-events: none;
+}

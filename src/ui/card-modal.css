@@ -1,0 +1,232 @@
+/* MemoFlow card-creation modal. */
+
+.mf-card-modal-info {
+  margin: 2px 0 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.mf-card-modal .setting-item {
+  padding: 0;
+  border: 0;
+}
+
+.mf-card-modal-row {
+  margin: 14px 0 0;
+}
+
+.mf-card-modal-label {
+  margin-bottom: 6px;
+  color: var(--text-normal);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mf-card-modal .mf-card-textarea {
+  width: 100%;
+  min-height: 92px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-text, var(--font-interface));
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.mf-card-modal .mf-card-textarea:focus {
+  border-color: var(--interactive-accent);
+  outline: none;
+}
+
+.mf-card-modal-hint {
+  min-height: 18px;
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.mf-card-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+
+/* Priority + overload dialogs (reuse card-modal typography). */
+
+.mf-priority-current {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.mf-priority-badge {
+  display: inline-flex;
+  min-width: 36px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mf-priority-input {
+  width: 120px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 14px;
+}
+
+.mf-priority-quick,
+.mf-priority-boost {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.mf-priority-quick button,
+.mf-priority-boost button {
+  min-width: 40px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 12px;
+}
+
+.mf-overload-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mf-overload-options button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-height: 56px;
+  padding: 9px 11px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 9px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  text-align: left;
+}
+
+.mf-overload-days {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mf-overload-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.mf-priority-modal .mf-card-modal-info,
+.mf-overload-modal .mf-card-modal-info {
+  margin-bottom: 8px;
+}
+
+/* Chinese user guide. */
+.mf-guide-modal h3 {
+  margin: 18px 0 8px;
+  font-size: 15px;
+}
+
+.mf-guide-modal p,
+.mf-guide-modal li {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.mf-guide-modal ul {
+  margin: 4px 0 0 18px;
+}
+
+.mf-guide-footnote {
+  margin-top: 18px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: 11px !important;
+}
+
+.mf-cloze-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.mf-cloze-tools button {
+  min-width: 38px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mf-cloze-tools button:hover {
+  border-color: var(--interactive-accent);
+}
+
+.mf-cloze-count {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.mf-card-more-types {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.mf-card-more-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.mf-card-more-row button {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mf-card-more-row button:hover {
+  border-color: var(--interactive-accent);
+}

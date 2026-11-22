@@ -1,0 +1,332 @@
+/* MemoFlow unified review shell: one paper surface for topics and cards. */
+
+.mf-review-view {
+  --mf-rv-bg: #f5f1e8;
+  --mf-rv-paper: #fbf8f1;
+  --mf-rv-ink: #2a251d;
+  --mf-rv-muted: #7b7263;
+  --mf-rv-line: rgba(42, 37, 29, 0.12);
+  --mf-rv-accent: #3e5c76;
+  --mf-rv-amber: #c98f2e;
+  height: 100%;
+  overflow: auto;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(201, 143, 46, 0.08), transparent 38%),
+    var(--mf-rv-bg);
+  color: var(--mf-rv-ink);
+  font-family: var(--font-text, var(--font-interface));
+}
+
+.theme-dark .mf-review-view {
+  --mf-rv-bg: #171613;
+  --mf-rv-paper: #1f1d19;
+  --mf-rv-ink: #ede6d6;
+  --mf-rv-muted: #a79d8c;
+  --mf-rv-line: rgba(237, 230, 214, 0.12);
+  --mf-rv-accent: #9db8ce;
+  --mf-rv-amber: #e3b968;
+}
+
+.mf-rv-shell {
+  width: min(920px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 28px 0 48px;
+}
+
+.mf-rv-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.mf-rv-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-interface);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--mf-rv-muted);
+}
+
+.mf-rv-brand strong {
+  color: var(--mf-rv-ink);
+  font-family: var(--font-text, var(--font-interface));
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.mf-rv-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-interface);
+  font-size: 12px;
+  color: var(--mf-rv-muted);
+}
+
+.mf-rv-progress strong {
+  color: var(--mf-rv-ink);
+  font-size: 16px;
+}
+
+.mf-rv-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--mf-rv-line);
+  border-radius: 9px;
+  background: var(--mf-rv-paper);
+  color: var(--mf-rv-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.mf-rv-close:hover {
+  color: var(--mf-rv-ink);
+  border-color: var(--mf-rv-accent);
+}
+
+.mf-rv-panel {
+  overflow: hidden;
+  border: 1px solid var(--mf-rv-line);
+  border-radius: 20px;
+  background: var(--mf-rv-paper);
+  box-shadow: 0 14px 38px rgba(42, 37, 29, 0.06);
+}
+
+.mf-rv-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 24px 0;
+  font-family: var(--font-interface);
+  font-size: 11px;
+  color: var(--mf-rv-muted);
+}
+
+.mf-rv-type,
+.mf-rv-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--mf-rv-line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mf-rv-paper) 78%, var(--mf-rv-bg));
+  color: var(--mf-rv-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.mf-rv-type {
+  color: var(--mf-rv-accent);
+  font-weight: 650;
+}
+
+.mf-rv-title {
+  margin: 12px 24px 0;
+  color: var(--mf-rv-ink);
+  font-family: var(--font-text, var(--font-interface));
+  font-size: clamp(26px, 3.2vw, 38px);
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.mf-rv-content {
+  max-height: min(58vh, 560px);
+  overflow: auto;
+  margin: 18px 24px 0;
+  padding: 0 2px 8px;
+  color: var(--mf-rv-ink);
+  font-family: var(--font-text, var(--font-interface));
+  font-size: 15px;
+  line-height: 1.85;
+}
+
+.mf-rv-content :where(h1, h2, h3) {
+  margin: 1.2em 0 0.5em;
+  font-size: 1.1em;
+}
+
+.mf-rv-content :where(p, ul, ol, blockquote) {
+  margin: 0.65em 0;
+}
+
+.mf-rv-content :where(blockquote) {
+  padding-left: 12px;
+  border-left: 2px solid var(--mf-rv-amber);
+  color: var(--mf-rv-muted);
+}
+
+.mf-rv-content :where(img) {
+  max-width: 100%;
+  border-radius: 10px;
+}
+
+.mf-rv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px 22px;
+  border-top: 1px solid var(--mf-rv-line);
+}
+
+.mf-rv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--mf-rv-line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--mf-rv-ink);
+  font-family: var(--font-interface);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mf-rv-btn:hover {
+  border-color: var(--mf-rv-accent);
+}
+
+.mf-rv-btn.is-primary {
+  border-color: var(--mf-rv-accent);
+  background: var(--mf-rv-accent);
+  color: #fff;
+}
+
+.mf-rv-btn.is-subtle {
+  color: var(--mf-rv-muted);
+}
+
+.mf-rv-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.mf-rv-card-stage {
+  min-height: 330px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 38px 48px 30px;
+}
+
+.mf-rv-card-kicker {
+  color: var(--mf-rv-muted);
+  font-family: var(--font-interface);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mf-rv-card-face {
+  margin-top: 18px;
+  color: var(--mf-rv-ink);
+  font-family: var(--font-text, var(--font-interface));
+  font-size: clamp(22px, 2.8vw, 32px);
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.mf-rv-card-face.is-answer {
+  padding-top: 24px;
+  border-top: 1px dashed var(--mf-rv-line);
+  color: var(--mf-rv-ink);
+  font-size: clamp(18px, 2.2vw, 25px);
+  font-weight: 500;
+}
+
+.mf-rv-grade {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 26px;
+}
+
+.mf-rv-grade button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 54px;
+  padding: 8px 10px;
+  border: 1px solid var(--mf-rv-line);
+  border-radius: 10px;
+  background: var(--mf-rv-paper);
+  color: var(--mf-rv-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mf-rv-grade button:hover {
+  border-color: var(--mf-rv-accent);
+}
+
+.mf-rv-grade strong {
+  font-size: 13px;
+}
+
+.mf-rv-grade span {
+  color: var(--mf-rv-muted);
+  font-size: 10px;
+}
+
+.mf-rv-empty {
+  padding: 56px 28px;
+  text-align: center;
+}
+
+.mf-rv-empty h2 {
+  margin: 0 0 8px;
+  font-size: 24px;
+}
+
+.mf-rv-empty p {
+  margin: 0 0 18px;
+  color: var(--mf-rv-muted);
+}
+
+.mf-rv-note {
+  color: var(--mf-rv-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .mf-rv-shell {
+    width: calc(100% - 20px);
+    padding-top: 14px;
+  }
+  .mf-rv-meta,
+  .mf-rv-actions {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .mf-rv-title,
+  .mf-rv-content {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+  .mf-rv-card-stage {
+    padding: 26px 20px 22px;
+  }
+  .mf-rv-grade {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .mf-rv-content {
+    max-height: 52vh;
+  }
+}
+
+/* The SR review modal is used only as a grading bridge; hide its chrome while
+   the unified shell is visible. */
+.mf-sr-hidden {
+  display: none !important;
+}
