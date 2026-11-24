@@ -9,25 +9,25 @@
 
 ```text
 node --test test/refine-history.test.js
-# tests 10
-# pass 10
+# tests 11
+# pass 11
 # fail 0
 
 node --test test/refine-store.test.js
-# tests 19
-# pass 19
+# tests 25
+# pass 25
 # fail 0
 
 node --test test/*.test.js
-# tests 280
-# pass 280
+# tests 287
+# pass 287
 # fail 0
 
 npm run check
-通过（validate-release + 280 tests）
+通过（validate-release + 287 tests）
 
 npm run verify:memoflow
-通过（构建 + node --check + 280 tests + validate-memoflow）
+通过（构建 + node --check + 287 tests + validate-memoflow）
 ```
 
 - M03 24 项、P1-SAFETY-1、Phase 1、P1-NAV-1 断言全部保留。
@@ -39,13 +39,16 @@ npm run verify:memoflow
 - 完整原文快照与 after body/hash；
 - operation 完整性篡改检测；
 - 历史写失败、读回失败、rename 失败、state 写失败；
-- prepared/applied/conflict 阻止恢复；
+- prepared/applied/failed/conflict/缺失 state 阻止新 operation 与恢复；
 - 重复 operationId 拒绝覆盖；
 - 并发不同 operation 独立历史（无跨实例锁声明）；
 - 历史缺失/损坏；
 - 路径重命名不自动匹配；
 - 恢复 body-only、保留当前 Frontmatter；
+- 当前 type=source/无 type/歧义 → 恢复拒绝；
 - body 变化冲突；
+- 直接 setStatus verified 被拒绝；markVerified 校验 body/type；
+- 不覆盖目标 Adapter 的 rename 失败保留旧 state；
 - 软 20 条限制不自动删除；
 - 1 MiB note 拒绝；
 - 所有测试写入都在 history root，不写真实笔记。
@@ -70,7 +73,17 @@ npm run verify:memoflow
 - 路径不是稳定 ID；
 - 历史容量策略未最终确定。
 
-## 5. 1B 接入
+## 5. Adapter 行为核实
+
+- `DataAdapter.rename` 的目标覆盖语义不视为跨平台保证。
+- 使用“目标已存在即失败”的内存 Adapter 注入测试：
+  - state rename 失败；
+  - 旧 state 文件内容保持不变；
+  - 新 state temp 保留用于诊断；
+  - operation/history 不丢失。
+- 仍不宣称 temp+rename 为事务或具备 fsync 保证。
+
+## 6. 1B 接入
 
 1B 必须：
 
@@ -81,7 +94,7 @@ npm run verify:memoflow
 - 重新读磁盘校验后才推进 `verified`；
 - 处理恢复冲突。
 
-## 6. 回滚
+## 7. 回滚
 
 - 删除分支/PR，或 revert 1A commits；
 - 无真实 Vault 写入，无数据迁移。

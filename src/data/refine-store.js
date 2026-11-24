@@ -13,6 +13,9 @@ const {
   validateState,
   isUnresolvedStatus,
   createRestoreOperation,
+  requireCurrentExtractType,
+  splitContent,
+  sha256Text,
 } = require('./refine-history.js');
 
 const DEFAULT_HISTORY_ROOT = 'MemoFlow History/refine';
@@ -93,6 +96,18 @@ class RefineHistoryStore {
     }
   }
 
+  async assertNoUnresolved(notePath) {
+    const entries = await this.listEntries(notePath);
+    const unresolved = entries.filter(entry => isUnresolvedStatus(entry.state.status) || entry.state.missingState);
+    if (unresolved.length) {
+      throw new RefineError('UNRESOLVED_HISTORY', 'note has unresolved refine history', {
+        count: unresolved.length,
+        operationIds: unresolved.map(entry => entry.operation.operationId),
+      });
+    }
+    return entries;
+  }
+
   async writeOperation(operation) {
     await validateOperationIntegrity(operation);
     const state = makeState(operation.operationId, 'prepared', this.now());
@@ -102,7 +117,8 @@ class RefineHistoryStore {
     if (await this.adapter.exists(opPath)) {
       throw new RefineError('DUPLICATE_OPERATION', `history already exists: ${operation.operationId}`);
     }
-    const previousCount = (await this.listEntries(operation.note.path)).length;
+    const existingEntries = await this.assertNoUnresolved(operation.note.path);
+    const previousCount = existingEntries.length;
     await this.writeAtomic(opPath, JSON.stringify(operation, null, 2), { mustNotExist: true, tempSuffix: 'op-tmp' });
     // The immutable snapshot must be independently readable and valid.
     const readback = JSON.parse(await this.readText(opPath));
@@ -159,7 +175,7 @@ class RefineHistoryStore {
     return { operation, state };
   }
 
-  async setStatus(operationId, status, { recovery = [], at = this.now() } = {}) {
+  async _writeStatus(operationId, status, { recovery = [], at = this.now() } = {}) {
     const { operation, state } = await this.readEntry(operationId);
     if (!canTransition(state.status, status)) {
       throw new RefineError('INVALID_STATUS_TRANSITION', `cannot transition ${state.status} -> ${status}`, {
@@ -180,6 +196,41 @@ class RefineHistoryStore {
     const readback = JSON.parse(await this.readText(statePath));
     validateState(readback, operationId);
     return readback;
+  }
+
+  async setStatus(operationId, status, options = {}) {
+    if (status === 'verified' || status === 'restored') {
+      throw new RefineError('VERIFICATION_REQUIRED', `${status} requires content verification`);
+    }
+    return this._writeStatus(operationId, status, options);
+  }
+
+  async markVerified(operationId, currentContent) {
+    const { operation, state } = await this.readEntry(operationId);
+    if (state.status !== 'applied') {
+      throw new RefineError('VERIFICATION_REQUIRED', 'only an applied operation can be verified');
+    }
+    requireCurrentExtractType(currentContent);
+    const currentBody = splitContent(currentContent).body;
+    const currentHash = await sha256Text(currentBody);
+    if (currentHash !== operation.after.bodyHash) {
+      throw new RefineError('VERIFICATION_MISMATCH', 'current body does not match expected after hash');
+    }
+    return this._writeStatus(operationId, 'verified', { recovery: [{ at: this.now(), reason: 'body hash verified' }] });
+  }
+
+  async markRestored(operationId, currentContent) {
+    const { operation, state } = await this.readEntry(operationId);
+    if (state.status !== 'verified') {
+      throw new RefineError('VERIFICATION_REQUIRED', 'only a verified operation can be marked restored');
+    }
+    requireCurrentExtractType(currentContent);
+    const currentBody = splitContent(currentContent).body;
+    const currentHash = await sha256Text(currentBody);
+    if (currentHash !== operation.after.bodyHash) {
+      throw new RefineError('VERIFICATION_MISMATCH', 'current body does not match expected after hash');
+    }
+    return this._writeStatus(operationId, 'restored', { recovery: [{ at: this.now(), reason: 'restored body verified' }] });
   }
 
   async listFiles() {
@@ -260,13 +311,14 @@ class RefineHistoryStore {
   }
 
   async planRestore(notePath, currentContent) {
+    const currentType = requireCurrentExtractType(currentContent);
     const latest = await this.latestRestorable(notePath);
     const operation = await createRestoreOperation({
       operationId: globalThis.crypto.randomUUID(),
       latestOperation: latest.operation,
       currentContent,
       currentNotePath: notePath,
-      currentNoteType: latest.operation.note.type,
+      currentNoteType: currentType,
     });
     return { latest, operation };
   }

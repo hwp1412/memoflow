@@ -105,6 +105,32 @@ function splitContent(content) {
   };
 }
 
+function parseFrontmatterType(content) {
+  const split = splitContent(content);
+  if (!split.hasFrontmatter) return { ok: false, code: 'CURRENT_TYPE_UNKNOWN' };
+  const lines = split.frontmatter.split(/\r?\n/);
+  const values = [];
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === '---') break;
+    const match = lines[i].match(/^type:\s*(.*)$/);
+    if (match) values.push(match[1].trim().replace(/^(['"])(.*)\1$/, '$2'));
+  }
+  if (values.length === 0 || values.some(value => !value)) {
+    return { ok: false, code: 'CURRENT_TYPE_UNKNOWN' };
+  }
+  if (new Set(values).size !== 1) return { ok: false, code: 'CURRENT_TYPE_AMBIGUOUS' };
+  return { ok: true, type: values[0] };
+}
+
+function requireCurrentExtractType(content) {
+  const parsed = parseFrontmatterType(content);
+  if (!parsed.ok) throw new RefineError(parsed.code, 'current note type is not safely identifiable');
+  if (parsed.type !== NOTE_TYPE) {
+    throw new RefineError('CURRENT_TYPE_UNSUPPORTED', `current note type is ${parsed.type}, expected Extract`);
+  }
+  return parsed.type;
+}
+
 function validateSelection(split, selection) {
   if (!split || !split.ok) throw new RefineError('MALFORMED_FRONTMATTER', 'content cannot be safely split');
   if (!selection || !Number.isInteger(selection.start) || !Number.isInteger(selection.end)) {
@@ -392,6 +418,8 @@ module.exports = {
   sha256Text,
   isValidOperationId,
   splitContent,
+  parseFrontmatterType,
+  requireCurrentExtractType,
   validateSelection,
   createRefineOperation,
   validateOperationIntegrity,

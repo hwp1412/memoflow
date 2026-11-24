@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const {
   splitContent,
+  parseFrontmatterType,
+  requireCurrentExtractType,
   createRefineOperation,
   validateOperationIntegrity,
   createRestoreOperation,
@@ -177,4 +179,15 @@ test('state machine exposes only explicit safe transitions', () => {
   const state = makeState(uuid(), 'prepared', '2026-11-25T00:00:00.000Z');
   assert.equal(validateState(state, state.operationId).status, 'prepared');
   assert.throws(() => makeState('not-uuid'), error => error.code === 'INVALID_OPERATION_ID');
+});
+
+
+test('frontmatter type parsing is explicit and safe', () => {
+  assert.deepEqual(parseFrontmatterType('---\ntype: extract\n---\nbody'), { ok: true, type: 'extract' });
+  assert.deepEqual(parseFrontmatterType('---\ntype: "source"\n---\nbody'), { ok: true, type: 'source' });
+  assert.deepEqual(parseFrontmatterType('---\npriority: 1\n---\nbody'), { ok: false, code: 'CURRENT_TYPE_UNKNOWN' });
+  assert.deepEqual(parseFrontmatterType('body only\n'), { ok: false, code: 'CURRENT_TYPE_UNKNOWN' });
+  assert.deepEqual(parseFrontmatterType('---\ntype: extract\ntype: source\n---\nbody'), { ok: false, code: 'CURRENT_TYPE_AMBIGUOUS' });
+  assert.throws(() => requireCurrentExtractType('---\ntype: source\n---\nbody'), error => error.code === 'CURRENT_TYPE_UNSUPPORTED');
+  assert.throws(() => requireCurrentExtractType('---\npriority: 1\n---\nbody'), error => error.code === 'CURRENT_TYPE_UNKNOWN');
 });

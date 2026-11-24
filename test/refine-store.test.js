@@ -25,6 +25,7 @@ class MemoryAdapter {
     this.readFailures = [];
     this.renameFailures = [];
     this.badReadPaths = new Set();
+    this.overwriteRename = true;
     this.writes = [];
   }
   async exists(path) { return this.files.has(path) || this.dirs.has(path); }
@@ -45,6 +46,7 @@ class MemoryAdapter {
       throw new Error(`rename failed: ${from} -> ${to}`);
     }
     if (!this.files.has(from)) throw new Error(`missing: ${from}`);
+    if (!this.overwriteRename && this.files.has(to)) throw new Error(`target exists: ${to}`);
     this.files.set(to, this.files.get(from));
     this.files.delete(from);
   }
@@ -74,6 +76,16 @@ async function operation(overrides = {}) {
   });
 }
 
+function afterContent(op) {
+  return `${op.before.frontmatter}${op.after.body}`;
+}
+
+async function verifyOp(store, op, currentContent = afterContent(op)) {
+  const entry = await store.readEntry(op.operationId);
+  if (entry.state.status === 'prepared') await store.setStatus(op.operationId, 'applied');
+  return store.markVerified(op.operationId, currentContent);
+}
+
 test('store writes immutable operation plus separate state and reads them back', async () => {
   const { adapter, store } = await storeWithAdapter();
   const op = await operation();
@@ -100,9 +112,12 @@ test('state transitions must be explicit and verified history is discoverable', 
   const { store } = await storeWithAdapter();
   const op = await operation();
   await store.writeOperation(op);
-  await assert.rejects(() => store.setStatus(op.operationId, 'verified'), error => error.code === 'INVALID_STATUS_TRANSITION');
+  await assert.rejects(() => store.setStatus(op.operationId, 'verified'), error => error.code === 'VERIFICATION_REQUIRED');
+  await assert.rejects(() => store.setStatus(op.operationId, 'restored'), error => error.code === 'VERIFICATION_REQUIRED');
+  await assert.rejects(() => store.markVerified(op.operationId, afterContent(op)), error => error.code === 'VERIFICATION_REQUIRED');
   await store.setStatus(op.operationId, 'applied');
-  await store.setStatus(op.operationId, 'verified');
+  await assert.rejects(() => store.markVerified(op.operationId, '---\ntype: extract\n---\nwrong\n'), error => error.code === 'VERIFICATION_MISMATCH');
+  await store.markVerified(op.operationId, afterContent(op));
   const latest = await store.latestVerified(notePath);
   assert.equal(latest.operation.operationId, op.operationId);
   assert.equal(latest.state.status, 'verified');
@@ -173,10 +188,11 @@ test('missing or corrupt state is unresolved, not silently ignored', async () =>
   assert.equal(entries[0].state.status, 'conflict');
   await assert.rejects(() => store.latestVerified(notePath), error => error.code === 'UNRESOLVED_HISTORY');
 
+  const { adapter: adapter2, store: store2 } = await storeWithAdapter();
   const op2 = await operation();
-  await store.writeOperation(op2);
-  adapter.files.set(store.statePath(op2.operationId), '{broken');
-  await assert.rejects(() => store.listEntries(notePath), error => error.code === 'STATE_CORRUPT');
+  await store2.writeOperation(op2);
+  adapter2.files.set(store2.statePath(op2.operationId), '{broken');
+  await assert.rejects(() => store2.listEntries(notePath), error => error.code === 'STATE_CORRUPT');
 });
 
 test('corrupt or missing history is reported and never guessed', async () => {
@@ -192,8 +208,7 @@ test('note path rename does not auto-match history and leaves old history intact
   const { adapter, store } = await storeWithAdapter();
   const op = await operation();
   await store.writeOperation(op);
-  await store.setStatus(op.operationId, 'applied');
-  await store.setStatus(op.operationId, 'verified');
+  await verifyOp(store, op);
   await assert.rejects(() => store.latestVerified('Extracts/Renamed.md'), error => error.code === 'NO_VERIFIED_HISTORY');
   assert.ok(adapter.files.has(store.operationPath(op.operationId)));
   assert.equal((await store.latestVerified(notePath)).operation.operationId, op.operationId);
@@ -203,7 +218,9 @@ test('more than 20 operations is soft-limited, not rejected or auto-deleted', as
   const { store } = await storeWithAdapter();
   let last;
   for (let i = 0; i < 21; i++) {
-    last = await store.writeOperation(await operation());
+    const op = await operation();
+    last = await store.writeOperation(op);
+    await verifyOp(store, op);
   }
   assert.equal(last.softLimitExceeded, true);
   assert.equal(await store.historyCount(notePath), 21);
@@ -223,8 +240,7 @@ test('restore plan preserves current frontmatter and writes only history, not th
   const { adapter, store } = await storeWithAdapter();
   const op = await operation();
   await store.writeOperation(op);
-  await store.setStatus(op.operationId, 'applied');
-  await store.setStatus(op.operationId, 'verified');
+  await verifyOp(store, op);
   const current = '---\ntype: extract\npriority: 99\n---\nHi world\n';
   const plan = await store.planRestore(notePath, current);
   assert.equal(plan.operation.restoreOf, op.operationId);
@@ -239,8 +255,7 @@ test('restore refuses changed body and unresolved history', async () => {
   const { store } = await storeWithAdapter();
   const op = await operation();
   await store.writeOperation(op);
-  await store.setStatus(op.operationId, 'applied');
-  await store.setStatus(op.operationId, 'verified');
+  await verifyOp(store, op);
   await assert.rejects(() => store.planRestore(notePath, '---\ntype: extract\n---\nUser edit\n'), error => error.code === 'RESTORE_CONFLICT');
 
   const op2 = await operation();
@@ -262,36 +277,123 @@ test('state update failure after a body-like applied state preserves applied his
   await store.writeOperation(op);
   await store.setStatus(op.operationId, 'applied');
   adapter.writeFailures.push('state-tmp');
-  await assert.rejects(() => store.setStatus(op.operationId, 'verified'), error => error.code === 'HISTORY_WRITE_FAILED');
+  await assert.rejects(() => store.markVerified(op.operationId, afterContent(op)), error => error.code === 'HISTORY_WRITE_FAILED');
   const entry = await store.readEntry(op.operationId);
   assert.equal(entry.state.status, 'applied');
   await assert.rejects(() => store.latestVerified(notePath), error => error.code === 'UNRESOLVED_HISTORY');
 });
 
-test('distinct concurrent writes remain separate immutable histories', async () => {
-  const { store } = await storeWithAdapter();
-  const [first, second] = await Promise.all([store.writeOperation(await operation()), store.writeOperation(await operation())]);
-  assert.notEqual(first.operation.operationId, second.operation.operationId);
-  const entries = await store.listEntries(notePath);
-  assert.equal(entries.length, 2);
-  assert.equal(new Set(entries.map(entry => entry.operation.operationId)).size, 2);
-  // No instance memory lock is claimed; both histories are unresolved until
-  // their real body writes are verified by 1B.
-  await assert.rejects(() => store.latestVerified(notePath), error => error.code === 'UNRESOLVED_HISTORY');
+test('a prepared operation blocks a new operation with another UUID', async () => {
+  const { adapter, store } = await storeWithAdapter();
+  const first = await operation();
+  await store.writeOperation(first);
+  const second = await operation();
+  await assert.rejects(() => store.writeOperation(second), error => error.code === 'UNRESOLVED_HISTORY');
+  assert.equal(adapter.files.has(store.operationPath(second.operationId)), false);
+  assert.equal((await store.listEntries(notePath)).length, 1);
 });
 
 test('restored event becomes the latest restorable history', async () => {
   const { store } = await storeWithAdapter();
   const op = await operation();
   await store.writeOperation(op);
-  await store.setStatus(op.operationId, 'applied');
-  await store.setStatus(op.operationId, 'verified');
+  await verifyOp(store, op);
   const plan = await store.planRestore(notePath, '---\ntype: extract\n---\nHi world\n');
   await store.writeRestorePlan(plan);
   const restoreId = plan.operation.operationId;
   await store.setStatus(restoreId, 'applied');
-  await store.setStatus(restoreId, 'verified');
-  await store.setStatus(restoreId, 'restored');
+  await store.markVerified(restoreId, afterContent(plan.operation));
+  await store.markRestored(restoreId, afterContent(plan.operation));
   assert.equal((await store.latestVerified(notePath)).operation.operationId, op.operationId);
   assert.equal((await store.latestRestorable(notePath)).operation.operationId, restoreId);
+});
+
+test('failed, conflict and missing state records block a new operation', async () => {
+  for (const terminal of ['failed', 'conflict']) {
+    const { store } = await storeWithAdapter();
+    const first = await operation();
+    await store.writeOperation(first);
+    await store.setStatus(first.operationId, terminal);
+    const second = await operation();
+    await assert.rejects(() => store.writeOperation(second), error => error.code === 'UNRESOLVED_HISTORY');
+  }
+
+  const { adapter, store } = await storeWithAdapter();
+  const first = await operation();
+  await store.writeOperation(first);
+  adapter.files.delete(store.statePath(first.operationId));
+  const second = await operation();
+  await assert.rejects(() => store.writeOperation(second), error => error.code === 'UNRESOLVED_HISTORY');
+});
+
+test('prepareRefine is also blocked by unresolved history', async () => {
+  const { store } = await storeWithAdapter();
+  await store.writeOperation(await operation());
+  await assert.rejects(() => store.prepareRefine({
+    operationId: uuid(), notePath, fullContent: baseContent,
+    selection: { start: 0, end: 5 }, replacementText: 'B',
+  }), error => error.code === 'UNRESOLVED_HISTORY');
+});
+
+test('verified status requires a matching Extract body and cannot be set directly', async () => {
+  const { store } = await storeWithAdapter();
+  const op = await operation();
+  await store.writeOperation(op);
+  await store.setStatus(op.operationId, 'applied');
+  await assert.rejects(() => store.setStatus(op.operationId, 'verified'), error => error.code === 'VERIFICATION_REQUIRED');
+  await assert.rejects(
+    () => store.markVerified(op.operationId, '---\ntype: source\n---\nHi world\n'),
+    error => error.code === 'CURRENT_TYPE_UNSUPPORTED',
+  );
+  await assert.rejects(
+    () => store.markVerified(op.operationId, '---\ntype: extract\n---\nWrong body\n'),
+    error => error.code === 'VERIFICATION_MISMATCH',
+  );
+  await assert.rejects(
+    () => store.markVerified(op.operationId, 'Hi world\n'),
+    error => error.code === 'CURRENT_TYPE_UNKNOWN',
+  );
+  const verified = await store.markVerified(op.operationId, afterContent(op));
+  assert.equal(verified.status, 'verified');
+  await assert.rejects(() => store.setStatus(op.operationId, 'restored'), error => error.code === 'VERIFICATION_REQUIRED');
+});
+
+test('restore plan rejects current Source, missing type and ambiguous type', async () => {
+  const { store } = await storeWithAdapter();
+  const op = await operation();
+  await store.writeOperation(op);
+  await verifyOp(store, op);
+  for (const current of [
+    '---\ntype: source\n---\nHi world\n',
+    '---\npriority: 50\n---\nHi world\n',
+    '---\ntype: extract\ntype: source\n---\nHi world\n',
+  ]) {
+    await assert.rejects(() => store.planRestore(notePath, current), error =>
+      ['CURRENT_TYPE_UNSUPPORTED', 'CURRENT_TYPE_UNKNOWN', 'CURRENT_TYPE_AMBIGUOUS'].includes(error.code));
+  }
+});
+
+test('non-overwriting rename failure preserves the previous state file', async () => {
+  const { adapter, store } = await storeWithAdapter();
+  const op = await operation();
+  await store.writeOperation(op);
+  await store.setStatus(op.operationId, 'applied');
+  const stateBefore = await store.readState(op.operationId);
+  adapter.overwriteRename = false;
+  await assert.rejects(() => store.markVerified(op.operationId, afterContent(op)), error => error.code === 'HISTORY_WRITE_FAILED');
+  const stateAfter = await store.readState(op.operationId);
+  assert.deepEqual(stateAfter, stateBefore);
+  assert.equal(stateAfter.status, 'applied');
+  assert.ok([...adapter.files.keys()].some(path => path.includes('.state-tmp-')));
+});
+
+
+test('restore plan writing is blocked by unresolved history', async () => {
+  const { store } = await storeWithAdapter();
+  const op = await operation();
+  await store.writeOperation(op);
+  await verifyOp(store, op);
+  const plan = await store.planRestore(notePath, '---\ntype: extract\n---\nHi world\n');
+  await store.writeOperation(await operation({ replacementText: 'pending' }));
+  await assert.rejects(() => store.writeRestorePlan(plan), error => error.code === 'UNRESOLVED_HISTORY');
 });
