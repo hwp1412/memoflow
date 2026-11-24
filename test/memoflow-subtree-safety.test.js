@@ -280,11 +280,14 @@ test('cards remain traversal leaves and receive no boost writes', async (t) => {
     ir_spaced_repetition: true,
     tags: ['flashcards/incremental-reading'],
   }, '# Card\n');
+  const cardChild = addExtract(app, 'Extracts/Under-Card.md', { parent: 'Card-Child', source: 'Card-Source' });
   fresh(plugin);
   await boost(plugin, app, a);
   assert.equal(app.vault.readFm(e1).priority, 45);
   assert.equal(app.vault.readFm(card).priority, undefined);
   assert.equal(writesTo(app, card).length, 0);
+  assert.equal(app.vault.readFm(cardChild).priority, 50);
+  assert.equal(writesTo(app, cardChild).length, 0);
   assert.deepEqual(app.vault.readFm(card).tags, ['flashcards/incremental-reading']);
 });
 
@@ -328,5 +331,36 @@ test('over-depth subtree relation refuses before writing', async (t) => {
   await boost(plugin, app, root);
   assert.equal(app.fileManager.writes.length, before);
   assert.equal(app.vault.readFm(root).priority, 50);
+  assert.ok(app.notices.some(message => message.includes('refused before any write')));
+});
+
+test('explicit empty parent refuses write and never falls back to source', async (t) => {
+  const { plugin, app } = setup(t);
+  const a = addSource(app, 'Sources/Empty-Parent.md');
+  const broken = makeFile(app, 'Extracts/Empty-Parent-Child.md', {
+    type: 'extract',
+    status: 'active',
+    parent: '',
+    source: '[[Empty-Parent]]',
+    priority: 50,
+    next_review: '2026-12-02',
+  }, '# Broken\n');
+  fresh(plugin);
+  const before = app.fileManager.writes.length;
+  await boost(plugin, app, a);
+  assert.equal(app.fileManager.writes.length, before);
+  assert.equal(app.vault.readFm(a).priority, 50);
+  assert.equal(app.vault.readFm(broken).priority, 50);
+  assert.ok(app.notices.some(message => message.includes('refused before any write')));
+});
+
+test('direct self-parent is rejected before any write', async (t) => {
+  const { plugin, app } = setup(t);
+  const self = addExtract(app, 'Extracts/Self.md', { parent: 'Self', source: 'Source-A' });
+  fresh(plugin);
+  const before = app.fileManager.writes.length;
+  await boost(plugin, app, self);
+  assert.equal(app.fileManager.writes.length, before);
+  assert.equal(app.vault.readFm(self).priority, 50);
   assert.ok(app.notices.some(message => message.includes('refused before any write')));
 });

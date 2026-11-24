@@ -80,11 +80,13 @@ E1.source = 原始 Source
 - 新直接父的 boost/postpone 正常；
 - 旧 source fallback；
 - 路径、别名、大小写、同名消歧；
-- 显式 parent 无效且 source 指向当前子树 → 拒绝；
+- 显式 parent 缺失/空字符串/无法解析且 source 指向当前子树 → 拒绝；
+- 显式 parent 为空时不回退 source；
+- 直接自环 E1.parent=[[E1]] → 零写入拒绝；
 - 无关 Source C 坏链接不影响 A；
 - 重复 parent/root、循环、超深 → 零写入；
 - tree_root=true 不被 source 挂回；
-- Cards 不接收 boost 写入；
+- Cards 不接收 boost 写入，且不会继续遍历 Card 下的 Extract；
 - cascade Boost 预检先于根写入；
 - 中途写入失败 → 停止 + partial 报告；
 - Subset Review 排除异常且零 Frontmatter 写入。

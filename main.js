@@ -1391,14 +1391,19 @@ function walkSubtree(app, settings, rootBasename, rootPath, {
     if (page === rootPage) continue;
     const fm = page.fm;
     if (fm.tree_root === true) continue;
-    const parentLink = treeCore.linkTargetName(fm.parent);
+    const hasParentField = Object.prototype.hasOwnProperty.call(fm, 'parent');
+    const parentLink = hasParentField ? treeCore.linkTargetName(fm.parent) : null;
     const sourceLink = treeCore.linkTargetName(fm.source);
     let target = null;
     let invalid = null;
-    if (parentLink) {
-      const resolved = resolveLink(parentLink);
-      if (resolved.page) target = resolved.page;
-      else invalid = { code: resolved.code, link: parentLink, role: 'parent' };
+    if (hasParentField) {
+      if (!parentLink) {
+        invalid = { code: 'INVALID_PARENT', link: fm.parent == null ? '' : String(fm.parent), role: 'parent' };
+      } else {
+        const resolved = resolveLink(parentLink);
+        if (resolved.page) target = resolved.page;
+        else invalid = { code: resolved.code, link: parentLink, role: 'parent' };
+      }
     } else if (sourceLink) {
       const resolved = resolveLink(sourceLink);
       if (resolved.page) target = resolved.page;
@@ -1420,6 +1425,9 @@ function walkSubtree(app, settings, rootBasename, rootPath, {
   while (queue.length) {
     const current = queue.shift();
     const children = childrenByParentPath.get(current.page.tfile.path.toLowerCase()) || [];
+    // Cards are traversal leaves: their children must never be pulled into a
+    // write scope, even if a malformed Extract was attached below a Card.
+    if (current.page.fm.type === 'card') continue;
     for (const child of children) {
       if (visited.has(child.tfile.path)) {
         addIssue(child, 'CYCLE', treeCore.linkTargetName(child.fm.parent) || treeCore.linkTargetName(child.fm.source), 'cycle');
@@ -1441,7 +1449,7 @@ function walkSubtree(app, settings, rootBasename, rootPath, {
       || treeCore.linkTargetName(rootPage.fm.source);
     if (rootParentLink) {
       const rootParent = resolveLink(rootParentLink).page;
-      if (rootParent && rootParent !== rootPage && visited.has(rootParent.tfile.path)) {
+      if (rootParent && visited.has(rootParent.tfile.path)) {
         addIssue(rootPage, 'CYCLE', rootParentLink, 'cycle');
       }
     }

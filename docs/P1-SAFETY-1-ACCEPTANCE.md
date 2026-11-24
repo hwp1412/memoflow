@@ -10,20 +10,20 @@
 
 ```text
 node --test test/memoflow-subtree-safety.test.js
-# tests 18
-# pass 18
+# tests 20
+# pass 20
 # fail 0
 
 node --test test/*.test.js
-# tests 214
-# pass 214
+# tests 216
+# pass 216
 # fail 0
 
 npm run check
-通过（validate-release + 214 tests）
+通过（validate-release + 216 tests）
 
 npm run verify:memoflow
-通过（构建 + node --check + 214 tests + validate-memoflow）
+通过（构建 + node --check + 216 tests + validate-memoflow）
 ```
 
 M03 24 项旧断言未修改。
@@ -37,9 +37,12 @@ M03 24 项旧断言未修改。
 - `tree_root=true`：不从 source 挂回。
 - 路径/别名/大小写：正确解析；路径限定可消歧同名节点。
 - 显式 parent 无效：
-  - 不回退 source；
+  - parent 字段完全不存在：允许 source 回退；
+  - parent 字段存在但为空/无法解析：不回退 source；
   - 若 source 指向当前子树，严格拒绝；
   - 零 Frontmatter 写入。
+- 直接自环 `E1.parent=[[E1]]`：严格拒绝，零写入。
+- Cards 是遍历叶子：不继续遍历 Card 下的 Extract，不写 SR/Frontmatter。
 - 无关 Source C 坏链接：不阻塞 Source A。
 - 重复 parent/root、循环、超深：预检拒绝，零写入。
 - 非 cascade boost：单节点写入，不受无关坏链接影响。
