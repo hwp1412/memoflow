@@ -14,6 +14,7 @@ const {
   initialAFactor,
   initializeTopic,
   assertNotInitialized,
+  initialBaseRational,
 } = require('../src/scheduling/index.js');
 
 const UUID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
@@ -39,9 +40,22 @@ test('B(P) is piecewise linear inside each segment', () => {
   const segmentOne = p => 1 + (p - 1) * 2 / 49;
   const segmentTwo = p => 3 + (p - 50) * 4 / 30;
   const segmentThree = p => 7 + (p - 80) * 14 / 20;
-  for (const p of [2, 10, 25, 49]) assert.equal(baseInitialIntervalDays(p), segmentOne(p));
-  for (const p of [51, 60, 65, 79]) assert.equal(baseInitialIntervalDays(p), segmentTwo(p));
-  for (const p of [81, 85, 90, 99]) assert.equal(baseInitialIntervalDays(p), segmentThree(p));
+  const closeTo = (actual, expected) => {
+    assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} != ${expected}`);
+  };
+  for (const p of [2, 10, 25, 49]) closeTo(baseInitialIntervalDays(p), segmentOne(p));
+  for (const p of [51, 60, 65, 79]) closeTo(baseInitialIntervalDays(p), segmentTwo(p));
+  for (const p of [81, 85, 90, 99]) closeTo(baseInitialIntervalDays(p), segmentThree(p));
+});
+
+test('B(P) is held as an exact rational, not a float', () => {
+  // 1..50 => (2P+47)/49 ; 51..80 => (2P-55)/15 ; 81..100 => (7P-490)/10
+  assert.deepEqual(initialBaseRational(1), { n: 49n, d: 49n });
+  assert.deepEqual(initialBaseRational(50), { n: 147n, d: 49n });
+  assert.deepEqual(initialBaseRational(51), { n: 47n, d: 15n });
+  assert.deepEqual(initialBaseRational(80), { n: 105n, d: 15n });
+  assert.deepEqual(initialBaseRational(85), { n: 105n, d: 10n });
+  assert.deepEqual(initialBaseRational(100), { n: 210n, d: 10n });
 });
 
 test('B(P) is continuous at the segment joins', () => {
@@ -250,4 +264,85 @@ test('explanation follows SPEC A12 and states the factors used', () => {
     today: '2026-11-24',
     algorithmVersion: 1,
   });
+});
+
+// Fix 2 — new-topic contract. initializeTopic() must never turn an existing or
+// ambiguous note into a fresh active topic.
+
+test('a non-active status is never silently reactivated', () => {
+  for (const status of ['done', 'dismissed', 'container', 'inbox', 'pending']) {
+    expectCode(
+      () => initializeTopic({ type: 'source', priority: 50, mfId: UUID, status }, SPEC_CONFIG, '2026-11-24'),
+      'E_STATUS_NOT_NEW'
+    );
+  }
+  expectCode(
+    () => initializeTopic({ type: 'source', priority: 50, mfId: UUID, status: null }, SPEC_CONFIG, '2026-11-24'),
+    'E_STATUS_NOT_NEW'
+  );
+  // An explicit "active" is consistent with creation and is allowed.
+  const explicitActive = initializeTopic(
+    { type: 'source', priority: 50, mfId: UUID, status: 'active' }, SPEC_CONFIG, '2026-11-24'
+  );
+  assert.equal(explicitActive.topic.status, 'active');
+  // An omitted (undefined) status is treated as not provided.
+  const omitted = initializeTopic(
+    { type: 'source', priority: 50, mfId: UUID, status: undefined }, SPEC_CONFIG, '2026-11-24'
+  );
+  assert.equal(omitted.topic.status, 'active');
+});
+
+test('invalid review_count is an error, never "no history"', () => {
+  for (const reviewCount of [-1, 1.5, 'oops', NaN, Infinity]) {
+    expectCode(
+      () => initializeTopic({ type: 'source', priority: 50, mfId: UUID, review_count: reviewCount }, SPEC_CONFIG, '2026-11-24'),
+      'E_REVIEW_COUNT_INVALID'
+    );
+  }
+  expectCode(
+    () => initializeTopic({ type: 'source', priority: 50, mfId: UUID, review_count: 2 }, SPEC_CONFIG, '2026-11-24'),
+    'E_ALREADY_INITIALIZED'
+  );
+  const zero = initializeTopic({ type: 'source', priority: 50, mfId: UUID, review_count: 0 }, SPEC_CONFIG, '2026-11-24');
+  assert.equal(zero.topic.review_count, 0);
+});
+
+test('illegal or ambiguous scheduling fields are explicit errors', () => {
+  const base = { type: 'source', priority: 50, mfId: UUID };
+  const run = extra => () => initializeTopic({ ...base, ...extra }, SPEC_CONFIG, '2026-11-24');
+
+  // Present but wrong type => state-field error (not "no history").
+  expectCode(run({ a_factor: 'oops' }), 'E_STATE_FIELD_INVALID');
+  expectCode(run({ a_factor: null }), 'E_STATE_FIELD_INVALID');
+  expectCode(run({ mf_interval_days: '8' }), 'E_STATE_FIELD_INVALID');
+  expectCode(run({ interval: {} }), 'E_STATE_FIELD_INVALID');
+  expectCode(run({ last_reviewed: null }), 'E_STATE_FIELD_INVALID');
+  expectCode(run({ next_review: '' }), 'E_STATE_FIELD_INVALID');
+  expectCode(run({ mf_ideal_due: 20261124 }), 'E_STATE_FIELD_INVALID');
+
+  // Well-formed but non-empty state => already initialised.
+  expectCode(run({ a_factor: 1.5 }), 'E_ALREADY_INITIALIZED');
+  expectCode(run({ mf_interval_days: 8 }), 'E_ALREADY_INITIALIZED');
+  expectCode(run({ interval: 8 }), 'E_ALREADY_INITIALIZED');
+  expectCode(run({ last_reviewed: '2026-11-01' }), 'E_ALREADY_INITIALIZED');
+  expectCode(run({ next_review: '2026-12-01' }), 'E_ALREADY_INITIALIZED');
+  expectCode(run({ mf_ideal_due: '2026-12-01' }), 'E_ALREADY_INITIALIZED');
+  expectCode(run({ mf_not_before: '2026-12-01' }), 'E_ALREADY_INITIALIZED');
+
+  // Any MF-US-1 bookkeeping field means the note already has MF-US-1 state.
+  expectCode(run({ mf_last_event_id: null }), 'E_ALREADY_INITIALIZED');
+  expectCode(run({ mf_revision: 0 }), 'E_ALREADY_INITIALIZED');
+  expectCode(run({ mf_scheduler_version: 1 }), 'E_ALREADY_INITIALIZED');
+});
+
+test('the new-topic contract rejects before any output is produced', () => {
+  let threw = false;
+  try {
+    initializeTopic({ type: 'source', priority: 50, mfId: UUID, status: 'done' }, SPEC_CONFIG, '2026-11-24');
+  } catch (error) {
+    threw = true;
+    assert.equal(error.code, 'E_STATUS_NOT_NEW');
+    assert.deepEqual(error.details, { field: 'status', value: 'done' });
+  }
+  assert.equal(threw, true);
 });

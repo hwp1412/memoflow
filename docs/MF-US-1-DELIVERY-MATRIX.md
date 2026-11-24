@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-CORE-01（PR-01）
+> 最后更新：P2-US1-CORE-01 r2（PR-01 取整精度与新建契约修复）
 
 ## 0. 状态定义
 
@@ -23,17 +23,17 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 
 | # | ID | 功能 | 规范条款 | 状态 | PR | 备注 |
 |---:|---|---|---|---|---|---|
-| 1 | SCH-SCHEMA-01 | 旧/新字段与数据不变量校验（P/I/A 范围、类型、非法值报错） | A1.4, A2.1, A2.2 | `TESTED` | 01 | 纯校验，不修复数据 |
+| 1 | SCH-SCHEMA-01 | 旧/新字段与数据不变量校验（P/I/A 范围、类型、非法值报错） | A1.4, A2.1, A2.2 | `TESTED` | 01 | 纯校验，不修复数据；含新建契约状态字段校验 |
 | 2 | SCH-SCHEMA-02 | 算法版本、错误码契约、配置防篡改 | A2.2, A9, A15 | `TESTED` | 01 | `E_CONFIG_SPEC_VIOLATION` 防止参数被覆盖 |
 | 3 | DATE-01 | 严格四位 ISO 本地日历日期解析 | A2.3, Q3 | `TESTED` | 01 | 0001-01-01 ~ 9999-12-31 |
 | 4 | DATE-02 | 日历加减与自然日差值（整数运算） | A2.3 | `TESTED` | 01 | 无 `Date`、无时区、无 DST |
 | 5 | DATE-03 | 跨月/闰年/跨年/DST/非法日期/越界 | A2.3, A13 T15 | `TESTED` | 01 | 1900/2000/2100 闰年规则已测 |
 | 6 | INIT-01 | B(P) 四锚点分段线性插值 | A3.2 | `TESTED` | 01 | 锚点精确命中 1/3/7/21 |
-| 7 | INIT-02 | 类型系数 K、half-up 取整、I0 钳制 1..30 | A3.1, A3.3 | `TESTED` | 01 | 含十进制守卫，防浮点半值误差 |
+| 7 | INIT-02 | 类型系数 K、half-up 取整、I0 钳制 1..30 | A3.1, A3.3 | `TESTED` | 01 | r2：B(P) 与 K 以精确有理数计算，无浮点路径 |
 | 8 | INIT-03 | 初始 A-Factor（Source 1.50 / Extract 1.80） | A3.1 | `TESTED` | 01 | |
-| 9 | INIT-04 | 新建 Topic 字段初始化（active、`mf_not_before=null`、`review_count=0`、version=1） | A3.3, A8 | `TESTED` | 01 | 不生成 ID、不读时钟 |
+| 9 | INIT-04 | 新建 Topic 字段初始化（active、`mf_not_before=null`、`review_count=0`、version=1） | A3.3, A8 | `TESTED` | 01 | 不生成 ID、不读时钟；r2：非 active/非法历史一律显式报错 |
 | 10 | INIT-05 | 父子继承与创建语义（只继承 Priority 数值；不改父节点） | A3.4 | `NOT_STARTED` | 06 | 需适配器与 ID 映射 |
-| 11 | REV-01 | 后续间隔 `clamp(roundHalfUp(I×A),1,3650)` 与“不重新初始化”保护 | A4.1, A13 T11 | `TESTED` | 01 | 与 Priority 无关 |
+| 11 | REV-01 | 后续间隔 `clamp(roundHalfUp(I×A),1,3650)` 与“不重新初始化”保护 | A4.1, A13 T11 | `TESTED` | 01 | 与 Priority 无关；r2：I×A 精确十进制，无容差吸附 |
 | 12 | EVT-01 | ADVANCED / HOLD / SOON 评阅 | A4.2 | `NOT_STARTED` | 02 | |
 | 13 | EVT-02 | COMPLETE / DISMISS | A4.3, A8 | `NOT_STARTED` | 02 | |
 | 14 | EVT-03 | REACTIVATE 与恢复日期策略 | A4.3 | `NOT_STARTED` | 02 | 待裁决 Q5 |

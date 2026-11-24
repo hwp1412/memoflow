@@ -7,6 +7,11 @@
 // the parent here — hierarchy wiring is an adapter concern (PR-06), and SPEC
 // A3.4 forbids treating creation as a parent review.
 //
+// New-topic contract (owner review, fix 2): initializeTopic() only accepts an
+// input that cannot be an existing topic. Non-active status, invalid history
+// counters, or any MF-US-1/legacy scheduling field present => explicit error.
+// The core never silently reactivates state it did not create.
+//
 // Re-initialisation guard (SPEC A4.1, T11): initializeTopic() refuses a topic
 // that already carries scheduling state. It never recomputes an existing
 // interval from Priority.
@@ -22,57 +27,110 @@ const {
   validateOptionalUuid,
 } = require('./schema.js');
 const { assertDateString, addCalendarDays } = require('./dates.js');
-const { roundHalfUp, clamp, formatNumber } = require('./interval.js');
+const { clamp, formatNumber } = require('./interval.js');
+const { multiplyRationals, roundHalfUpRational, toSafeNumber } = require('./decimal.js');
 
-// Any of these means "this topic already exists" and must not be re-initialised.
-const EXISTING_STATE_FIELDS = [
-  'mf_interval_days',
-  'mf_ideal_due',
-  'interval',
-  'next_review',
-  'a_factor',
+const NEW_TOPIC_STATUS = 'active';
+const NUMERIC_STATE_FIELDS = ['mf_interval_days', 'interval', 'a_factor'];
+const DATE_STATE_FIELDS = ['last_reviewed', 'next_review', 'mf_ideal_due', 'mf_not_before'];
+const OPAQUE_STATE_FIELDS = ['mf_last_event_id', 'mf_revision', 'mf_scheduler_version'];
+const STATE_FIELDS = [
+  'status',
   'review_count',
-  'last_reviewed',
+  ...NUMERIC_STATE_FIELDS,
+  ...DATE_STATE_FIELDS,
+  ...OPAQUE_STATE_FIELDS,
 ];
 
-function hasMeaningfulState(field, value) {
-  if (value == null || value === '') return false;
-  if (field === 'review_count') return Number(value) > 0;
-  return true;
+function hasValue(input, field) {
+  return Object.prototype.hasOwnProperty.call(input, field) && input[field] !== undefined;
 }
 
+// SPEC A3.2 — piecewise linear B(P) through the four anchors, held as an exact
+// rational so I0 never depends on float representation.
+//   1..50    : 1 + (P-1)*2/49   = (2P + 47) / 49
+//   51..80   : 3 + (P-50)*4/30  = (2P - 55) / 15
+//   81..100  : 7 + (P-80)*14/20 = (7P - 490) / 10
+function initialBaseRational(priority) {
+  if (priority <= 50) return { n: BigInt(2 * priority + 47), d: 49n };
+  if (priority <= 80) return { n: BigInt(2 * priority - 55), d: 15n };
+  return { n: BigInt(7 * priority - 490), d: 10n };
+}
+
+const TYPE_K_RATIONAL = {
+  source: { n: 1n, d: 1n },
+  extract: { n: 3n, d: 4n }, // SPEC A3.1: K_extract = 0.75
+};
+
+// Any of these means "this topic already exists" (or is ambiguous) and must not
+// be initialised. Illegal values are reported as such instead of being read as
+// "no history".
 function assertNotInitialized(input) {
-  for (const field of EXISTING_STATE_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(input, field)) continue;
-    if (!hasMeaningfulState(field, input[field])) continue;
+  if (hasValue(input, 'status') && input.status !== NEW_TOPIC_STATUS) {
+    fail(
+      'E_STATUS_NOT_NEW',
+      `status must be absent or "${NEW_TOPIC_STATUS}" for a new topic; initializeTopic() never reactivates existing state (SPEC A8)`,
+      { field: 'status', value: input.status }
+    );
+  }
+
+  if (hasValue(input, 'review_count')) {
+    const value = input.review_count;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+      fail('E_REVIEW_COUNT_INVALID', 'review_count must be a non-negative integer', { field: 'review_count', value });
+    }
+    if (value > 0) {
+      fail('E_ALREADY_INITIALIZED', 'topic already has review history; initializeTopic() only creates new topics', { field: 'review_count', value });
+    }
+  }
+
+  for (const field of NUMERIC_STATE_FIELDS) {
+    if (!hasValue(input, field)) continue;
+    const value = input[field];
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      fail('E_STATE_FIELD_INVALID', `${field} is present but is not a finite number`, { field, value });
+    }
     fail(
       'E_ALREADY_INITIALIZED',
       `topic already carries ${field}; initializeTopic() only creates new topics and never re-derives an existing interval (SPEC A4.1)`,
-      { field, value: input[field] }
+      { field, value }
     );
+  }
+
+  for (const field of DATE_STATE_FIELDS) {
+    if (!hasValue(input, field)) continue;
+    const value = input[field];
+    if (typeof value !== 'string' || value === '') {
+      fail('E_STATE_FIELD_INVALID', `${field} is present but is not a date string`, { field, value });
+    }
+    fail('E_ALREADY_INITIALIZED', `topic already carries ${field}; initializeTopic() only creates new topics`, { field, value });
+  }
+
+  for (const field of OPAQUE_STATE_FIELDS) {
+    if (!hasValue(input, field)) continue;
+    fail('E_ALREADY_INITIALIZED', `topic already carries ${field}; initializeTopic() only creates new topics`, { field, value: input[field] });
   }
 }
 
-// SPEC A3.2 — piecewise linear B(P) through the four anchors.
+// Public float view of B(P) for explanations and tests. The rounding itself
+// always uses initialBaseRational(), never this float.
 function baseInitialIntervalDays(priority, config = SPEC_CONFIG) {
   const cfg = assertConfig(config);
   const p = validatePriority(priority);
-  if (p <= 50) return 1 + (p - 1) * 2 / 49;
-  if (p <= 80) return 3 + (p - 50) * 4 / 30;
-  return 7 + (p - 80) * 14 / 20;
+  const rational = initialBaseRational(p);
+  return Number(rational.n) / Number(rational.d);
 }
 
-// SPEC A3.3 — I0 = clamp(roundHalfUp(B(P) × K_type), 1, 30).
+// SPEC A3.3 — I0 = clamp(roundHalfUp(B(P) × K_type), 1, 30), computed exactly.
 function initialIntervalDays(input, config = SPEC_CONFIG) {
   const cfg = assertConfig(config);
   assertPlainObject(input, 'initial interval input');
   const type = validateTopicType(input.type);
   const priority = validatePriority(input.priority);
-  const base = baseInitialIntervalDays(priority, cfg);
-  const kFactor = cfg.kFactor[type];
+  const product = multiplyRationals(initialBaseRational(priority), TYPE_K_RATIONAL[type]);
+  const rounded = toSafeNumber(roundHalfUpRational(product), 'initial interval');
   const { min, max } = cfg.initialIntervalRange;
-  const intervalDays = clamp(roundHalfUp(base * kFactor), min, max);
-  return intervalDays;
+  return clamp(rounded, min, max);
 }
 
 // SPEC A3.1 — initial A-Factor per topic type.
@@ -113,7 +171,7 @@ function initializeTopic(input, config = SPEC_CONFIG, today = undefined) {
   const topic = {
     type,
     priority,
-    status: 'active', // SPEC A8: creation -> active
+    status: NEW_TOPIC_STATUS, // SPEC A8: creation -> active
     mf_id: mfId,
     mf_parent_id: mfParentId,
     mf_root_id: mfRootId,
@@ -154,8 +212,13 @@ function initializeTopic(input, config = SPEC_CONFIG, today = undefined) {
 }
 
 module.exports = {
-  EXISTING_STATE_FIELDS,
+  NEW_TOPIC_STATUS,
+  NUMERIC_STATE_FIELDS,
+  DATE_STATE_FIELDS,
+  OPAQUE_STATE_FIELDS,
+  STATE_FIELDS,
   assertNotInitialized,
+  initialBaseRational,
   baseInitialIntervalDays,
   initialIntervalDays,
   initialAFactor,
