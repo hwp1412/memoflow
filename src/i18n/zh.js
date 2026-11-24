@@ -7,6 +7,8 @@ const COMMAND_NAMES = {
   'next-element': '下一项',
   'end-session': '评阅当前阅读项',
   'extract-selection': '从选中内容摘录',
+  'memoflow-refine-extract': '原位精简当前摘录',
+  'memoflow-restore-refine': '恢复上次精简',
   'flashcard-clipboard': '从剪贴板制卡',
   'capture-more': '采集或新建…',
   'current-actions': '当前阅读项操作…',
