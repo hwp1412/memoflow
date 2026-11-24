@@ -1,6 +1,8 @@
 'use strict';
 
 const SCHEMA_VERSION = 1;
+const VERSION_RESTORE_SCHEMA_VERSION = 2;
+const SUPPORTED_OPERATION_SCHEMAS = new Set([SCHEMA_VERSION, VERSION_RESTORE_SCHEMA_VERSION]);
 const STATUSES = Object.freeze(['prepared', 'applied', 'verified', 'restored', 'failed', 'conflict']);
 const UNRESOLVED_STATUSES = new Set(['prepared', 'applied', 'conflict', 'failed']);
 const TRANSITIONS = Object.freeze({
@@ -238,9 +240,43 @@ async function createRefineOperation({
   return operation;
 }
 
+function validateRestoreTargetShape(operation, afterBodyHash, afterBodyBytes) {
+  if (!operation.restoreOf || !isValidOperationId(operation.restoreOf)) {
+    throw new RefineError('INVALID_RESTORE_TARGET', 'v2 restore requires restoreOf');
+  }
+  const target = operation.restoreTarget;
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    throw new RefineError('INVALID_RESTORE_TARGET', 'v2 operation requires restoreTarget');
+  }
+  if (!isValidOperationId(target.operationId)) {
+    throw new RefineError('INVALID_RESTORE_TARGET', 'restoreTarget.operationId must be a UUID');
+  }
+  if (target.operationId !== operation.restoreOf) {
+    throw new RefineError('RESTORE_TARGET_MISMATCH', 'restoreTarget.operationId must equal restoreOf');
+  }
+  if (target.operationId === operation.operationId) {
+    throw new RefineError('RESTORE_CYCLE', 'restoreTarget must not reference itself');
+  }
+  if (target.side !== 'before' && target.side !== 'after') {
+    throw new RefineError('INVALID_RESTORE_TARGET', 'restoreTarget.side must be before or after');
+  }
+  if (target.bodyHash !== afterBodyHash) {
+    throw new RefineError('RESTORE_TARGET_HASH_MISMATCH', 'restoreTarget.bodyHash must match after body');
+  }
+  if (target.bodyBytes !== afterBodyBytes) {
+    throw new RefineError('RESTORE_TARGET_HASH_MISMATCH', 'restoreTarget.bodyBytes must match after body');
+  }
+}
+
 async function validateOperationIntegrity(operation) {
   if (!operation || typeof operation !== 'object') throw new RefineError('INVALID_HISTORY', 'history record is not an object');
-  if (operation.schemaVersion !== SCHEMA_VERSION) throw new RefineError('UNSUPPORTED_SCHEMA', 'unsupported history schema');
+  const schemaVersion = operation.schemaVersion;
+  if (!SUPPORTED_OPERATION_SCHEMAS.has(schemaVersion)) {
+    throw new RefineError('UNSUPPORTED_SCHEMA', 'unsupported history schema');
+  }
+  if (schemaVersion === SCHEMA_VERSION && operation.restoreTarget != null) {
+    throw new RefineError('INVALID_RESTORE_TARGET', 'v1 operation must not contain restoreTarget');
+  }
   validateIdentity({
     operationId: operation.operationId,
     notePath: operation.note && operation.note.path,
@@ -292,6 +328,9 @@ async function validateOperationIntegrity(operation) {
     || operation.after.bodyBytes !== utf8Bytes(operation.after.body)
     || operation.after.fullBytes !== utf8Bytes(afterContent)) {
     throw new RefineError('HISTORY_INTEGRITY', 'after hashes do not match');
+  }
+  if (schemaVersion === VERSION_RESTORE_SCHEMA_VERSION) {
+    validateRestoreTargetShape(operation, afterBodyHash, utf8Bytes(operation.after.body));
   }
   if (utf8Bytes(operation.after.body) > MAX_NOTE_BYTES || utf8Bytes(JSON.stringify(operation)) > MAX_HISTORY_BYTES) {
     throw new RefineError('HISTORY_TOO_LARGE', 'history exceeds size limit');
@@ -399,7 +438,177 @@ async function createRestoreOperation({
   return operation;
 }
 
-async function validateRestoreRelationship(operation, referencedOperation) {
+async function createVersionRestoreOperation({
+  operationId,
+  currentContent,
+  currentNotePath,
+  targetOperation,
+  targetSide = 'after',
+  createdAt = new Date().toISOString(),
+  toolVersion = '1.0.0',
+}) {
+  const currentType = requireCurrentExtractType(currentContent);
+  validateIdentity({ operationId, notePath: currentNotePath, noteType: currentType, createdAt, toolVersion });
+  if (targetSide !== 'before' && targetSide !== 'after') {
+    throw new RefineError('INVALID_RESTORE_TARGET', 'targetSide must be before or after');
+  }
+  await validateOperationIntegrity(targetOperation);
+  if (targetOperation.note.path !== currentNotePath) {
+    throw new RefineError('RESTORE_CROSS_NOTE', 'restore target belongs to another note');
+  }
+  const targetBody = targetSide === 'before' ? targetOperation.before.body : targetOperation.after.body;
+  const targetBodyHash = await sha256Text(targetBody);
+  const targetBodyBytes = utf8Bytes(targetBody);
+  if (utf8Bytes(currentContent) > MAX_NOTE_BYTES) {
+    throw new RefineError('NOTE_TOO_LARGE', 'current note exceeds size limit');
+  }
+  const current = await buildSnapshot(currentContent);
+  const afterContent = current.split.prefix + targetBody;
+  if (utf8Bytes(afterContent) > MAX_NOTE_BYTES) {
+    throw new RefineError('NOTE_TOO_LARGE', 'restored note exceeds size limit');
+  }
+  const afterFullHash = await sha256Text(afterContent);
+  const operation = {
+    schemaVersion: VERSION_RESTORE_SCHEMA_VERSION,
+    operationId,
+    createdAt,
+    toolVersion,
+    restoreOf: targetOperation.operationId,
+    restoreTarget: {
+      operationId: targetOperation.operationId,
+      side: targetSide,
+      bodyHash: targetBodyHash,
+      bodyBytes: targetBodyBytes,
+    },
+    note: {
+      path: currentNotePath,
+      type: NOTE_TYPE,
+      bodyStart: current.split.bodyStart,
+      bodyBytes: utf8Bytes(current.split.body),
+      fullBytes: utf8Bytes(currentContent),
+      frontmatterHash: current.prefixHash,
+      bodyHash: current.bodyHash,
+      fullHash: current.fullHash,
+    },
+    before: {
+      fullContent: currentContent,
+      frontmatter: current.split.prefix,
+      body: current.split.body,
+    },
+    after: {
+      body: targetBody,
+      bodyBytes: targetBodyBytes,
+      fullBytes: utf8Bytes(afterContent),
+      frontmatterHash: current.prefixHash,
+      bodyHash: targetBodyHash,
+      fullHash: afterFullHash,
+    },
+    selection: {
+      start: 0,
+      end: current.split.body.length,
+      selectedText: current.split.body,
+      replacementText: targetBody,
+    },
+  };
+  if (utf8Bytes(JSON.stringify(operation)) > MAX_HISTORY_BYTES) {
+    throw new RefineError('HISTORY_TOO_LARGE', 'version restore history exceeds size limit');
+  }
+  await validateOperationIntegrity(operation);
+  return operation;
+}
+
+function assertNoRestoreCycle(operation, operationsById = null) {
+  if (!operation || !operation.operationId) return;
+  const seen = new Set();
+  let current = operation;
+  while (current && current.restoreOf) {
+    if (current.restoreOf === operation.operationId) {
+      throw new RefineError('RESTORE_CYCLE', 'restoreOf cycle detected');
+    }
+    if (seen.has(current.restoreOf)) {
+      throw new RefineError('RESTORE_CYCLE', 'restoreOf cycle detected');
+    }
+    seen.add(current.restoreOf);
+    if (!operationsById || !operationsById.has(current.restoreOf)) break;
+    current = operationsById.get(current.restoreOf);
+  }
+}
+
+function classifyCompletedEntry(entry) {
+  const operation = entry && entry.operation;
+  const state = entry && entry.state;
+  if (!operation || !state || state.missingState) {
+    throw new RefineError('UNRESOLVED_HISTORY', 'history entry state is missing');
+  }
+  if (isUnresolvedStatus(state.status)) {
+    throw new RefineError('UNRESOLVED_HISTORY', 'history entry is unresolved', { status: state.status });
+  }
+  if (!operation.restoreOf && state.status === 'restored') {
+    throw new RefineError('INVALID_HISTORY_STATE', 'ordinary refine operation cannot be restored');
+  }
+  if (operation.restoreOf && state.status === 'verified') {
+    throw new RefineError('RESTORE_PENDING', 'restore event is verified but not finalized');
+  }
+  if (state.status !== 'verified' && state.status !== 'restored') {
+    throw new RefineError('INVALID_HISTORY_STATE', `unsupported completed status: ${state.status}`);
+  }
+  return entry;
+}
+
+function latestTrustedState(entries = []) {
+  if (!entries.length) throw new RefineError('NO_TRUSTED_STATE', 'no completed history state');
+  for (const entry of entries) classifyCompletedEntry(entry);
+  const entry = entries[entries.length - 1];
+  const operation = entry.operation;
+  return {
+    entry,
+    operation,
+    state: entry.state,
+    operationId: operation.operationId,
+    bodyHash: operation.after.bodyHash,
+    bodyBytes: operation.after.bodyBytes,
+    index: entries.length - 1,
+  };
+}
+
+async function validateHistoryRelationships(entries, operationsById = null) {
+  const map = operationsById || new Map(entries.map(entry => [entry.operation.operationId, entry.operation]));
+  for (const entry of entries) {
+    const operation = entry.operation;
+    if (!operation.restoreOf) continue;
+    const referenced = map.get(operation.restoreOf);
+    if (!referenced) {
+      throw new RefineError('RESTORE_REFERENCE_MISSING', 'restoreOf does not reference an existing operation');
+    }
+    assertNoRestoreCycle(operation, map);
+    await validateRestoreRelationship(operation, referenced, { operationsById: map });
+  }
+  return true;
+}
+
+async function assertCurrentTrustedState({ entries, notePath, currentContent, editorContent = null }) {
+  await validateHistoryRelationships(entries);
+  const trusted = latestTrustedState(entries);
+  if (trusted.operation.note.path !== notePath) {
+    throw new RefineError('RESTORE_CROSS_NOTE', 'history belongs to another note');
+  }
+  if (typeof currentContent !== 'string') {
+    throw new RefineError('INVALID_CONTENT', 'currentContent is required');
+  }
+  if (editorContent != null && editorContent !== currentContent) {
+    throw new RefineError('EDITOR_NOT_SAVED', 'editor content is not saved to disk');
+  }
+  requireCurrentExtractType(currentContent);
+  const split = splitContent(currentContent);
+  const currentBodyHash = await sha256Text(split.body);
+  if (currentBodyHash !== trusted.bodyHash) {
+    throw new RefineError('CURRENT_BODY_NOT_TRUSTED', 'current body does not match latest trusted history');
+  }
+  return { trusted, split, currentBodyHash, currentBodyBytes: utf8Bytes(split.body) };
+}
+
+async function validateRestoreRelationship(operation, referencedOperation, { operationsById = null } = {}) {
+
   if (!operation || !operation.restoreOf) {
     throw new RefineError('NOT_RESTORE_OPERATION', 'operation is not a restore event');
   }
@@ -411,6 +620,24 @@ async function validateRestoreRelationship(operation, referencedOperation) {
   if (operation.note.path !== referencedOperation.note.path
     || operation.note.type !== referencedOperation.note.type) {
     throw new RefineError('RESTORE_RELATION_MISMATCH', 'restore and referenced note identities differ');
+  }
+  if (operation.schemaVersion === VERSION_RESTORE_SCHEMA_VERSION) {
+    const target = operation.restoreTarget;
+    if (!target || target.operationId !== referencedOperation.operationId) {
+      throw new RefineError('RESTORE_REFERENCE_MISSING', 'restoreTarget does not reference the target operation');
+    }
+    if (Date.parse(referencedOperation.createdAt) > Date.parse(operation.createdAt)) {
+      throw new RefineError('RESTORE_TARGET_NOT_EARLIER', 'restore target must not be newer than the restore event');
+    }
+    assertNoRestoreCycle(operation, operationsById);
+    const targetBody = target.side === 'before' ? referencedOperation.before.body : referencedOperation.after.body;
+    const targetHash = await sha256Text(targetBody);
+    if (targetHash !== target.bodyHash || target.bodyHash !== operation.after.bodyHash
+      || target.bodyBytes !== utf8Bytes(targetBody)
+      || operation.after.body !== targetBody) {
+      throw new RefineError('RESTORE_RELATION_MISMATCH', 'version restore body relationship does not match target');
+    }
+    return true;
   }
   if (operation.note.bodyHash !== referencedOperation.after.bodyHash
     || operation.after.body !== referencedOperation.before.body) {
@@ -435,6 +662,8 @@ async function planRestore({ latestOperation, currentContent, currentNotePath, c
 
 module.exports = {
   SCHEMA_VERSION,
+  VERSION_RESTORE_SCHEMA_VERSION,
+  SUPPORTED_OPERATION_SCHEMAS,
   STATUSES,
   UNRESOLVED_STATUSES,
   TRANSITIONS,
@@ -457,6 +686,12 @@ module.exports = {
   validateState,
   isUnresolvedStatus,
   createRestoreOperation,
+  createVersionRestoreOperation,
   validateRestoreRelationship,
+  assertNoRestoreCycle,
+  classifyCompletedEntry,
+  latestTrustedState,
+  assertCurrentTrustedState,
+  validateHistoryRelationships,
   planRestore,
 };

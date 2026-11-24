@@ -13,7 +13,11 @@ const {
   validateState,
   isUnresolvedStatus,
   createRestoreOperation,
+  createVersionRestoreOperation,
   validateRestoreRelationship,
+  assertCurrentTrustedState,
+  classifyCompletedEntry,
+  assertNoRestoreCycle,
   requireCurrentExtractType,
   splitContent,
   sha256Text,
@@ -380,6 +384,69 @@ class RefineHistoryStore {
       currentNoteType: currentType,
     });
     return { latest, operation };
+  }
+
+  async planVersionRestore({
+    notePath,
+    currentContent,
+    editorContent = null,
+    targetOperationId,
+    targetSide = 'after',
+  } = {}) {
+    const entries = await this.listEntries(notePath);
+    const current = await assertCurrentTrustedState({
+      entries,
+      notePath,
+      currentContent,
+      editorContent,
+    });
+    const targetIndex = entries.findIndex(entry => entry.operation.operationId === targetOperationId);
+    if (targetIndex < 0) {
+      throw new RefineError('RESTORE_TARGET_NOT_FOUND', 'restore target is not in this note history');
+    }
+    if (targetIndex > current.trusted.index) {
+      throw new RefineError('RESTORE_TARGET_NOT_EARLIER', 'restore target is newer than trusted state');
+    }
+    const targetEntry = entries[targetIndex];
+    classifyCompletedEntry(targetEntry);
+    const targetOperation = targetEntry.operation;
+    if (targetOperation.note.path !== notePath) {
+      throw new RefineError('RESTORE_CROSS_NOTE', 'restore target belongs to another note');
+    }
+    if (targetSide !== 'before' && targetSide !== 'after') {
+      throw new RefineError('INVALID_RESTORE_TARGET', 'targetSide must be before or after');
+    }
+    const targetBody = targetSide === 'before' ? targetOperation.before.body : targetOperation.after.body;
+    const targetBodyHash = await sha256Text(targetBody);
+    const targetBodyBytes = utf8Bytes(targetBody);
+    const base = {
+      operationId: current.trusted.operationId,
+      bodyHash: current.currentBodyHash,
+      bodyBytes: current.currentBodyBytes,
+      index: current.trusted.index,
+    };
+    const target = {
+      operationId: targetOperation.operationId,
+      side: targetSide,
+      bodyHash: targetBodyHash,
+      bodyBytes: targetBodyBytes,
+      status: targetEntry.state.status,
+      index: targetIndex,
+    };
+    if (targetBodyHash === current.currentBodyHash) {
+      return { status: 'noop', reason: 'TARGET_EQUALS_CURRENT', current: base, target };
+    }
+    const operation = await createVersionRestoreOperation({
+      operationId: globalThis.crypto.randomUUID(),
+      currentContent,
+      currentNotePath: notePath,
+      targetOperation,
+      targetSide,
+    });
+    const operationsById = new Map(entries.map(entry => [entry.operation.operationId, entry.operation]));
+    assertNoRestoreCycle(operation, operationsById);
+    await validateRestoreRelationship(operation, targetOperation, { operationsById });
+    return { status: 'ok', current: base, target, operation };
   }
 
   // 1A only prepares the restore history/plan. 1B must revalidate the real
