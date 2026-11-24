@@ -477,3 +477,39 @@ test('history snapshot write failure with state initialization failure is diagno
   assert.match(message, /状态初始化失败/);
   assert.doesNotMatch(message, /操作未开始/);
 });
+
+test('replacement creating a complete no-outer-pipe table is rejected', async (t) => {
+  const { app, adapter, editor, prompts, controller } = setup(t);
+  prompts.preview = async () => 'Alpha | Beta\n--- | ---\nOne | Two';
+  const before = editor.text;
+  assert.equal(await controller.refineActive(), null);
+  assert.equal(editor.text, before);
+  assert.equal(app.disk.get(NOTE_PATH), before);
+  assert.equal((await files(adapter)).length, 0);
+  assert.match(app.notices.at(-1).message, /表格/);
+});
+
+test('replacement plus surrounding context forming a table is rejected', async (t) => {
+  const text = '---\ntype: extract\n---\nAlpha | Beta\nPLACEHOLDER\n';
+  const split = splitContent(text);
+  const { app, adapter, editor, prompts, controller } = setup(t, {
+    text,
+    selectedStart: text.indexOf('PLACEHOLDER') - split.bodyStart,
+    selectedEnd: text.indexOf('PLACEHOLDER') - split.bodyStart + 'PLACEHOLDER'.length,
+  });
+  prompts.preview = async () => '--- | ---\nOne | Two';
+  assert.equal(await controller.refineActive(), null);
+  assert.equal(editor.text, text);
+  assert.equal(app.disk.get(NOTE_PATH), text);
+  assert.equal((await files(adapter)).length, 0);
+  assert.match(app.notices.at(-1).message, /表格/);
+});
+
+test('ordinary text and Markdown link replacement remains allowed', async (t) => {
+  const { editor, app, prompts, controller } = setup(t);
+  prompts.preview = async () => 'Hi [link](https://example.com)';
+  const result = await controller.refineActive();
+  assert.ok(result);
+  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi [link](https://example.com) world\n');
+  assert.equal(app.disk.get(NOTE_PATH), editor.text);
+});

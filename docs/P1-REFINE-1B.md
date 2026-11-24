@@ -88,8 +88,8 @@ active Extract
 ## 4. 测试
 
 - 1A 专项：14 + 30
-- 1B 专项：**26**
-- 全量：**321/321**
+- 1B 专项：**29**
+- 全量：**324/324**
 - `npm run check`、`npm run verify:memoflow` 通过。
 
 覆盖：
@@ -110,6 +110,9 @@ active Extract
 - 自动保存；
 - CRLF/Unicode；
 - SR/card/readpoint/code/table（含无首尾竖线的表格、表格内部选区）；
+- 替换文本单独产生表格；
+- 替换文本与上下文拼接产生表格；
+- 普通文本/Markdown 链接替换仍成功；
 - invalid inline Card/SR 正则安全拒绝；
 - Frontmatter/调度字段不变；
 - 重复恢复/恢复冲突；

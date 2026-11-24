@@ -2,15 +2,15 @@
 
 - 基线：`60aa4b9`
 - 分支：`feat/p1-refine-1b`
-- 测试：**321/321**
+- 测试：**324/324**
 - 实机：Obsidian `1.15.1`，macOS `darwin`，Electron `43.8.9`
 
 ## 自动化
 
 ```text
 node --test test/memoflow-refine-flow.test.js
-# tests 26
-# pass 26
+# tests 29
+# pass 29
 # fail 0
 
 node --test test/refine-history.test.js
@@ -24,8 +24,8 @@ node --test test/refine-store.test.js
 # fail 0
 
 node --test test/*.test.js
-# tests 321
-# pass 321
+# tests 324
+# pass 324
 # fail 0
 
 npm run check
@@ -62,4 +62,6 @@ npm run verify:memoflow
 - 未自动修复未完成状态。
 - 新增诊断：history 状态、Editor matches/differs、磁盘 matches/unchanged/differs。
 - invalid inline Card/SR 正则与无首尾竖线表格均安全拒绝。
+- 替换文本新建表格、或与上下文拼接成表格时安全拒绝。
+- 普通文本/Markdown 链接替换仍成功。
 - 历史状态文件累积，尚无清理 UI。

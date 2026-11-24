@@ -296,6 +296,14 @@ class RefineEditorController {
     if (ranges.some(range => intersects(range, start, end))) {
       throw new RefineFlowError('UNSAFE_MARKDOWN', '选区跨越代码块、表格或块级公式，第一版拒绝');
     }
+    // A replacement can create a table together with surrounding text even
+    // when neither the selection nor the replacement alone looks like one.
+    const replacementStart = start;
+    const replacementEnd = start + String(replacement).length;
+    const expectedBody = body.slice(0, start) + String(replacement) + body.slice(end);
+    if (tableRanges(expectedBody).some(range => intersects(range, replacementStart, replacementEnd))) {
+      throw new RefineFlowError('UNSAFE_MARKDOWN', '替换会新建或改变 Markdown 表格，第一版拒绝');
+    }
     const inline = this.settings?.inline_cards || {};
     for (const key of ['qa_regex', 'cloze_regex']) {
       if (!inline[key]) continue;
