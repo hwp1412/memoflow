@@ -7,7 +7,7 @@
 - 实现 Commit：`bccc8c2`
 - 安全修复 Commit：`5fb6162`
 - 验收报告 Commit：本文件所在提交（分支 HEAD）
-- PR：待创建（本机无 `gh`/API token）
+- PR：#4：<https://github.com/hwp1412/memoflow/pull/4>
 - 合并状态：**未合并**；未发布；未开始 M03 / Phase 1
 
 ## 1. 本次实现
@@ -176,10 +176,13 @@ node scripts/backup-test-vault.mjs --label m02-acceptance
 
 - 分支：`feat/m02-vault-backup-restore`
 - 安全修复 Commit：`5fb6162`
-- PR 创建链接：`https://github.com/hwp1412/memoflow/pull/new/feat/m02-vault-backup-restore`
-- 本机仍无 `gh`/API token，无法直接创建 PR；需要你点击链接创建。
-- GitHub Actions 尚未运行；CI 通过前不建议合并。
-- M02 测试已纳入 `npm test`，修复后的 `npm ci` 应可正常执行；CI 仍不构建 `dist/memoflow`（CI-BASELINE-2 范围），M02 不修改工作流。
+- PR：#4：<https://github.com/hwp1412/memoflow/pull/4>
+- GitHub Actions：**通过**。Run `45398556663`，job `138460780938`：
+  - `Run npm ci` success；
+  - `Run npm run check` success；
+  - 其他步骤 success。
+- 链接：<https://github.com/hwp1412/memoflow/actions/runs/45398556663>
+- M02 测试已纳入 `npm test`；CI 仍不构建 `dist/memoflow`（CI-BASELINE-2 范围），M02 不修改工作流。
 
 ## 9. 安全边界修复（本次补充）
 
@@ -213,6 +216,7 @@ node scripts/backup-test-vault.mjs --label m02-acceptance
    - Obsidian 检测 helper 的 running/unsupported/confirmed 分支。
 
 实际重跑：`node --test test/*.test.js` → **171 pass / 0 fail**；`npm run check` 通过。  
+GitHub Actions（Run `45398556663`）的 `npm ci` 与 `npm run check` 均通过。  
 修复后再次在一次性临时 Vault 执行 Replace 实际恢复：`diff -r --exclude='.memoflow-test-vault'` 无差异。
 
 ## 10. 建议下一任务
