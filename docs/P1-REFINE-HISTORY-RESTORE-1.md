@@ -103,6 +103,10 @@ no-op：
 
 计划不写任何文件，不保存 operation，不追加 state。
 
+**Plan 不是写入授权。**
+
+**RESTORE-2 在真正提交前必须重新读取并校验当前文件、最新可信历史、目标 operation/state、side/bodyHash/bodyBytes、引用关系与受保护结构。**
+
 ## 6. 旧历史兼容
 
 - v1 精简读取正常；
