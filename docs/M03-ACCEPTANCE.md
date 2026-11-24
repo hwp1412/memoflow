@@ -5,6 +5,7 @@
 - 分支：`test/m03-write-regression`
 - 基线 Commit：`8de610b`（M02 合并后的 main）
 - 实现 Commit：`344e624`
+- Mock 清理修正 Commit：`5a426a4`
 - 验收报告 Commit：本文件所在提交（分支 HEAD）
 - PR：待创建（本机无 `gh`/API token）
 - 合并状态：**未合并**；未发布；未开始 Phase 1 / MF-US-1
@@ -20,7 +21,7 @@
   - Mock Modal 自动响应内部 `TextPromptModal` / `ConfirmModal` / `GenericSuggestModal`；
   - 固定 `2026-11-24T12:00` 的测试时钟；
   - 不访问真实 Vault/Obsidian。
-- `test/memoflow-write-regression.test.js`：20 项特征化测试。
+- `test/memoflow-write-regression.test.js`：24 项特征化测试。
 - `docs/M03-WRITE-REGRESSION.md`：测试设计、覆盖范围、Legacy 基线。
 
 **未修改**：`src/`、根 `main.js`、`*-core.js`、`plugin/`、`dist/`、`.github/workflows/`、运行时业务代码、调度算法、SR 集成、数据格式。  
@@ -30,21 +31,21 @@
 
 ```text
 node --test test/memoflow-write-regression.test.js
-# tests 20
-# pass 20
+# tests 24
+# pass 24
 # fail 0
 
 node --test test/*.test.js
-1..192
-# tests 192
-# pass 192
+1..196
+# tests 196
+# pass 196
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
 
 npm run check
-通过（validate-release + 192 tests）
+通过（validate-release + 196 tests）
 ```
 
 M03 覆盖：
@@ -61,6 +62,7 @@ M03 覆盖：
 | 重置 | Source 调度清理；Card tags 恢复、SR 注释移除 |
 | 移出 | Source dismissed；Card 被拒绝 |
 | 日志 | 成功追加 1 行；追加失败时 scheduling 保留、日志不写、console.error |
+| Mock 清理 | 无 window 时恢复 Date 并删除 window；已有 window 时恢复 setTimeout；已有 window 无 setTimeout 时删除新增属性；Module._load 恢复 |
 
 完整日志：本地 `/tmp/m03-check.log`（不入库）。
 
@@ -142,7 +144,23 @@ M03 覆盖：
 - CI 通过 `npm ci` + `npm run check` 后，才建议合并。
 - 未合并、未发布、未进入 Phase 1。
 
-## 9. 建议下一任务
+## 9. Mock 全局状态清理修正
+
+根据审查意见补充：
+
+- `withFrozenDate()` 现在完整保存/恢复：
+  - 测试前的 `Date`；
+  - 原有的 `window`；
+  - 原有的 `window.setTimeout`（若原本存在则恢复，若原本不存在则删除新增属性）。
+- 如果测试前不存在 `window`，测试结束后删除该全局对象。
+- `Module._load` 的 `try/finally` 恢复机制保持，并新增测试验证加载后等于原函数。
+- 新增 3 项清理测试：
+  - 无 window → 恢复 Date 并删除 window；
+  - 已有 window + setTimeout → 恢复原 setTimeout；
+  - 已有 window 但无 setTimeout → 删除新增的 setTimeout。
+- M03 测试从 20 项增加到 24 项；全量测试 196 项全部通过；`npm run check` 通过。
+
+## 10. 建议下一任务
 
 **M03 范围内：无。** 等待人工验收与 PR 合并决定。  
 在明确批准前不开始 Phase 1、MF-US-1 或其他开发任务。
