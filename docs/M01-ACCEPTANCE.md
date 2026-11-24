@@ -79,6 +79,10 @@ node scripts/test-vault.js --check --json
 
 node scripts/validate-memoflow.mjs
 MemoFlow validation passed (462 KB main.js).
+
+node scripts/build.mjs   # 在 /tmp 仓库副本中执行，避免改动仓库 dist
+[build] plugin -> dist/memoflow
+462.3 KB; SHA-256 = 67ed8f79…c225c0f（与仓库现有 dist 一致）
 ```
 
 ### 4.2 负向与零写入验证
