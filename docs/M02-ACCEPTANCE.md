@@ -5,6 +5,7 @@
 - 分支：`feat/m02-vault-backup-restore`
 - 基线 Commit：`348e067`（CI-BASELINE-1 合并后的 main）
 - 实现 Commit：`bccc8c2`
+- 安全修复 Commit：`5fb6162`
 - 验收报告 Commit：本文件所在提交（分支 HEAD）
 - PR：待创建（本机无 `gh`/API token）
 - 合并状态：**未合并**；未发布；未开始 M03 / Phase 1
@@ -25,7 +26,7 @@
   - `scripts/backup-test-vault.mjs`
   - `scripts/verify-test-vault-backup.mjs`
   - `scripts/restore-test-vault.mjs`（默认 dry-run）
-- 新增 `test/vault-backup.test.js`（23 项）。
+- 新增 `test/vault-backup.test.js`（29 项）。
 - 新增 `docs/M02-TEST-VAULT-BACKUP.md`。
 - `package.json` 新增三个 npm 脚本。
 - `docs/M01-TEST-VAULT-SAFETY.md` 备份章节改为引用 M02。
@@ -36,19 +37,19 @@
 
 ```text
 node --test test/*.test.js
-1..165
-# tests 165
-# pass 165
+1..171
+# tests 171
+# pass 171
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
 
 npm run check
-通过（validate-release + 165 tests）
+通过（validate-release + 171 tests）
 ```
 
-新增 23 项测试覆盖：
+新增 29 项测试覆盖：
 
 - 备份分类计数、manifest/checksums、空目录、Unicode/空格路径；
 - `--dry-run` 零写入；
@@ -146,7 +147,7 @@ node scripts/backup-test-vault.mjs --label m02-acceptance
 
 ### 回滚
 
-1. 代码：分支未合并，删除分支或 `git revert bccc8c2`；`main` 未改。
+1. 代码：分支未合并，删除分支或 `git revert 5fb6162 bccc8c2`；`main` 未改。
 2. 数据：恢复失败时把 `<target>.before-restore-*` rename 回 `<target>`；或使用 `pre-restore` 安全快照。
 3. 中断：使用 restore journal + `--recover`，优先恢复旧目标。
 4. 现有测试库未被恢复；其备份可保留或按需删除。
@@ -174,13 +175,47 @@ node scripts/backup-test-vault.mjs --label m02-acceptance
 ## 8. PR / CI
 
 - 分支：`feat/m02-vault-backup-restore`
-- HEAD：`bccc8c2`
+- 安全修复 Commit：`5fb6162`
 - PR 创建链接：`https://github.com/hwp1412/memoflow/pull/new/feat/m02-vault-backup-restore`
 - 本机仍无 `gh`/API token，无法直接创建 PR；需要你点击链接创建。
 - GitHub Actions 尚未运行；CI 通过前不建议合并。
 - M02 测试已纳入 `npm test`，修复后的 `npm ci` 应可正常执行；CI 仍不构建 `dist/memoflow`（CI-BASELINE-2 范围），M02 不修改工作流。
 
-## 9. 建议下一任务
+## 9. 安全边界修复（本次补充）
+
+针对 `recoverInterruptedRestore()` 的审查意见，补充：
+
+1. **journal 可信关联**：
+   - journal 新增 `journalId`、`vaultId`、`markerSha256`、`backupFormat`、`backupProof`；
+   - journal 文件必须位于目标同父目录，文件名必须是 `.memoflow-restore-*.json`；
+   - journal 中的 `target`/`oldTarget`/`staging` 必须是同一父目录下的合法恢复路径；
+   - 必须通过 `verifyBackup` 并校验备份格式与 backup proof 哈希。
+2. **旧目录改名后的身份校验**：
+   - 不调用 `validateTestVault(oldTarget)` 简单绕过；
+   - 读取旧目录标记，验证其 `kind`/`version`/`vaultName`/`vaultId`/`markerSha256`；
+   - 旧目录标记的 `pathHash` 必须等于**原 target 路径**的哈希，证明该目录是从 target 改名而来；
+   - target 与 oldTarget 的 `vaultId` 必须一致，且都等于 journal 中的 `vaultId`；
+   - target 本身仍必须通过 `validateTestVault`。
+3. **恢复前 Obsidian 检查**：
+   - `restore-test-vault.mjs --recover` 调用 `assertObsidianClosedForTarget`；
+   - 默认测试库在 Obsidian 运行时拒绝；
+   - 无法检测平台时要求 `--confirm-obsidian-closed`。
+4. **失败处理**：
+   - target + old 同时存在时优先恢复旧目标；
+   - 若旧目标换回后校验失败，尝试把新目标换回并报告；
+   - 不在校验失败时删除 journal/旧目录。
+5. **新增负向测试**：
+   - journal 不在目标父目录；
+   - 旧目录 marker 的 pathHash 不属于 target；
+   - journal vaultId / marker hash 不匹配；
+   - backup proof 不匹配；
+   - journalId 非法、journal 为 symlink；
+   - Obsidian 检测 helper 的 running/unsupported/confirmed 分支。
+
+实际重跑：`node --test test/*.test.js` → **171 pass / 0 fail**；`npm run check` 通过。  
+修复后再次在一次性临时 Vault 执行 Replace 实际恢复：`diff -r --exclude='.memoflow-test-vault'` 无差异。
+
+## 10. 建议下一任务
 
 **M02 范围内：无。** 等待人工验收与 PR 合并决定。  
 在明确批准前不开始 M03、Phase 1 或其他开发任务。

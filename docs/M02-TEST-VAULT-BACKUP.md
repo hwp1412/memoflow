@@ -183,6 +183,11 @@ node scripts/restore-test-vault.mjs --recover --journal "<journal>"
    - 这不是整体原子事务；中间崩溃会留下可恢复目录状态。
 5. **替换后校验**：失败时把新目标移到 `.failed-restore-*`，旧目标换回。
 6. **中断恢复**：journal 位于目标同父目录 `.memoflow-restore-<timestamp>.json`；使用 `--recover --journal` 优先恢复旧目标。
+   - journal 必须包含 `journalId`、`vaultId`、`markerSha256`、`backupFormat`、`backupProof`；
+   - 恢复前必须通过备份校验、journal 路径/父目录校验、target/old 标记的身份校验；
+   - 旧目录标记的 `pathHash` 必须等于原 target 路径的哈希（允许目录改名，但不绕过 M01 规则）；
+   - target 与 oldTarget 的 `vaultId`/标记哈希必须与 journal 一致；
+   - `--recover` 对默认测试库也检查 Obsidian 是否运行。
 7. 旧目标与安全快照不自动删除，供人工核对/回滚。
 
 ## 8. Obsidian 运行检查
@@ -191,6 +196,7 @@ node scripts/restore-test-vault.mjs --recover --journal "<journal>"
 - macOS：`pgrep -x Obsidian`；Linux：`pgrep -x obsidian`；Windows：`tasklist`。
 - 检测到运行：拒绝。
 - 平台无法检测：要求显式 `--confirm-obsidian-closed`。
+- `restore-test-vault.mjs --recover` 同样执行该检查。
 - 一次性临时 Vault 不受该限制；自动化测试使用临时 Vault。
 
 ## 9. 当前测试库基线
