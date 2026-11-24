@@ -1,7 +1,7 @@
 # Phase 1 子摘录创建 — 验收报告
 
 - 任务：Phase 1 第一项最小功能 — 从已有 Extract 创建子 Extract
-- 当前状态：已同步 P1-SAFETY-1，待项目所有者人工验收
+- 当前状态：已同步 P1-SAFETY-1；实机验收已完成，待项目所有者最终验收
 - 分支：`feat/phase1-child-extract`
 - 基线 Commit：`efb901f`（P1-SAFETY-1 合并后的 main）
 - 实现范围：MemoFlow `createTimestampExtract` / `clipboardExtract`
@@ -141,7 +141,8 @@ Phase 1 分支已合并 main `efb901f`（P1-SAFETY-1）：
   - 备份：`MemoFlow-Backups/2026-11-24_220430_phase1-child-extract`
   - `verify:test-vault-backup`：通过（44 files / 11 directories / 14.40 MiB）
   - 最终 `diff -rq` 与备份一致，44 个文件。
-- 临时 Obsidian Vault 的五级手工验收：**待项目所有者完成**（本报告不把 Mock 测试冒充实机验收）。
+- 实机验收已完成：使用 MemoFlow-Test + 真实 Obsidian 运行时临时验收插件；结果见 `docs/PHASE1-RUNTIME-ACCEPTANCE.md`。
+- 临时验收插件和测试笔记已清理；详细证据在 `/Users/Admin/Documents/插件开发/Phase1-验收证据/`。
 - 验收步骤：
   1. 备份现有测试库；
   2. 用备份恢复/复制到一次性临时 Vault，初始化测试标记；
