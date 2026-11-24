@@ -1,0 +1,125 @@
+# MemoFlow 1.0 — MF-US-1 交付矩阵
+
+> 文档 ID：MF-US-1-DELIVERY-MATRIX
+> 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
+> 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
+> 最后更新：P2-US1-CORE-01 r2（PR-01 取整精度与新建契约修复）
+
+## 0. 状态定义
+
+| 状态 | 含义 |
+|---|---|
+| `NOT_STARTED` | 尚未实现 |
+| `IN_PROGRESS` | 部分实现，规范要求未覆盖完整 |
+| `IMPLEMENTED` | 代码已实现，未达测试门槛 |
+| `TESTED` | 规范相关单元测试 + 性质测试通过（纯算法层） |
+| `INTEGRATED` | 已接入真实读写入口并通过回归 |
+| `ACCEPTED` | 通过项目所有者实机/验收 |
+| `BLOCKED` | 存在需裁决或依赖的阻塞项 |
+
+## 1. 模块矩阵（41 项）
+
+PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 **41 项**，以此表为准。
+
+| # | ID | 功能 | 规范条款 | 状态 | PR | 备注 |
+|---:|---|---|---|---|---|---|
+| 1 | SCH-SCHEMA-01 | 旧/新字段与数据不变量校验（P/I/A 范围、类型、非法值报错） | A1.4, A2.1, A2.2 | `TESTED` | 01 | 纯校验，不修复数据；含新建契约状态字段校验 |
+| 2 | SCH-SCHEMA-02 | 算法版本、错误码契约、配置防篡改 | A2.2, A9, A15 | `TESTED` | 01 | `E_CONFIG_SPEC_VIOLATION` 防止参数被覆盖 |
+| 3 | DATE-01 | 严格四位 ISO 本地日历日期解析 | A2.3, Q3 | `TESTED` | 01 | 0001-01-01 ~ 9999-12-31 |
+| 4 | DATE-02 | 日历加减与自然日差值（整数运算） | A2.3 | `TESTED` | 01 | 无 `Date`、无时区、无 DST |
+| 5 | DATE-03 | 跨月/闰年/跨年/DST/非法日期/越界 | A2.3, A13 T15 | `TESTED` | 01 | 1900/2000/2100 闰年规则已测 |
+| 6 | INIT-01 | B(P) 四锚点分段线性插值 | A3.2 | `TESTED` | 01 | 锚点精确命中 1/3/7/21 |
+| 7 | INIT-02 | 类型系数 K、half-up 取整、I0 钳制 1..30 | A3.1, A3.3 | `TESTED` | 01 | r2：B(P) 与 K 以精确有理数计算，无浮点路径 |
+| 8 | INIT-03 | 初始 A-Factor（Source 1.50 / Extract 1.80） | A3.1 | `TESTED` | 01 | |
+| 9 | INIT-04 | 新建 Topic 字段初始化（active、`mf_not_before=null`、`review_count=0`、version=1） | A3.3, A8 | `TESTED` | 01 | 不生成 ID、不读时钟；r2：非 active/非法历史一律显式报错 |
+| 10 | INIT-05 | 父子继承与创建语义（只继承 Priority 数值；不改父节点） | A3.4 | `NOT_STARTED` | 06 | 需适配器与 ID 映射 |
+| 11 | REV-01 | 后续间隔 `clamp(roundHalfUp(I×A),1,3650)` 与“不重新初始化”保护 | A4.1, A13 T11 | `TESTED` | 01 | 与 Priority 无关；r2：I×A 精确十进制，无容差吸附 |
+| 12 | EVT-01 | ADVANCED / HOLD / SOON 评阅 | A4.2 | `NOT_STARTED` | 02 | |
+| 13 | EVT-02 | COMPLETE / DISMISS | A4.3, A8 | `NOT_STARTED` | 02 | |
+| 14 | EVT-03 | REACTIVATE 与恢复日期策略 | A4.3 | `NOT_STARTED` | 02 | 待裁决 Q5 |
+| 15 | EVT-04 | SKIP（不改任何学习字段） | A5.1 | `NOT_STARTED` | 02 | 待裁决 Q6 |
+| 16 | EVT-05 | POSTPONE（只写 `mf_not_before`） | A5.2 | `NOT_STARTED` | 02 | |
+| 17 | EVT-06 | MANUAL_SCHEDULE（写 `mf_ideal_due`、保留间隔） | A5.3 | `NOT_STARTED` | 02 | |
+| 18 | EVT-07 | SET_PRIORITY（不重排理想日期） | A5.4, A13 T10 | `NOT_STARTED` | 02 | |
+| 19 | EVT-08 | 事件对象契约、`eventId` 幂等、`mf_revision` 乐观并发 | A8, A13 T13 | `NOT_STARTED` | 02 | 待裁决 Q9 |
+| 20 | DUE-01 | Ideal Due / Not Before / Effective Due 三日期语义与分别统计 | A2.4 | `NOT_STARTED` | 02 | |
+| 21 | QUEUE-01 | 到期候选筛选（仅 Source/Extract、可调度状态） | A6.1 | `NOT_STARTED` | 03 | |
+| 22 | QUEUE-02 | Priority 排序、逾期补偿、五级稳定键 | A6.2, A13 T14 | `NOT_STARTED` | 03 | |
+| 23 | QUEUE-03 | 每日时间预算与贪心选择 | A6.3 | `NOT_STARTED` | 03 | 待裁决 Q4 |
+| 24 | QUEUE-04 | 未来 7 天负荷统计 | A6.4 | `NOT_STARTED` | 03 | |
+| 25 | QUEUE-05 | 排期解释（算法日期 vs 行政日期分离） | A12 | `IN_PROGRESS` | 01→03 | PR-01 已提供首次/后续两条解释器 |
+| 26 | MERCY-01 | Mercy 分配（明天起 W 槽、预算、超载标记） | A7.2 | `NOT_STARTED` | 04 | |
+| 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `NOT_STARTED` | 04 | |
+| 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `NOT_STARTED` | 04 | 待裁决 Q10 |
+| 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→04 | 已交付 `initializeTopic` |
+| 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `NOT_STARTED` | 07/09 | |
+| 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `NOT_STARTED` | 06 | |
+| 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `NOT_STARTED` | 08 | 写库需单独授权 |
+| 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `NOT_STARTED` | 06 | 待裁决 Q8 |
+| 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `NOT_STARTED` | 09 | |
+| 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |
+| 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
+| 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→05 | 见 §2 |
+| 38 | TEST-02 | 性质测试（9 条） | A13.1 | `IN_PROGRESS` | 01→05 | 见 §3 |
+| 39 | TEST-03 | 离线模拟（8 场景、8 指标） | A13.2 | `NOT_STARTED` | 05 | |
+| 40 | TEST-04 | 性能基准（10k Topic 队列 < 500ms） | A14 | `NOT_STARTED` | 05 | |
+| 41 | ACC-01 | 隔离 Vault 实机验收与发布门槛 | A14 | `NOT_STARTED` | 12 | 禁碰 `MemoFlow-Test` |
+
+## 2. 规范测试 T01–T20 覆盖
+
+按规范原文核对：**共 20 条**（T01–T20）。
+
+| ID | 内容 | 状态 | 证据 |
+|---|---|---|---|
+| T01 | 新 P50 Source → I0=3 | `PASS` | `mf-us-1-initial.test.js` |
+| T02 | 新 P50 Extract → I0=2 | `PASS` | 同上 |
+| T03 | 新 P1 Source → I0=1 | `PASS` | 同上 |
+| T04 | 新 P100 Source → I0=21 | `PASS` | 同上 |
+| T05 | I=3,A=1.5,ADVANCED → 5 | `PASS` | `mf-us-1-interval.test.js` |
+| T06 | I=8,HOLD → 8 | `TODO` | PR-02（HOLD 事件语义） |
+| T07 | I=8,SOON → 2 | `TODO` | PR-02 |
+| T08 | SKIP 全部学习字段不变 | `TODO` | PR-02 |
+| T09 | POSTPONE +7 只延后 Effective Due | `TODO` | PR-02 |
+| T10 | P50→P10 只改 Priority | `TODO` | PR-02 |
+| T11 | 旧 I=8,A=1.5,ADVANCED → 12，不重算首次值 | `PASS` | PR-01 同时覆盖“不重新初始化”保护 |
+| T12 | COMPLETE 退出队列且不删子节点 | `TODO` | PR-02 |
+| T13 | `eventId` 重复不重复计数 | `TODO` | PR-02 |
+| T14 | 相同优先级与日期稳定排序 | `TODO` | PR-03 |
+| T15 | 跨夏令时 +1 天 | `PASS` | `mf-us-1-dates.test.js`（美/欧 DST 日） |
+| T16 | Mercy 撤销恢复原 `mf_not_before` | `TODO` | PR-04 |
+| T17 | 新建 Extract→Extract 不改父调度 | `PARTIAL` | PR-01 保证 `initializeTopic` 不触碰父对象；父节点语义在 PR-06 |
+| T18 | SR 卡片评分不触碰 SR 数据 | `TODO` | PR-11（核心层已拒绝 `type: card`） |
+| T19 | Shadow 模式不写回 Topic | `TODO` | PR-07 |
+| T20 | 同名/重命名后稳定 ID 关系正确 | `TODO` | PR-06 |
+
+## 3. 性质测试（A13.1，共 9 条）
+
+按规范原文核对：**共 9 条**（此前报告误写为 10 条）。
+
+| # | 性质 | 状态 | PR |
+|---:|---|---|---|
+| 1 | P 增加时同类型 I0 单调不减 | `PASS` | 01 |
+| 2 | I、A 始终在合法边界内 | `PASS` | 01 |
+| 3 | 完全相同输入产生完全相同输出 | `PASS` | 01 |
+| 4 | Skip/Postpone/Mercy 不引入有效评阅 | `TODO` | 02/04 |
+| 5 | 后续评阅不重新调用首次间隔函数 | `PASS`（核心层） | 01 |
+| 6 | 完成或移出后不自动复活 | `TODO` | 02 |
+| 7 | 合法旧数据迁移前后 Effective Due 相同 | `TODO` | 08 |
+| 8 | 普通每日队列不自动选择未到期项 | `TODO` | 03 |
+| 9 | 跨失败/重试事件保持幂等 | `TODO` | 02 |
+
+## 4. 离线模拟（A13.2）规模核对
+
+按规范原文：**8 个场景**（100/1,000/10,000 Topic；每日 20 新摘录；连续 14 天中断；5 级递归；30 分钟预算；高优先级叠加低优先级积压；批量 Mercy + 撤销；重命名/损坏 Frontmatter/并发冲突），**8 组指标**（平均与 P95 等待、P1–P20 等待、低优先级最长等待、每日超预算、理想逾期数、完成率、手动干预次数、异常数）。此前报告误写为 9 场景。全部 `NOT_STARTED`（PR-05）。
+
+## 5. 发布门槛（A14）
+
+| 门槛 | 状态 |
+|---|---|
+| 全部规范测试与不变量测试通过 | `NOT_STARTED` |
+| Legacy/Shadow/Unified 正确隔离，旧库不意外重排 | `NOT_STARTED` |
+| 无半写入、无重复评阅、无 SR 数据误改 | `NOT_STARTED` |
+| 行政延期、Mercy 预览/撤销测试 | `NOT_STARTED` |
+| 备份与迁移恢复测试 | `NOT_STARTED` |
+| 隔离测试 Vault 完整工作流（Phase 2 专用副本 `phase2 test`） | `NOT_STARTED` |
+| 实机不可验证处标注“未验证” | 持续遵守 |
