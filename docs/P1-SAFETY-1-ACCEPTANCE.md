@@ -2,6 +2,8 @@
 
 - 分支：`fix/p1-safety-1`
 - 基线：`7216f03`
+- 初始实现 Commit：`4df6372`
+- 安全边界补充 Commit：`ac9bfee`
 - 当前状态：待项目所有者人工验收
 - 修改范围：根 `main.js` 的 `walkSubtree()` 及 `boost` / `postponeSubtree` / `subsetReview` 三个调用点
 - 未修改：Phase 1 分支、`tree-core.js`、MF-US-1、SR、发布流程
