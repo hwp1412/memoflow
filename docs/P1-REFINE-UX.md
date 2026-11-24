@@ -69,7 +69,21 @@
 
 可交互原型：[P1-REFINE-UX-prototype.html](../../Phase1-验收证据/P1-REFINE-UX-prototype.html)
 
-实机只打开 modal 并填入替换文本，未点击确认，因此未产生精简历史、未修改测试 Extract。截图后清理探针插件/测试笔记，Vault 与启动前备份 `diff -qr` 为空。
+实机确认验收：
+
+- 通过实际 Extracts 操作菜单打开 Modal；
+- `Alpha beta` → `Alpha`，Editor 与磁盘一致；
+- history：prepared → applied → verified；
+- 最近恢复 `Alpha` → `Alpha beta`，history 增加 restored 事件；
+- Frontmatter SHA-256 在精简前后/恢复后完全一致；
+- 表格内部选区触发安全拒绝，Modal 保持打开、显示错误，未新增 history、Editor/磁盘不变；
+- 截图后清理探针插件/测试笔记，Vault 与启动前备份 `diff -qr` 为空。
+
+证据：
+
+- `Phase1-验收证据/P1-REFINE-UX-acceptance.json`
+- `Phase1-验收证据/P1-REFINE-UX-history-hashes.sha256`
+- `Phase1-验收证据/P1-REFINE-UX-Screenshots/refine-ux-reject.png`
 
 ## 5. 剩余问题
 
