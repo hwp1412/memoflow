@@ -178,6 +178,27 @@ function frontmatterText(frontmatter) {
   return lines.join('\n');
 }
 
+function parseFrontmatter(content) {
+  const match = String(content).match(/^---\n([\s\S]*?)\n---\n/);
+  if (!match) return {};
+  const fm = {};
+  for (const line of match[1].split('\n')) {
+    const m = line.match(/^([A-Za-z0-9_]+):\s*(.*)$/);
+    if (!m) continue;
+    const key = m[1];
+    let value = m[2].trim();
+    if (value === '') { fm[key] = null; continue; }
+    if (value === 'true') { fm[key] = true; continue; }
+    if (value === 'false') { fm[key] = false; continue; }
+    if (/^-?\d+(?:\.\d+)?$/.test(value)) { fm[key] = Number(value); continue; }
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try { fm[key] = JSON.parse(value); continue; } catch { /* fall through */ }
+    }
+    fm[key] = value;
+  }
+  return fm;
+}
+
 function makeSettings(overrides = {}, today = dateCore.formatDate(new Date(), 'YYYY-MM-DD')) {
   const base = {
     scheduling: {
@@ -234,6 +255,7 @@ function createApp() {
     notices: noticeSink,
     __promptState: { texts: [], longTexts: [], quality: 1, confirm: true, calls: [] },
     activeFile: null,
+    openedFiles: [],
     leaves: {},
     commands: { executeCommandById: () => false },
     plugins: { plugins: {} },
@@ -243,25 +265,41 @@ function createApp() {
   const vault = {
     entries: new Map(),
     folders: new Set(),
+    folderEntries: new Map(),
     processCalls: [],
     appendCalls: [],
     createCalls: [],
     createFolderCalls: [],
     appendError: null,
     addFolder(folderPath) {
-      this.folders.add(folderPath);
-      return new MockTFolder(folderPath);
+      const normalized = String(folderPath).replace(/^\/+|\/+$/g, '');
+      if (!normalized) return null;
+      if (this.folderEntries.has(normalized)) return this.folderEntries.get(normalized);
+      const folder = new MockTFolder(normalized);
+      this.folderEntries.set(normalized, folder);
+      this.folders.add(normalized);
+      const slash = normalized.lastIndexOf('/');
+      if (slash > 0) {
+        const parent = this.addFolder(normalized.slice(0, slash));
+        if (parent) parent.children.push(folder);
+      }
+      return folder;
     },
     addFile(filePath, frontmatter = {}, body = '') {
       const file = new MockTFile(filePath);
       const content = frontmatterText(frontmatter) + String(body || '');
       this.entries.set(filePath, { file, frontmatter: clone(frontmatter), body: String(body || ''), content });
+      const slash = filePath.lastIndexOf('/');
+      if (slash > 0) {
+        const folder = this.addFolder(filePath.slice(0, slash));
+        if (folder) folder.children.push(file);
+      }
       return file;
     },
     getAbstractFileByPath(filePath) {
       const entry = this.entries.get(filePath);
       if (entry) return entry.file;
-      if (this.folders.has(filePath)) return new MockTFolder(filePath);
+      if (this.folderEntries.has(filePath)) return this.folderEntries.get(filePath);
       return null;
     },
     async cachedRead(file) { return this.read(file); },
@@ -290,15 +328,18 @@ function createApp() {
     },
     async create(filePath, content) {
       if (this.entries.has(filePath)) throw new Error(`file exists: ${filePath}`);
-      const file = new MockTFile(filePath);
-      this.entries.set(filePath, { file, frontmatter: {}, body: String(content), content: String(content) });
+      const file = this.addFile(filePath, {}, '');
+      const entry = this.entries.get(filePath);
+      entry.body = String(content);
+      entry.content = String(content);
+      entry.frontmatter = parseFrontmatter(String(content));
       this.createCalls.push({ file, content: String(content) });
       return file;
     },
     async createFolder(folderPath) {
-      this.folders.add(folderPath);
+      const folder = this.addFolder(folderPath);
       this.createFolderCalls.push(folderPath);
-      return new MockTFolder(folderPath);
+      return folder;
     },
     readFm(file) {
       const entry = this.entries.get(file.path);
@@ -349,7 +390,10 @@ function createApp() {
     getActiveFile() { return app.activeFile; },
     getLeavesOfType(type) { return app.leaves[type] || []; },
     getLeaf() {
-      return { openFile: async () => {}, setViewState: async () => {} };
+      return {
+        openFile: async file => { app.openedFiles.push(file.path); },
+        setViewState: async () => {},
+      };
     },
     getActiveViewOfType() { return null; },
     on() { return {}; },
