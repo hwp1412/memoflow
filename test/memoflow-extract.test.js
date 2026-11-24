@@ -56,3 +56,19 @@ test('cleanExtractBody unwraps copied PDF callouts', () => {
   const input = '> [!PDF] [被讨厌的勇气, p.7]\n> 原文第一行\n> 来源：[[x.pdf#page=7|p.7]]';
   assert.equal(cleanExtractBody(input), '原文第一行');
 });
+
+test('buildExtractContent adds parent only when explicitly provided', () => {
+  const base = {
+    sourceTitle: 'Root Source',
+    body: 'passage',
+    priority: 50,
+    interval: 8,
+    nextReview: '02-12-2026',
+    dateAdded: '24-11-2026',
+  };
+  const old = buildExtractContent(base);
+  assert.equal(old.includes('\nparent:'), false);
+  assert.ok(old.startsWith('---\ntype: extract\nsource: "[[Root Source]]"\nstatus: pending'));
+  const child = buildExtractContent({ ...base, parentTitle: 'Parent Extract' });
+  assert.ok(child.startsWith('---\ntype: extract\nsource: "[[Root Source]]"\nparent: "[[Parent Extract]]"\nstatus: pending'));
+});

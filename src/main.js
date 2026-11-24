@@ -3,6 +3,7 @@
 const { Platform, Notice, MarkdownView, TFile } = require('obsidian');
 const BasePlugin = require('../main.js');
 const dateCore = require('../date-core.js');
+const treeCore = require('../tree-core.js');
 const extractCore = require('./data/extract.js');
 const pdfPage = require('./data/pdf-page.js');
 const { VIEW_TYPE, MemoFlowDashboardView } = require('./views/dashboard-view.js');
@@ -1068,6 +1069,55 @@ class MemoFlowPlugin extends BasePlugin {
   // Timestamped extract with a citation back to the PDF page
   // ---------------------------------------------------------------------------
 
+  _hierarchyRows() {
+    try {
+      return this.getIRRows();
+    } catch (error) {
+      return [];
+    }
+  }
+
+  _isUniqueIRBasename(name) {
+    const key = String(name || '').toLowerCase();
+    if (!key) return false;
+    return this._hierarchyRows().filter(row => row.tfile.basename.toLowerCase() === key).length === 1;
+  }
+
+  // Follow source links from an Extract to the original root Source.
+  // Old data may store the direct parent in `source`, so this walks the chain.
+  _resolveTopicRoot(file, fm, seen = new Set(), depth = 0) {
+    if (!file || !fm || depth > 64) return null;
+    if (fm.type === 'source') return { file, fm };
+    if (fm.type !== 'extract') return null;
+    if (seen.has(file.path)) return null;
+    const nextSeen = new Set(seen);
+    nextSeen.add(file.path);
+    const name = treeCore.linkTargetName(fm.source) || treeCore.linkTargetName(fm.parent);
+    if (!name) return null;
+    const matches = this._hierarchyRows().filter(row => row.tfile.basename.toLowerCase() === name.toLowerCase());
+    if (matches.length !== 1) return null;
+    return this._resolveTopicRoot(matches[0].tfile, matches[0].fm, nextSeen, depth + 1);
+  }
+
+  // Resolve the current direct parent and the original root without changing
+  // how existing priority/A-Factor/interval writes are calculated.
+  _resolveExtractContext({ active = null, sourceFile = null } = {}) {
+    const candidate = sourceFile || active;
+    if (!candidate) return null;
+    if (candidate.extension === 'pdf') {
+      const source = this._resolveExtractSource(active);
+      return source ? { direct: source, root: source } : null;
+    }
+    if (candidate.extension !== 'md') return null;
+    const fm = this.app.metadataCache.getFileCache(candidate)?.frontmatter;
+    if (!fm || (fm.type !== 'source' && fm.type !== 'extract')) return null;
+    const direct = { file: candidate, fm };
+    const root = fm.type === 'source' ? direct : this._resolveTopicRoot(candidate, fm);
+    if (!root || root.fm.type !== 'source') return null;
+    if (!this._isUniqueIRBasename(direct.file.basename) || !this._isUniqueIRBasename(root.file.basename)) return null;
+    return { direct, root };
+  }
+
   _resolveExtractSource(active) {
     if (!active) return null;
     if (active.extension === 'md') {
@@ -1126,17 +1176,17 @@ class MemoFlowPlugin extends BasePlugin {
 
   async createTimestampExtract({ fromSelection = true, text = null, sourceFile = null, page = null, pageFallback = null, open = true } = {}) {
     const active = this.app.workspace.getActiveFile();
-    let source = null;
-    if (sourceFile) {
-      const fm = this.app.metadataCache.getFileCache(sourceFile)?.frontmatter;
-      if (fm && (fm.type === 'source' || fm.type === 'extract')) source = { file: sourceFile, fm };
-    } else {
-      source = this._resolveExtractSource(active);
-    }
-    if (!source) {
+    const context = this._resolveExtractContext({ active, sourceFile });
+    if (!context) {
       new Notice('请先打开 Incremental Reading 来源或摘录，或对应的 PDF。');
       return null;
     }
+    const direct = context.direct;
+    const root = context.root;
+    // Preserve the existing 0.1 scheduling write target per entry point:
+    // active extract -> root; explicit sourceFile -> that file.
+    const scheduling = sourceFile ? direct : root;
+    const parentTitle = direct.fm.type === 'extract' ? direct.file.basename : null;
     let body = text != null ? String(text) : this._selectionOrClipboard(fromSelection);
     if (!body) {
       try {
@@ -1156,7 +1206,7 @@ class MemoFlowPlugin extends BasePlugin {
     let pdfPath = null;
     if (parsed.target && this._fileByPath(parsed.target)) pdfPath = parsed.target;
     if (!pdfPath) {
-      for (const candidate of [source.fm.pdf_vault_path, source.fm.pdf_path]) {
+      for (const candidate of [root.fm.pdf_vault_path, root.fm.pdf_path]) {
         const path = candidate ? String(candidate).replace(/^\/+/, '').split('#')[0] : '';
         if (path && this._fileByPath(path)) {
           pdfPath = path;
@@ -1168,9 +1218,9 @@ class MemoFlowPlugin extends BasePlugin {
       ? Number(page)
       : parsed.page
         || (Number(pageFallback) > 0 ? Number(pageFallback) : null)
-        || (Number(source.fm.read_point) > 0 ? Number(source.fm.read_point) : null);
+        || (Number(root.fm.read_point) > 0 ? Number(root.fm.read_point) : null);
     const citation = extractCore.buildCitation({
-      sourceTitle: source.file.basename,
+      sourceTitle: root.file.basename,
       pdfPath,
       page: resolvedPage,
       params: parsed.params,
@@ -1181,17 +1231,21 @@ class MemoFlowPlugin extends BasePlugin {
     const baseTitle = extractCore.timestampTitle(new Date());
     let name = baseTitle;
     let suffix = 1;
-    while (this._fileByPath(`${folder}/${name}.md`)) name = `${baseTitle} ${++suffix}`;
+    const usedNames = new Set(this._hierarchyRows().map(row => row.tfile.basename.toLowerCase()));
+    while (this._fileByPath(`${folder}/${name}.md`) || usedNames.has(name.toLowerCase())) {
+      name = `${baseTitle} ${++suffix}`;
+    }
     const path = `${folder}/${name}.md`;
 
-    const priority = Math.min(100, Math.max(1, Number(source.fm.priority) || 50));
+    const priority = Math.min(100, Math.max(1, Number(scheduling.fm.priority) || 50));
     const interval = Math.max(1, Math.ceil(priority * 0.15));
     const fmt = dateCore.normalizeDateFormat(this.settings?.misc?.date_format);
     const nextDate = new Date();
     nextDate.setHours(0, 0, 0, 0);
     nextDate.setDate(nextDate.getDate() + interval);
     const content = extractCore.buildExtractContent({
-      sourceTitle: source.file.basename,
+      sourceTitle: root.file.basename,
+      parentTitle,
       body,
       priority,
       interval,
@@ -1210,20 +1264,23 @@ class MemoFlowPlugin extends BasePlugin {
       return null;
     }
 
+    let bumpFailed = null;
     try {
-      await this.app.fileManager.processFrontMatter(source.file, fmWriter => {
+      await this.app.fileManager.processFrontMatter(scheduling.file, fmWriter => {
         const current = Number(fmWriter.priority) || 50;
         fmWriter.priority = Math.min(100, current + 1);
       });
       if (typeof this._bumpAFactor === 'function') {
-        await this._bumpAFactor(source.file, source.fm, this.settings?.scheduling?.extract_bump || 1.05);
+        await this._bumpAFactor(scheduling.file, scheduling.fm, this.settings?.scheduling?.extract_bump || 1.05);
       }
     } catch (error) {
-      console.error('[MemoFlow] extract created, but source bump failed', error);
+      bumpFailed = error;
+      console.error('[MemoFlow] extract created, but parent bump failed', error);
+      new Notice(`摘录已创建：${name}，但父级 priority/A-Factor 更新失败：${error.message || '未知错误'}。笔记已保留。`, 9000);
     }
 
     if (typeof this._invalidateIRCollection === 'function') this._invalidateIRCollection(true);
-    new Notice(`已生成摘录：${name}${resolvedPage ? ` · p.${resolvedPage}` : ''}`);
+    new Notice(`已生成摘录：${name}${resolvedPage ? ` · p.${resolvedPage}` : ''}${bumpFailed ? ' · 父级更新失败，笔记已保留' : ''}`);
 
     if (open) {
       try {
