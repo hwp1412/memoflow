@@ -3,7 +3,7 @@
 - 任务：Phase 1 第一项最小功能 — 从已有 Extract 创建子 Extract
 - 分支：`feat/phase1-child-extract`
 - 基线：`efb901f`（P1-SAFETY-1 合并后的 main）
-- 状态：已同步 P1-SAFETY-1，234 项自动化测试通过；待人工验收
+- 状态：已同步 P1-SAFETY-1；234 项自动化测试、真实 Obsidian 验收与命令面板冒烟已完成；待最终合并批准
 
 ## 1. 范围
 
@@ -55,12 +55,15 @@
 | P1-7 | 父级 bump 失败时笔记保留，并明确报告部分成功 |
 | P1-8 | 创建子摘录不自动完成父节点、不增加 review_count |
 | P1-9 | M03 24 项不变；全量 234 项通过；`npm run verify:memoflow` 通过 |
-| P1-10 | 临时 Obsidian Vault 完成 5 级实机验收；现有 MemoFlow-Test 未修改 |
-| P1-11 | GitHub Actions 通过；PR 由所有者验收后合并 |
+| P1-10 | MemoFlow-Test（项目所有者授权）完成 5 级实机验收；验收前已完整备份 |
+| P1-11 | GitHub Actions 通过；PR #6 由所有者验收后决定是否合并 |
 
 ## 4. 隔离与回滚
 
 - 自动化测试使用内存 Mock，不写真实 Vault。
-- 实机验收只在一次性临时 Vault 中进行；现有 `MemoFlow-Test` 只读。
-- 验收前备份现有测试库；临时库由备份恢复/初始化。
-- 失败时丢弃临时库；原库不改，无需恢复。
+- 实机验收使用 `MemoFlow-Test`，已获项目所有者明确授权。
+- 验收前已创建独立完整备份：`MemoFlow-Backups/2026-11-24_225702_phase1-final-acceptance`。
+- 测试专用笔记和临时验收插件已清理；不删除 Vault，不覆盖旧备份。
+- 非目标笔记未修改；Obsidian 运行状态和 SR 插件的 `buryDate` 日期滚动按运行状态处理并留有证据。
+- 合并前回滚：关闭 PR #6，`main` 不受影响；无需删除分支或恢复 Vault。
+- 合并后回滚：按实际合并方式 revert PR #6 的 merge commit 或对应 commits；代码回滚不会自动恢复 Vault 数据；数据恢复需基于备份单独操作并获批准。

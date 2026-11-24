@@ -4,7 +4,8 @@
 - HEAD：`b70d698`（PR #6）
 - 基线 main：`efb901f`（P1-SAFETY-1 已合并）
 - 验收 Vault：`/Users/Admin/Documents/插件开发/MemoFlow-Test`
-- 验收方式：真实 Obsidian 运行时 + 临时验收插件；验收插件与测试笔记在报告后清理
+- 验收方式：真实 Obsidian 运行时；五级/移动/Boost 等由临时验收插件直接调用；另有真实命令面板 UI 冒烟（临时 harness 驱动 DOM）；测试笔记与插件已清理
+- 授权：项目所有者已明确授权直接使用 `MemoFlow-Test` 验收
 
 ## 1. 备份
 
@@ -49,6 +50,23 @@ Source C
 | E3 | `[[2026-11-24 22-59-42 2]]` | `[[Phase1 Acceptance Source C]]` |
 | E4 | `[[2026-11-24 22-59-43]]` | `[[Phase1 Acceptance Source C]]` |
 | E5 | `[[2026-11-24 22-59-43 2]]` | `[[Phase1 Acceptance Source C]]` |
+
+## 3.9 GUI 命令面板冒烟
+
+除临时验收插件的直接方法调用外，另做了真实 Obsidian **命令面板**冒烟：
+
+- 临时 harness 打开命令面板 DOM，搜索 `生成时间戳摘录` 并点击命令；
+- 该操作实际调用现有 MemoFlow 创建入口，不是直接调用 `createTimestampExtract`；
+- 第一次创建 parent Extract；
+- 第二次从 parent 创建 child Extract；
+- 结果：
+  - active file = child `2026-11-25 00-20-04`
+  - child `parent=[[2026-11-25 00-20-01]]`
+  - child `source=[[Phase1 GUI Source]]`
+  - parent 无 `parent`，`source=[[Phase1 GUI Source]]`
+  - 实际 Markdown 已写入 `parent`/`source`/`type/status` 等字段。
+- 证据：`Phase1-GUI-Smoke.json`。
+- 说明：这是命令面板 UI，但由临时 harness 自动驱动；不是人工鼠标点击。五级/移动/Boost 等仍是临时插件直接调用。
 
 ## 4. 移动、完成、删除
 
@@ -111,7 +129,7 @@ Source C
 - 清理后：
   - 测试专用 Source/Extract、临时插件、Vault 内报告全部删除；
   - `community-plugins.json` 与 `data.json` 恢复备份内容；
-  - 仅剩 `.obsidian/plugins/memoflow/main.js`（PR 构建）与 `.obsidian/workspace.json`（Obsidian 运行状态）与备份不同；
+  - 仅剩 `.obsidian/plugins/memoflow/main.js`（PR 构建）、`.obsidian/workspace.json`（Obsidian 运行状态）、`.obsidian/plugins/obsidian-spaced-repetition/data.json`（SR 自身 `buryDate` 日期滚动）与备份不同；
   - 文件数 44。
 
 ## 10. 证据位置
@@ -122,6 +140,7 @@ Source C
 - `Phase1-Acceptance-Restart-v2.json`（重启读取）
 - `Phase1-Acceptance-Write.json`（Boost/Postpone 实际写入）
 - `Phase1-Acceptance-Tree.json`（实际 tree 视图 DOM 行）
+- `Phase1-GUI-Smoke.json`（真实命令面板 UI 冒烟）
 - `vault-diff-before-cleanup.txt`
 - `vault-diff-after-cleanup.txt`
 - `SHA256SUMS.txt`
@@ -134,10 +153,12 @@ Source C
 4. 上游 `extractSelection` / `extractClipboard` 仍未支持多级创建。
 5. CI 只运行 `npm run check`，不构建 dist；构建产物本地验证。
 6. 实机验收使用的临时插件已移除；未修改生产代码。
+7. GUI 冒烟的 SR 插件自身 `buryDate` 日期滚动不是 Phase 1 写入；证据保留，未擅自恢复。
 
 ## 12. 回滚
 
 - 测试 Vault 备份：`2026-11-24_225702_phase1-final-acceptance`。
-- 如需恢复：按备份恢复；本次未自行覆盖原 Vault 整体。
-- 代码回滚：PR #6 未合并；删除分支/PR 即可。
+- 合并前：直接关闭 PR #6；main 不受影响；无需删除分支或恢复 Vault。
+- 合并后：按实际合并方式 revert PR #6 的 merge commit 或对应 commits；代码回滚不会自动恢复已生成/修改的 Vault 数据。
+- Vault 数据恢复只能基于上述备份单独执行，并需项目所有者确认。
 - 不删除整个 Vault，不覆盖旧备份。

@@ -1,11 +1,11 @@
 # Phase 1 子摘录创建 — 验收报告
 
 - 任务：Phase 1 第一项最小功能 — 从已有 Extract 创建子 Extract
-- 当前状态：已同步 P1-SAFETY-1；实机验收已完成，待项目所有者最终验收
+- 当前状态：已同步 P1-SAFETY-1；实机验收与命令面板冒烟完成，待项目所有者最终验收
 - 分支：`feat/phase1-child-extract`
 - 基线 Commit：`efb901f`（P1-SAFETY-1 合并后的 main）
 - 实现范围：MemoFlow `createTimestampExtract` / `clipboardExtract`
-- 未修改：根 `main.js`、MF-US-1、SR、发布流程、现有测试 Vault
+- 未修改：根 `main.js`、MF-US-1、SR、发布流程；`MemoFlow-Test` 在所有者授权下用于验收，验收前已备份
 
 ## 1. 实际实现
 
@@ -30,7 +30,7 @@
 - `docs/PHASE1-CHILD-EXTRACT.md`
 - `docs/PHASE1-ACCEPTANCE.md`
 
-**未修改**：根 `main.js`、`tree-core.js`、`status-core.js`、SR 集成、`.github/workflows/`、MF-US-1 规范、现有 `MemoFlow-Test`。
+**未修改**：根 `main.js`、`tree-core.js`、`status-core.js`、SR 集成、`.github/workflows/`、MF-US-1 规范。`MemoFlow-Test` 已获授权用于验收，验收前完整备份。
 
 ## 3. 自动化测试
 
@@ -136,27 +136,30 @@ Phase 1 分支已合并 main `efb901f`（P1-SAFETY-1）：
 
 ## 6. 测试 Vault / 实机状态
 
-- 自动化测试全部在内存 Mock 中，未访问真实 Vault。
-- 现有 `MemoFlow-Test` 已只读备份并校验：
-  - 备份：`MemoFlow-Backups/2026-11-24_220430_phase1-child-extract`
+- 项目所有者已明确授权直接使用 `MemoFlow-Test` 进行 Phase 1 验收。
+- 验收前创建独立完整备份并校验：
+  - 备份：`MemoFlow-Backups/2026-11-24_225702_phase1-final-acceptance`
   - `verify:test-vault-backup`：通过（44 files / 11 directories / 14.40 MiB）
-  - 最终 `diff -rq` 与备份一致，44 个文件。
-- 实机验收已完成：使用 MemoFlow-Test + 真实 Obsidian 运行时临时验收插件；结果见 `docs/PHASE1-RUNTIME-ACCEPTANCE.md`。
-- 临时验收插件和测试笔记已清理；详细证据在 `/Users/Admin/Documents/插件开发/Phase1-验收证据/`。
-- 验收步骤：
-  1. 备份现有测试库；
-  2. 用备份恢复/复制到一次性临时 Vault，初始化测试标记；
-  3. 安装本分支构建产物；
-  4. 手工执行 Source→E1→E2→E3→E4→E5；
-  5. 检查 parent/source/树、完成父节点、移动、删除、重启读取；
-  6. 比对临时库与备份，丢弃临时库。
-- 原测试库不改；失败只丢弃临时库。
+- 实机验收已完成：真实 Obsidian + MemoFlow-Test，详见 `docs/PHASE1-RUNTIME-ACCEPTANCE.md`。
+- 已区分：
+  - **临时验收插件调用**：五级创建、移动、完成、删除、Boost/Postpone、重启；
+  - **真实命令面板 UI**：从已有 Extract 通过 Obsidian 命令面板执行一次创建子 Extract（临时 harness 驱动命令面板 DOM；不是直接调用 `createTimestampExtract`）。
+- 测试专用笔记和临时插件已删除；非目标笔记未修改。
+- 最终与备份差异仅：
+  - `.obsidian/plugins/memoflow/main.js`（PR 构建产物）；
+  - `.obsidian/workspace.json`（Obsidian 运行状态）；
+  - `.obsidian/plugins/obsidian-spaced-repetition/data.json`（SR 插件自身 `buryDate` 日期滚动，非 Phase 1 写入）。
+- 证据：`/Users/Admin/Documents/插件开发/Phase1-验收证据/`。
 
 ## 7. 数据风险与回滚
 
-- 无真实 Vault 写入；无数据迁移。
-- 未修改 SR 数据、调度算法、Phase 1 源码；P1-SAFETY-1 的根 `main.js` 修复已通过 main 合并进入本分支。
-- 回滚：删除分支/PR，或 `git revert` 本 PR 的 src/test/docs commits；无需恢复 Vault。
+- 自动化测试使用内存 Mock；实机验收使用所有者授权的 `MemoFlow-Test`，验收前已备份。
+- 测试专用笔记、临时插件已清理；非目标笔记未修改。
+- 遗留的 Obsidian 运行状态变化：`workspace.json`；SR 插件自身 `buryDate` 从 `2026-11-24` 滚动到 `2026-11-25`。后者不是 Phase 1 业务代码写入，证据已保存。
+- 回滚（合并前）：直接关闭 PR #6；`main` 不受影响；无需删除分支或恢复 Vault。
+- 回滚（合并后）：按实际合并方式 revert PR #6 的 merge commit 或对应 commits；代码回滚**不会自动恢复**已生成的 Vault 笔记或 Obsidian 运行状态。
+- 如需恢复 Vault 数据，只能基于备份 `2026-11-24_225702_phase1-final-acceptance` 单独操作，并需项目所有者确认。
+- 未修改调度算法、SR 集成、Phase 1 之外功能。
 
 ## 8. PR / CI
 
@@ -164,5 +167,5 @@ Phase 1 分支已合并 main `efb901f`（P1-SAFETY-1）：
 - 基线：`efb901f`
 - 同步 Merge Commit：`ce83d15`
 - PR：#6：<https://github.com/hwp1412/memoflow/pull/6>
-- GitHub Actions：尚未运行；PR 创建后需 `npm ci` + `npm run check` 通过。
+- GitHub Actions：Run `45421097509` 已通过（`npm ci` + `npm run check`）；本报告文档提交后的最新 CI 见最终交付消息。
 - 未合并、未发布、未进入 MF-US-1。
