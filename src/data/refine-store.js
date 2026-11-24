@@ -431,6 +431,8 @@ class RefineHistoryStore {
       bodyHash: targetBodyHash,
       bodyBytes: targetBodyBytes,
       status: targetEntry.state.status,
+      eventType: targetOperation.restoreOf ? '恢复' : '精简',
+      createdAt: targetOperation.createdAt,
       index: targetIndex,
     };
     if (targetBodyHash === current.currentBodyHash) {

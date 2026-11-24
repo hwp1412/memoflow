@@ -2,7 +2,8 @@
    MemoFlow contributes typography, radius, spacing and amber safety emphasis. */
 
 .modal.mf-refine-modal-host,
-.modal.mf-refine-history-host {
+.modal.mf-refine-history-host,
+.modal.mf-refine-restore-host {
   width: min(900px, 94vw);
   max-height: 90vh;
   --mf-rf-surface: #fbf8f1;
@@ -19,7 +20,8 @@
 }
 
 .theme-dark .modal.mf-refine-modal-host,
-.modal.mf-refine-history-host {
+.theme-dark .modal.mf-refine-history-host,
+.theme-dark .modal.mf-refine-restore-host {
   --mf-rf-surface: #1f1d19;
   --mf-rf-surface-2: #26231d;
   --mf-rf-ink: #ede6d6;
@@ -331,6 +333,107 @@
 
 .mf-refine-actions button:not(.mf-refine-confirm):hover {
   background: var(--mf-rf-surface-2);
+}
+
+.mf-refine-history-restore-wrap {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mf-refine-history-restore {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--mf-rf-amber);
+  border-radius: 7px;
+  background: var(--mf-rf-amber);
+  color: #2a251d;
+  font-family: var(--font-interface);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.mf-refine-history-restore:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mf-refine-history-restore-hint {
+  color: var(--mf-rf-muted);
+  font-family: var(--font-interface);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.mf-refine-restore {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(90vh - 92px);
+  overflow-y: auto;
+}
+
+.mf-refine-restore-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mf-refine-restore-path {
+  color: var(--mf-rf-ink);
+  font-size: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.mf-refine-restore-meta {
+  color: var(--mf-rf-muted);
+  font-size: 10px;
+}
+
+.mf-refine-restore-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--mf-rf-amber) 45%, transparent);
+  border-left: 3px solid var(--mf-rf-amber);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--mf-rf-amber) 10%, transparent);
+  color: var(--mf-rf-ink);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.mf-refine-restore-diff {
+  max-height: 42vh;
+}
+
+.mf-refine-restore-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.mf-refine-restore-actions button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--mf-rf-line);
+  border-radius: 7px;
+  background: var(--mf-rf-surface-2);
+  color: var(--mf-rf-ink);
+  font-family: var(--font-interface);
+  font-size: 10.5px;
+}
+
+.mf-refine-restore-actions button.mod-warning {
+  border-color: var(--mf-rf-amber);
+  background: var(--mf-rf-amber);
+  color: #2a251d;
+  font-weight: 700;
 }
 
 @media (max-width: 760px) {
@@ -663,7 +766,8 @@
 }
 
 @media (max-width: 760px) {
-  .modal.mf-refine-history-host {
+  .modal.mf-refine-history-host,
+  .modal.mf-refine-restore-host {
     width: 94vw;
   }
   .mf-refine-history-body {
@@ -687,7 +791,8 @@
 }
 
 @media (max-width: 520px) {
-  .modal.mf-refine-history-host {
+  .modal.mf-refine-history-host,
+  .modal.mf-refine-restore-host {
     width: 96vw;
   }
   .mf-refine-history-tools {

@@ -156,6 +156,97 @@ function replacementProtected(value) {
     || /\$\$/.test(text);
 }
 
+function unclosedFence(text) {
+  let open = null;
+  for (const line of lineRanges(text)) {
+    const raw = text.slice(line.start, line.end).replace(/\r$/, '');
+    const marker = raw.match(/^\s*(```+|~~~+)/);
+    if (!marker) continue;
+    if (!open) open = marker[1][0];
+    else if (marker[1][0] === open) open = null;
+  }
+  return Boolean(open);
+}
+
+function unclosedBlockMath(text) {
+  let open = false;
+  for (const line of lineRanges(text)) {
+    const raw = text.slice(line.start, line.end).replace(/\r$/, '');
+    if (/^\s*\$\$\s*$/.test(raw)) open = !open;
+  }
+  return open;
+}
+
+function linkRanges(text) {
+  const source = String(text || '');
+  const patterns = [
+    /!?\[\[[^\]]+\]\]/g,
+    /!?\[[^\]\n]*\]\([^)\n]+\)/g,
+  ];
+  const ranges = [];
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(source))) {
+      ranges.push({ start: match.index, end: match.index + match[0].length });
+    }
+  }
+  return ranges;
+}
+
+function inlineCardRanges(text, inlineCards = {}) {
+  const source = String(text || '');
+  const ranges = [];
+  for (const key of ['qa_regex', 'cloze_regex']) {
+    if (!inlineCards[key]) continue;
+    let regex;
+    try { regex = new RegExp(inlineCards[key], 'gm'); }
+    catch (error) { throw new RefineFlowError('INVALID_INLINE_REGEX', 'inline Card/SR 正则配置无效，已安全拒绝'); }
+    let match;
+    while ((match = regex.exec(source))) {
+      ranges.push({ start: match.index, end: match.index + match[0].length });
+      if (!match[0].length) regex.lastIndex++;
+    }
+  }
+  return ranges;
+}
+
+function protectedStructureSegments(text, settings = {}) {
+  const source = String(text || '');
+  const ranges = [
+    ...fencedRanges(source),
+    ...tableRanges(source),
+    ...blockMathRanges(source),
+    ...protectedRanges(source),
+    ...linkRanges(source),
+    ...inlineCardRanges(source, settings.inline_cards || settings.inlineCards || {}),
+  ];
+  const unique = new Map();
+  for (const range of ranges) {
+    if (range.end > range.start) unique.set(`${range.start}:${range.end}`, range);
+  }
+  return [...unique.values()]
+    .sort((a, b) => a.start - b.start || a.end - b.end)
+    .map(range => ({ start: range.start, end: range.end, text: source.slice(range.start, range.end) }));
+}
+
+function structureSignature(text, settings = {}) {
+  const source = String(text || '');
+  if (unclosedFence(source) || unclosedBlockMath(source)) {
+    throw new RefineFlowError('PROTECTED_STRUCTURE_AMBIGUOUS', '正文包含未闭合的代码块或块级公式，已安全拒绝');
+  }
+  return JSON.stringify(protectedStructureSegments(source, settings).map(segment => segment.text));
+}
+
+function assertProtectedStructureUnchanged(currentBody, targetBody, settings = {}) {
+  const current = structureSignature(currentBody, settings);
+  const target = structureSignature(targetBody, settings);
+  if (current !== target) {
+    throw new RefineFlowError('PROTECTED_STRUCTURE_CHANGED', '当前正文与目标快照的表格/代码/公式/链接/卡片/SR 结构不同，已安全拒绝');
+  }
+  return true;
+}
+
 class RefineEditorController {
   constructor({
     app,
@@ -164,6 +255,7 @@ class RefineEditorController {
     notice = () => {},
     promptPreview,
     promptRestore,
+    promptVersionRestore,
     getActiveView = null,
   } = {}) {
     if (!app) throw new RefineFlowError('APP_REQUIRED', 'app is required');
@@ -174,6 +266,7 @@ class RefineEditorController {
     this.notice = notice;
     this.promptPreview = promptPreview;
     this.promptRestore = promptRestore;
+    this.promptVersionRestore = promptVersionRestore;
     this.getActiveView = getActiveView;
     this._busy = false;
   }
@@ -473,6 +566,113 @@ class RefineEditorController {
     }
   }
 
+  async restoreVersion({ targetOperationId, targetSide = 'after' } = {}) {
+    if (this._busy) {
+      this.notice('已有精简操作正在进行，请稍候。', 5000);
+      return null;
+    }
+    this._busy = true;
+    let operation = null;
+    try {
+      if (!this.promptVersionRestore) {
+        throw new RefineFlowError('RESTORE_UI_UNAVAILABLE', '缺少历史快照恢复确认界面');
+      }
+      if (!targetOperationId || (targetSide !== 'before' && targetSide !== 'after')) {
+        throw new RefineFlowError('INVALID_RESTORE_TARGET', '恢复目标无效');
+      }
+      const snapshot = await this._snapshot(false);
+      const preview = await this.store.planVersionRestore({
+        notePath: snapshot.path,
+        currentContent: snapshot.text,
+        targetOperationId,
+        targetSide,
+      });
+      if (preview.status === 'noop') {
+        this.notice('当前正文已经与目标快照相同，未创建恢复历史。', 5000);
+        return { status: 'noop' };
+      }
+      assertProtectedStructureUnchanged(snapshot.body, preview.operation.after.body, this.settings || {});
+      const target = preview.target;
+      const targetLabel = `#${String(target.index + 1).padStart(2, '0')} ${target.eventType}${targetSide === 'before' ? '前' : '后'}`;
+      const confirmed = await this.promptVersionRestore({
+        path: snapshot.path,
+        targetLabel,
+        targetCreatedAt: target.createdAt,
+        targetSide,
+        currentBody: snapshot.body,
+        targetBody: preview.operation.after.body,
+      });
+      if (!confirmed) return null;
+
+      // Confirmation is not a write authorization. Re-read/re-plan from the
+      // current editor/disk and validated history before any history write.
+      const fresh = await this._snapshot(false);
+      const plan = await this.store.planVersionRestore({
+        notePath: fresh.path,
+        currentContent: fresh.text,
+        targetOperationId,
+        targetSide,
+      });
+      if (plan.status === 'noop') {
+        this.notice('当前正文已经与目标快照相同，未创建恢复历史。', 5000);
+        return { status: 'noop' };
+      }
+      assertProtectedStructureUnchanged(fresh.body, plan.operation.after.body, this.settings || {});
+      await this._assertUnchanged(fresh);
+
+      await this.store.writeRestorePlan(plan);
+      operation = plan.operation;
+
+      try {
+        await this._assertUnchanged(fresh);
+      } catch (error) {
+        await this._conflict(operation);
+        throw error;
+      }
+
+      const expected = fresh.prefix + operation.after.body;
+      const from = offsetToPos(fresh.text, fresh.bodyStart);
+      const to = offsetToPos(fresh.text, fresh.text.length);
+      try {
+        fresh.editor.replaceRange(operation.after.body, from, to);
+      } catch (error) {
+        const diagnostic = await this._diagnostic(operation, fresh, expected);
+        await this._failed(operation);
+        throw new RefineFlowError('EDITOR_REPLACE_FAILED', '恢复时编辑器替换失败，正文/磁盘状态需检查。', { diagnostic });
+      }
+      if (fresh.editor.getValue() !== expected) {
+        const diagnostic = await this._diagnostic(operation, fresh, expected);
+        await this._conflict(operation);
+        throw new RefineFlowError('EDITOR_CONTENT_MISMATCH', '恢复后的编辑器内容与预期不一致，已停止。', { diagnostic });
+      }
+
+      try {
+        await this.store.setStatus(operation.operationId, 'applied');
+      } catch (error) {
+        const diagnostic = await this._diagnostic(operation, fresh, expected);
+        throw new RefineFlowError('STATUS_UPDATE_FAILED', '恢复正文已在 Editor 中修改，但状态更新失败；磁盘状态需检查。', { diagnostic });
+      }
+
+      try {
+        const disk = await this._saveAndVerify(fresh, expected);
+        await this.store.markVerified(operation.operationId, disk);
+        await this.store.markRestored(operation.operationId, disk);
+      } catch (error) {
+        const diagnostic = await this._diagnostic(operation, fresh, expected);
+        if (error.code === 'DISK_MISMATCH') await this._conflict(operation);
+        throw new RefineFlowError(error.code || 'RESTORE_SAVE_OR_VERIFY_FAILED', error.message || '恢复保存或验证失败', { diagnostic });
+      }
+
+      this.notice('已恢复选中的历史快照。', 5000);
+      return operation;
+    } catch (error) {
+      this._notifyError(error, operation);
+      return null;
+    } finally {
+      this._busy = false;
+    }
+  }
+
   async restoreActive() {
     if (this._busy) {
       this.notice('已有精简操作正在进行，请稍候。', 5000);
@@ -554,4 +754,7 @@ module.exports = {
   protectedText,
   replacementProtected,
   protectedRanges,
+  protectedStructureSegments,
+  structureSignature,
+  assertProtectedStructureUnchanged,
 };
