@@ -397,3 +397,31 @@ test('restore plan writing is blocked by unresolved history', async () => {
   await store.writeOperation(await operation({ replacementText: 'pending' }));
   await assert.rejects(() => store.writeRestorePlan(plan), error => error.code === 'UNRESOLVED_HISTORY');
 });
+
+test('ordinary refine operation cannot be marked restored', async () => {
+  const { store } = await storeWithAdapter();
+  const op = await operation();
+  await store.writeOperation(op);
+  await verifyOp(store, op);
+  await assert.rejects(
+    () => store.markRestored(op.operationId, afterContent(op)),
+    error => error.code === 'NOT_RESTORE_OPERATION',
+  );
+});
+
+test('restore event with missing reference cannot be marked restored', async () => {
+  const { store } = await storeWithAdapter();
+  const op = await operation();
+  await store.writeOperation(op);
+  await verifyOp(store, op);
+  const plan = await store.planRestore(notePath, '---\ntype: extract\n---\nHi world\n');
+  const broken = JSON.parse(JSON.stringify(plan.operation));
+  broken.restoreOf = uuid();
+  await store.writeOperation(broken);
+  await store.setStatus(broken.operationId, 'applied');
+  await store.markVerified(broken.operationId, afterContent(broken));
+  await assert.rejects(
+    () => store.markRestored(broken.operationId, afterContent(broken)),
+    error => error.code === 'RESTORE_REFERENCE_MISSING',
+  );
+});

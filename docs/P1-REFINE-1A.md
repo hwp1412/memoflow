@@ -68,7 +68,11 @@ prepared/applied -> failed | conflict
   - 只比较 body，恢复/验证保留当前 Frontmatter。
 - `markRestored(id, currentContent)`：
   - 要求当前状态为 `verified`；
-  - 当前 type/body 同样校验后进入 `restored`。
+  - 必须是 restore 操作，`restoreOf` 必须指向已有 operation；
+  - 当前 type/body 必须匹配；
+  - 且 `before.bodyHash` 必须等于被引用 operation 的 `after.bodyHash`、`after.body` 必须等于被引用 operation 的 `before.body`；
+  - 普通 refine operation 不能被标记为 restored；
+  - 通过后进入 `restored`。
 - 1A 只证明“调用者提供的内容”匹配；真实 Editor/disk 读取由 1B 负责，1B 不可绕过 `markVerified`。
 
 ## 5. 存储 Adapter
@@ -144,8 +148,11 @@ list(path)
 
 - 无跨实例锁；1A 在本地 `writeOperation` 前做未解决检查，但不同实例仍可能竞态；1B 必须串行化 UI/写入。
 - `setStatus` 不允许直接 verified/restored；调用方必须提供当前内容通过 `markVerified`/`markRestored`，但 1A 无法证明内容来自真实磁盘，信任边界由 1B 重新读取。
+- `parseFrontmatterType()` 要求 `type` 恰好出现一次；重复声明即使值相同也视为歧义。
+- `createRefineOperation()`/`createRestoreOperation()` 从完整当前内容重新解析 type，不只信任调用方 noteType。
 - 路径不是稳定 ID，重命名后历史安全停止但不自动跟随。
 - 临时文件/rename 不具备事务保证；崩溃后需诊断/恢复。
 - 4 MiB 上限与 1 MiB note 上限需真实笔记大小样本验证。
 - Adapter `rename` 覆盖语义未由 Obsidian 文档保证；已用不覆盖目标 Adapter 验证“rename 失败时旧 state 保留”，但仍不宣称跨平台事务/fsync。
+- **真实 Obsidian DataAdapter 未在独立 Vault 实测**：这是 1B 前必须解决的兼容性阻塞；如实际不支持覆盖，需要改为 append-only state。
 - 1A 不实现历史清理，长期容量策略未定。

@@ -191,3 +191,41 @@ test('frontmatter type parsing is explicit and safe', () => {
   assert.throws(() => requireCurrentExtractType('---\ntype: source\n---\nbody'), error => error.code === 'CURRENT_TYPE_UNSUPPORTED');
   assert.throws(() => requireCurrentExtractType('---\npriority: 1\n---\nbody'), error => error.code === 'CURRENT_TYPE_UNKNOWN');
 });
+
+test('refine creation requires a reliable current Extract type', async () => {
+  const id = uuid();
+  await assert.rejects(() => createRefineOperation({
+    operationId: id, notePath: 'E.md',
+    fullContent: '---\ntype: source\n---\nbody\n',
+    selection: { start: 0, end: 4 }, replacementText: 'x',
+  }), error => error.code === 'CURRENT_TYPE_UNSUPPORTED');
+  await assert.rejects(() => createRefineOperation({
+    operationId: id, notePath: 'E.md',
+    fullContent: '---\npriority: 1\n---\nbody\n',
+    selection: { start: 0, end: 4 }, replacementText: 'x',
+  }), error => error.code === 'CURRENT_TYPE_UNKNOWN');
+  await assert.rejects(() => createRefineOperation({
+    operationId: id, notePath: 'E.md',
+    fullContent: '---\ntype: extract\ntype: extract\n---\nbody\n',
+    selection: { start: 0, end: 4 }, replacementText: 'x',
+  }), error => error.code === 'CURRENT_TYPE_AMBIGUOUS');
+});
+
+test('duplicate identical type declarations are ambiguous', () => {
+  assert.deepEqual(
+    parseFrontmatterType('---\ntype: extract\ntype: extract\n---\nbody'),
+    { ok: false, code: 'CURRENT_TYPE_AMBIGUOUS' },
+  );
+});
+
+test('restore creation rejects current Source even with matching body', async () => {
+  const latest = await createRefineOperation({
+    operationId: uuid(), notePath: 'E.md', fullContent: baseContent,
+    selection: { start: 0, end: 5 }, replacementText: 'Hi',
+  });
+  await assert.rejects(() => createRestoreOperation({
+    operationId: uuid(), latestOperation: latest,
+    currentContent: '---\ntype: source\n---\nHi world\n',
+    currentNotePath: 'E.md',
+  }), error => error.code === 'CURRENT_TYPE_UNSUPPORTED');
+});

@@ -115,10 +115,12 @@ function parseFrontmatterType(content) {
     const match = lines[i].match(/^type:\s*(.*)$/);
     if (match) values.push(match[1].trim().replace(/^(['"])(.*)\1$/, '$2'));
   }
-  if (values.length === 0 || values.some(value => !value)) {
-    return { ok: false, code: 'CURRENT_TYPE_UNKNOWN' };
+  if (values.length !== 1 || !values[0]) {
+    return {
+      ok: false,
+      code: values.length > 1 ? 'CURRENT_TYPE_AMBIGUOUS' : 'CURRENT_TYPE_UNKNOWN',
+    };
   }
-  if (new Set(values).size !== 1) return { ok: false, code: 'CURRENT_TYPE_AMBIGUOUS' };
   return { ok: true, type: values[0] };
 }
 
@@ -181,6 +183,7 @@ async function createRefineOperation({
   if (utf8Bytes(fullContent) > MAX_NOTE_BYTES) {
     throw new RefineError('NOTE_TOO_LARGE', `note exceeds ${MAX_NOTE_BYTES} UTF-8 bytes`);
   }
+  requireCurrentExtractType(fullContent);
   const before = await buildSnapshot(fullContent);
   const range = validateSelection(before.split, selection);
   const replacement = String(replacementText == null ? '' : replacementText);
@@ -254,6 +257,7 @@ async function validateOperationIntegrity(operation) {
   if (utf8Bytes(operation.before.fullContent) > MAX_NOTE_BYTES) {
     throw new RefineError('NOTE_TOO_LARGE', 'before snapshot exceeds note limit');
   }
+  requireCurrentExtractType(operation.before.fullContent);
   const split = splitContent(operation.before.fullContent);
   if (split.body !== operation.before.body || split.prefix !== operation.before.frontmatter) {
     throw new RefineError('HISTORY_INTEGRITY', 'stored frontmatter/body split does not match full content');
@@ -329,7 +333,11 @@ async function createRestoreOperation({
   createdAt = new Date().toISOString(),
   toolVersion = '1.0.0',
 }) {
-  validateIdentity({ operationId, notePath: currentNotePath, noteType: currentNoteType, createdAt, toolVersion });
+  const actualCurrentType = requireCurrentExtractType(currentContent);
+  if (currentNoteType && currentNoteType !== actualCurrentType) {
+    throw new RefineError('CURRENT_TYPE_MISMATCH', 'caller noteType does not match current Frontmatter');
+  }
+  validateIdentity({ operationId, notePath: currentNotePath, noteType: actualCurrentType, createdAt, toolVersion });
   if (currentNotePath !== latestOperation?.note?.path) {
     throw new RefineError('NOTE_PATH_MISMATCH', 'history belongs to a different note path');
   }
@@ -391,8 +399,29 @@ async function createRestoreOperation({
   return operation;
 }
 
+async function validateRestoreRelationship(operation, referencedOperation) {
+  if (!operation || !operation.restoreOf) {
+    throw new RefineError('NOT_RESTORE_OPERATION', 'operation is not a restore event');
+  }
+  if (!referencedOperation || referencedOperation.operationId !== operation.restoreOf) {
+    throw new RefineError('RESTORE_REFERENCE_MISSING', 'restoreOf does not reference an existing operation');
+  }
+  await validateOperationIntegrity(operation);
+  await validateOperationIntegrity(referencedOperation);
+  if (operation.note.path !== referencedOperation.note.path
+    || operation.note.type !== referencedOperation.note.type) {
+    throw new RefineError('RESTORE_RELATION_MISMATCH', 'restore and referenced note identities differ');
+  }
+  if (operation.note.bodyHash !== referencedOperation.after.bodyHash
+    || operation.after.body !== referencedOperation.before.body) {
+    throw new RefineError('RESTORE_RELATION_MISMATCH', 'restore body relation does not match referenced operation');
+  }
+  return true;
+}
+
 async function planRestore({ latestOperation, currentContent, currentNotePath, currentNoteType = NOTE_TYPE }) {
-  if (latestOperation?.note?.type !== NOTE_TYPE || currentNoteType !== NOTE_TYPE) {
+  const actualCurrentType = requireCurrentExtractType(currentContent);
+  if (latestOperation?.note?.type !== NOTE_TYPE || currentNoteType && currentNoteType !== actualCurrentType) {
     throw new RefineError('UNSUPPORTED_NOTE_TYPE', 'only Extract is supported');
   }
   return createRestoreOperation({
@@ -400,7 +429,7 @@ async function planRestore({ latestOperation, currentContent, currentNotePath, c
     latestOperation,
     currentContent,
     currentNotePath,
-    currentNoteType,
+    currentNoteType: actualCurrentType,
   });
 }
 
@@ -428,5 +457,6 @@ module.exports = {
   validateState,
   isUnresolvedStatus,
   createRestoreOperation,
+  validateRestoreRelationship,
   planRestore,
 };

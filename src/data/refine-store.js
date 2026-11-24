@@ -13,6 +13,7 @@ const {
   validateState,
   isUnresolvedStatus,
   createRestoreOperation,
+  validateRestoreRelationship,
   requireCurrentExtractType,
   splitContent,
   sha256Text,
@@ -224,6 +225,16 @@ class RefineHistoryStore {
     if (state.status !== 'verified') {
       throw new RefineError('VERIFICATION_REQUIRED', 'only a verified operation can be marked restored');
     }
+    if (!operation.restoreOf) {
+      throw new RefineError('NOT_RESTORE_OPERATION', 'ordinary refine history cannot be marked restored');
+    }
+    let referenced;
+    try {
+      referenced = await this.readOperation(operation.restoreOf);
+    } catch (error) {
+      throw new RefineError('RESTORE_REFERENCE_MISSING', 'restoreOf does not reference a readable operation');
+    }
+    await validateRestoreRelationship(operation, referenced);
     requireCurrentExtractType(currentContent);
     const currentBody = splitContent(currentContent).body;
     const currentHash = await sha256Text(currentBody);
