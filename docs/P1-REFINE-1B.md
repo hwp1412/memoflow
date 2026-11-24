@@ -76,19 +76,20 @@ active Extract
 ## 3. 失败处理
 
 - 历史写失败：正文不变；
-- Editor 替换失败/内容不符：不保存；
-- `setStatus(applied)` 失败：不保存，历史保留；
-- `view.save` 失败：state applied，历史保留，不宣称 verified；
+- history 快照已写、state 初始化失败：报告“快照已写入但状态初始化失败”，不误称操作未开始；正文不变；
+- Editor 替换失败/内容不符：不主动保存；分别检查 Editor/磁盘，历史保留；
+- `setStatus(applied)` 失败：不主动保存；分别检查 Editor/磁盘；可能已被自动保存；
+- `view.save` 失败：state applied，历史保留，不宣称 verified；分别检查 Editor/磁盘；
 - 保存后完整文件不一致：conflict；
-- `markVerified` 失败：state applied，历史保留；
+- `markVerified` 失败：state applied，历史保留；不自动标记 verified；
 - 崩溃后：不自动恢复/重放，不自动 verified；命令因 unresolved 拒绝新操作；
 - 所有异常通知用户“操作未完成，历史已保留”。
 
 ## 4. 测试
 
 - 1A 专项：14 + 30
-- 1B 专项：22
-- 全量：**317/317**
+- 1B 专项：**26**
+- 全量：**321/321**
 - `npm run check`、`npm run verify:memoflow` 通过。
 
 覆盖：
@@ -100,16 +101,33 @@ active Extract
 - Modal 失焦/选区变化；
 - 预览期间 Editor/磁盘变化；
 - 历史写失败；
+- history 快照 + state 初始化失败；
 - applied 状态写失败；
+- autosave + applied 状态写失败同时发生；
 - save 失败；
 - 保存后磁盘不一致；
 - markVerified 失败；
 - 自动保存；
 - CRLF/Unicode；
-- SR/card/readpoint/code/table；
+- SR/card/readpoint/code/table（含无首尾竖线的表格、表格内部选区）；
+- invalid inline Card/SR 正则安全拒绝；
 - Frontmatter/调度字段不变；
 - 重复恢复/恢复冲突；
 - 不调用 `vault.process` / `processFrontMatter`。
+
+## 4.1 异常诊断
+
+Editor 修改开始后，异常不再声称“正文一定未保存”。控制器分别读取：
+
+- 1A state：prepared / applied / verified / conflict / unknown；
+- Editor 当前内容：matches / differs / unknown；
+- 磁盘当前内容：matches / unchanged / differs / unknown。
+
+通知示例：
+
+`状态更新失败；正文修改已在 Editor 中发生，磁盘状态需检查。历史状态=prepared；Editor=matches；磁盘=matches。历史已保留，操作未完成。`
+
+不自动覆盖、恢复或标记 verified。
 
 ## 5. 实机 Obsidian 验收
 

@@ -106,6 +106,7 @@ function setup(t, {
   selectedStart = 0,
   selectedEnd = 5,
   extraLeaves = false,
+  settings = {},
 } = {}) {
   const adapter = new MemoryAdapter();
   const app = {
@@ -142,7 +143,7 @@ function setup(t, {
   const controller = new RefineEditorController({
     app,
     store,
-    settings: {},
+    settings,
     notice: (message, duration) => app.notices.push({ message, duration }),
     getActiveView: () => view,
     promptPreview: options => prompts.preview(options),
@@ -417,4 +418,62 @@ test('no vault.process or Frontmatter writer is used by refine/restore', async (
   await controller.restoreActive();
   assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nHello world\n');
   assert.equal(view.saves, 2);
+});
+
+
+test('invalid configured inline Card regex safely rejects refinement', async (t) => {
+  const { app, adapter, editor, controller } = setup(t, {
+    settings: { inline_cards: { qa_regex: '[' } },
+  });
+  const before = editor.text;
+  assert.equal(await controller.refineActive(), null);
+  assert.equal(editor.text, before);
+  assert.equal((await files(adapter)).length, 0);
+  assert.match(app.notices.at(-1).message, /正则配置无效|安全拒绝/);
+});
+
+test('no-outer-pipe Markdown table selection is rejected, including an interior row', async (t) => {
+  const text = '---\ntype: extract\n---\nAlpha | Beta\n--- | ---\nOne | Two\n';
+  const split = splitContent(text);
+  const { app, adapter, editor, controller } = setup(t, {
+    text,
+    selectedStart: text.indexOf('One') - split.bodyStart,
+    selectedEnd: text.indexOf('One') - split.bodyStart + 3,
+  });
+  assert.equal(await controller.refineActive(), null);
+  assert.equal(editor.text, text);
+  assert.equal((await files(adapter)).length, 0);
+  assert.match(app.notices.at(-1).message, /表格/);
+});
+
+test('autosave plus applied-status failure reports actual editor/disk state', async (t) => {
+  const { app, adapter, editor, store, controller } = setup(t);
+  editor.autoSave = () => { app.disk.set(NOTE_PATH, editor.text); };
+  const original = store.setStatus.bind(store);
+  store.setStatus = async (id, status, options) => {
+    if (status === 'applied') throw new Error('status write failed after autosave');
+    return original(id, status, options);
+  };
+  assert.equal(await controller.refineActive(), null);
+  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi world\n');
+  assert.equal(app.disk.get(NOTE_PATH), editor.text);
+  assert.equal((await store.listEntries(NOTE_PATH))[0].state.status, 'prepared');
+  const message = app.notices.at(-1).message;
+  assert.match(message, /历史状态=prepared/);
+  assert.match(message, /Editor=matches/);
+  assert.match(message, /磁盘=matches/);
+  assert.doesNotMatch(message, /正文未保存/);
+});
+
+test('history snapshot write failure with state initialization failure is diagnostic, not a no-op claim', async (t) => {
+  const { app, adapter, editor, controller } = setup(t);
+  adapter.writeFailures.push('state-tmp');
+  const before = editor.text;
+  assert.equal(await controller.refineActive(), null);
+  assert.equal(editor.text, before);
+  assert.equal(adapter.files.size > 0, true);
+  const message = app.notices.at(-1).message;
+  assert.match(message, /历史快照已写入/);
+  assert.match(message, /状态初始化失败/);
+  assert.doesNotMatch(message, /操作未开始/);
 });

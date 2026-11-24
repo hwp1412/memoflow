@@ -70,15 +70,28 @@ function fencedRanges(text) {
   return ranges;
 }
 
+function isTableDelimiter(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed.includes('|')) return false;
+  const cells = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|');
+  return cells.length >= 2 && cells.every(cell => /^\s*:?-{3,}:?\s*$/.test(cell));
+}
+
 function tableRanges(text) {
   const lines = lineRanges(text);
   const ranges = [];
   for (let i = 0; i < lines.length; i++) {
     const raw = text.slice(lines[i].start, lines[i].end).replace(/\r$/, '');
-    const next = i + 1 < lines.length ? text.slice(lines[i + 1].start, lines[i + 1].end).replace(/\r$/, '') : '';
-    if (/^\s*\|.*\|\s*$/.test(raw) && /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(next)) {
-      ranges.push({ start: lines[i].start, end: lines[Math.min(i + 1, lines.length - 1)].end });
+    if (!isTableDelimiter(raw)) continue;
+    let start = Math.max(0, i - 1);
+    let end = i;
+    while (end + 1 < lines.length) {
+      const next = text.slice(lines[end + 1].start, lines[end + 1].end).replace(/\r$/, '');
+      if (!next.trim() || !next.includes('|')) break;
+      end++;
     }
+    ranges.push({ start: lines[start].start, end: lines[end].end });
+    i = end;
   }
   return ranges;
 }
@@ -293,8 +306,7 @@ class RefineEditorController {
         }
       } catch (error) {
         if (error instanceof RefineFlowError) throw error;
-        // Invalid user setting must not make the operation unsafe; the
-        // conservative structural checks above still apply.
+        throw new RefineFlowError('INVALID_INLINE_REGEX', 'inline Card/SR 正则配置无效，已安全拒绝');
       }
     }
     if (replacement === selected) {
@@ -326,7 +338,35 @@ class RefineEditorController {
     throw new RefineFlowError('DISK_MISMATCH', '保存后的磁盘内容与预期不一致，已停止');
   }
 
+  async _diagnostic(operation, snapshot, expected) {
+    let history = 'unknown';
+    if (operation) {
+      try { history = (await this.store.readState(operation.operationId)).status; }
+      catch (error) { history = 'unknown'; }
+    }
+    let editor = 'unknown';
+    let disk = 'unknown';
+    try {
+      editor = snapshot.editor.getValue() === expected ? 'matches' : 'differs';
+    } catch (error) { editor = 'unknown'; }
+    try {
+      const actual = await this.app.vault.read(snapshot.file);
+      if (actual === expected) disk = 'matches';
+      else if (actual === snapshot.text) disk = 'unchanged';
+      else disk = 'differs';
+    } catch (error) { disk = 'unknown'; }
+    return `历史状态=${history}；Editor=${editor}；磁盘=${disk}。`;
+  }
+
   _notifyError(error, operation) {
+    if (error.details?.diagnostic) {
+      this.notice(`${error.message || error.code} ${error.details.diagnostic} 历史已保留，操作未完成。`, 10000);
+      return;
+    }
+    if (error.details?.operationPersisted) {
+      this.notice(`${error.message || error.code} 历史快照已写入，但状态初始化失败；正文未修改，历史已保留。`, 10000);
+      return;
+    }
     const suffix = operation
       ? ` 操作未完成，历史已保留（${operation.operationId}）。`
       : ' 操作未开始。';
@@ -385,26 +425,30 @@ class RefineEditorController {
       try {
         snapshot.editor.replaceRange(replacementText, snapshot.selection.from, snapshot.selection.to);
       } catch (error) {
+        const diagnostic = await this._diagnostic(operation, snapshot, expected);
         await this._failed(operation);
-        throw new RefineFlowError('EDITOR_REPLACE_FAILED', '编辑器替换失败，正文未保存');
+        throw new RefineFlowError('EDITOR_REPLACE_FAILED', '编辑器替换失败，正文/磁盘状态需检查。', { diagnostic });
       }
       if (snapshot.editor.getValue() !== expected) {
+        const diagnostic = await this._diagnostic(operation, snapshot, expected);
         await this._conflict(operation);
-        throw new RefineFlowError('EDITOR_CONTENT_MISMATCH', '编辑器内容与预期不一致，已停止');
+        throw new RefineFlowError('EDITOR_CONTENT_MISMATCH', '编辑器内容与预期不一致，已停止。', { diagnostic });
       }
 
       try {
         await this.store.setStatus(operation.operationId, 'applied');
       } catch (error) {
-        throw new RefineFlowError('STATUS_UPDATE_FAILED', '正文已在编辑器中修改，但状态更新失败，未保存');
+        const diagnostic = await this._diagnostic(operation, snapshot, expected);
+        throw new RefineFlowError('STATUS_UPDATE_FAILED', '状态更新失败；正文修改已在 Editor 中发生，磁盘状态需检查。', { diagnostic });
       }
 
       try {
         const disk = await this._saveAndVerify(snapshot, expected);
         await this.store.markVerified(operation.operationId, disk);
       } catch (error) {
+        const diagnostic = await this._diagnostic(operation, snapshot, expected);
         if (error.code === 'DISK_MISMATCH') await this._conflict(operation);
-        throw new RefineFlowError(error.code || 'SAVE_OR_VERIFY_FAILED', error.message || '保存或验证失败');
+        throw new RefineFlowError(error.code || 'SAVE_OR_VERIFY_FAILED', `${error.message || '保存或验证失败'}`, { diagnostic });
       }
 
       this.notice('原位精简已完成。', 5000);
@@ -452,18 +496,21 @@ class RefineEditorController {
       try {
         snapshot.editor.replaceRange(operation.after.body, from, to);
       } catch (error) {
+        const diagnostic = await this._diagnostic(operation, snapshot, expected);
         await this._failed(operation);
-        throw new RefineFlowError('EDITOR_REPLACE_FAILED', '恢复时编辑器替换失败，正文未保存');
+        throw new RefineFlowError('EDITOR_REPLACE_FAILED', '恢复时编辑器替换失败，正文/磁盘状态需检查。', { diagnostic });
       }
       if (snapshot.editor.getValue() !== expected) {
+        const diagnostic = await this._diagnostic(operation, snapshot, expected);
         await this._conflict(operation);
-        throw new RefineFlowError('EDITOR_CONTENT_MISMATCH', '恢复后的编辑器内容与预期不一致，已停止');
+        throw new RefineFlowError('EDITOR_CONTENT_MISMATCH', '恢复后的编辑器内容与预期不一致，已停止。', { diagnostic });
       }
 
       try {
         await this.store.setStatus(operation.operationId, 'applied');
       } catch (error) {
-        throw new RefineFlowError('STATUS_UPDATE_FAILED', '恢复正文已在编辑器中修改，但状态更新失败，未保存');
+        const diagnostic = await this._diagnostic(operation, snapshot, expected);
+        throw new RefineFlowError('STATUS_UPDATE_FAILED', '恢复正文已在 Editor 中修改，但状态更新失败；磁盘状态需检查。', { diagnostic });
       }
 
       try {
@@ -471,8 +518,9 @@ class RefineEditorController {
         await this.store.markVerified(operation.operationId, disk);
         await this.store.markRestored(operation.operationId, disk);
       } catch (error) {
+        const diagnostic = await this._diagnostic(operation, snapshot, expected);
         if (error.code === 'DISK_MISMATCH') await this._conflict(operation);
-        throw new RefineFlowError(error.code || 'RESTORE_SAVE_OR_VERIFY_FAILED', error.message || '恢复保存或验证失败');
+        throw new RefineFlowError(error.code || 'RESTORE_SAVE_OR_VERIFY_FAILED', error.message || '恢复保存或验证失败', { diagnostic });
       }
 
       this.notice('已恢复最近一次精简。', 5000);
