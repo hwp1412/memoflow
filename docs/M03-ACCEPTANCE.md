@@ -7,7 +7,7 @@
 - 实现 Commit：`344e624`
 - Mock 清理修正 Commit：`5a426a4`
 - 验收报告 Commit：本文件所在提交（分支 HEAD）
-- PR：待创建（本机无 `gh`/API token）
+- PR：#5：<https://github.com/hwp1412/memoflow/pull/5>
 - 合并状态：**未合并**；未发布；未开始 Phase 1 / MF-US-1
 
 ## 1. 本次实现
@@ -138,10 +138,14 @@ M03 覆盖：
 
 - 分支：`test/m03-write-regression`
 - 实现提交：`344e624`
+- Mock 清理修正提交：`5a426a4`
 - 报告提交：本文件所在提交
-- PR 创建链接：`https://github.com/hwp1412/memoflow/pull/new/test/m03-write-regression`
-- 本机无 `gh`/API token，PR 需你点击创建。
-- CI 通过 `npm ci` + `npm run check` 后，才建议合并。
+- PR：#5：<https://github.com/hwp1412/memoflow/pull/5>
+- GitHub Actions：**通过**。Run `45403998409`，job `138479713083`：
+  - `Run npm ci` success；
+  - `Run npm run check` success；
+  - 其他步骤 success。
+- 链接：<https://github.com/hwp1412/memoflow/actions/runs/45403998409>
 - 未合并、未发布、未进入 Phase 1。
 
 ## 9. Mock 全局状态清理修正
