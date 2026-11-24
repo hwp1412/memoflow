@@ -15,6 +15,8 @@ const { MemoFlowOverloadModal } = require('./views/overload-modal.js');
 const { MemoFlowUserGuideModal } = require('./views/user-guide-modal.js');
 const { ExtractOpenModal } = require('./views/extract-open-modal.js');
 const { RefinePreviewModal } = require('./views/refine-modal.js');
+const { RefineHistoryModal } = require('./views/refine-history-modal.js');
+const { buildHistoryView } = require('./data/refine-history-read.js');
 const { RefineHistoryStore } = require('./data/refine-store.js');
 const { RefineEditorController } = require('./data/refine-editor.js');
 const { ConfirmActionModal } = require('./views/confirm-modal.js');
@@ -76,6 +78,11 @@ class MemoFlowPlugin extends BasePlugin {
       id: 'memoflow-restore-refine',
       name: '恢复上次精简',
       callback: () => this._getRefineController().restoreActive(),
+    });
+    this.addCommand({
+      id: 'memoflow-refine-history',
+      name: '查看精简历史',
+      callback: () => this.openRefineHistory(),
     });
 
     this._applyChineseCommandNames();
@@ -448,6 +455,13 @@ class MemoFlowPlugin extends BasePlugin {
           }
           await this._getRefineController().refineActive();
           return;
+        case 'refine-history':
+          if (fm.type !== 'extract') {
+            new Notice('精简历史只支持 Extract。');
+            return;
+          }
+          await this.openRefineHistory();
+          return;
         case 'clipboard-extract':
           await this.clipboardExtract(file);
           return;
@@ -510,7 +524,7 @@ class MemoFlowPlugin extends BasePlugin {
       }
     } catch (error) {
       console.error('[MemoFlow] reading action failed', action, error);
-      new Notice(`${({ complete: '完成阅读', skip: '下一项', postpone: '延后', dismiss: '移出队列', 'mark-done': '标记完成', 'clipboard-extract': '剪贴摘录', 'create-card': '制卡', 'refine-extract': '原位精简', priority: '设置优先级', 'open-pdf': '打开 PDF' })[action] || '操作'}失败：${error.message || '未知错误'}。可重试；仍失败时打开原笔记或重载 Obsidian。`, 8000);
+      new Notice(`${({ complete: '完成阅读', skip: '下一项', postpone: '延后', dismiss: '移出队列', 'mark-done': '标记完成', 'clipboard-extract': '剪贴摘录', 'create-card': '制卡', 'refine-extract': '原位精简', 'refine-history': '精简历史', priority: '设置优先级', 'open-pdf': '打开 PDF' })[action] || '操作'}失败：${error.message || '未知错误'}。可重试；仍失败时打开原笔记或重载 Obsidian。`, 8000);
     } finally {
       this._syncReadingSurface();
     }
@@ -585,6 +599,7 @@ class MemoFlowPlugin extends BasePlugin {
       }
       if (fm.type === 'extract') {
         add('原位精简…', 'refine-extract');
+        add('查看精简历史…', 'refine-history');
       }
       separator();
       add('设置优先级…', 'priority');
@@ -1173,9 +1188,52 @@ class MemoFlowPlugin extends BasePlugin {
     return null;
   }
 
+  _getRefineStore() {
+    if (!this._refineStore) {
+      this._refineStore = new RefineHistoryStore({ adapter: this.app.vault.adapter });
+    }
+    return this._refineStore;
+  }
+
+  async openRefineHistory() {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const file = view?.file || this.app.workspace.getActiveFile();
+    if (!file || file.extension !== 'md') {
+      new Notice('请先打开一个 Markdown 摘录。');
+      return;
+    }
+    try {
+      const disk = await this.app.vault.read(file);
+      const currentContent = view?.editor?.getValue?.() ?? disk;
+      const currentDirty = view?.editor ? currentContent !== disk : false;
+      let model = null;
+      let error = null;
+      try {
+        const entries = await this._getRefineStore().listEntries(file.path);
+        model = buildHistoryView({
+          entries,
+          currentContent,
+          currentPath: file.path,
+          currentDirty,
+        });
+      } catch (readError) {
+        error = readError;
+        model = buildHistoryView({
+          entries: [],
+          currentContent,
+          currentPath: file.path,
+          currentDirty,
+        });
+      }
+      new RefineHistoryModal(this.app, { path: file.path, model, error }).open();
+    } catch (error) {
+      new Notice(`无法打开精简历史：${error.message || '未知错误'}。笔记未修改。`, 8000);
+    }
+  }
+
   _getRefineController() {
     if (!this._refineController) {
-      this._refineStore = new RefineHistoryStore({ adapter: this.app.vault.adapter });
+      this._refineStore = this._getRefineStore();
       this._refineController = new RefineEditorController({
         app: this.app,
         store: this._refineStore,
