@@ -13,10 +13,13 @@ const guard = require('./test-vault.js');
 
 const {
   MARKER_NAME,
+  MARKER_KIND,
+  MARKER_VERSION,
   REPO_ROOT,
   assertTestVault,
   readMarker,
   validateTestVault,
+  pathHash,
 } = guard;
 
 const MANIFEST_NAME = 'manifest.json';
@@ -170,6 +173,32 @@ function isDefaultVault(vaultPath) {
     return target === fs.realpathSync(fallback);
   } catch {
     return false;
+  }
+}
+
+function isDefaultVaultPath(vaultPath) {
+  const target = path.resolve(String(vaultPath || ''));
+  const fallback = path.resolve(REPO_ROOT, '..', 'MemoFlow-Test');
+  if (target === fallback) return true;
+  try {
+    return fs.realpathSync(target) === fs.realpathSync(fallback);
+  } catch {
+    return false;
+  }
+}
+
+function assertObsidianClosedForTarget(target, {
+  isRunning = isObsidianRunning,
+  isDefault = isDefaultVaultPath,
+  confirmed = false,
+} = {}) {
+  if (!isDefault(target)) return;
+  const status = isRunning();
+  if (status.running) {
+    throw new VaultSnapshotError('OBSIDIAN_RUNNING', 'Obsidian is running; fully quit Obsidian before recovering the default test vault');
+  }
+  if (!status.supported && !confirmed) {
+    throw new VaultSnapshotError('OBSIDIAN_UNVERIFIED', 'cannot verify that Obsidian is closed; re-run with --confirm-obsidian-closed');
   }
 }
 
@@ -720,6 +749,131 @@ function expectedFilesForPlan(plan) {
   return expected;
 }
 
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const HASH_HEX = /^[0-9a-f]{64}$/i;
+const JOURNAL_PHASES = new Set(['staging', 'staging-ready', 'old-renamed', 'swapped', 'verified']);
+
+async function backupProof(backupDir, format) {
+  const file = format === 'legacy-m01'
+    ? path.join(backupDir, 'checksums/backup.sha256')
+    : path.join(backupDir, MANIFEST_NAME);
+  if (!fs.existsSync(file)) throw new VaultSnapshotError('JOURNAL_BACKUP', `backup proof file is missing: ${file}`);
+  return sha256File(file);
+}
+
+async function markerForRecovery(directory, targetReal, journal) {
+  const parsed = readMarker(directory);
+  if (!parsed || parsed.ok === false || !parsed.marker) {
+    throw new VaultSnapshotError('JOURNAL_MARKER', `missing or invalid test-vault marker: ${directory}`);
+  }
+  const marker = parsed.marker;
+  if (marker.kind !== MARKER_KIND || marker.markerVersion !== MARKER_VERSION) {
+    throw new VaultSnapshotError('JOURNAL_MARKER', 'marker kind/version is invalid');
+  }
+  if (marker.vaultName !== 'MemoFlow-Test' || !UUID_V4.test(String(marker.vaultId || ''))) {
+    throw new VaultSnapshotError('JOURNAL_MARKER', 'marker vault identity is invalid');
+  }
+  if (marker.pathHash !== pathHash(targetReal)) {
+    throw new VaultSnapshotError('JOURNAL_MARKER_PATH', 'marker path hash does not belong to the restore target');
+  }
+  if (marker.vaultId !== journal.vaultId) {
+    throw new VaultSnapshotError('JOURNAL_VAULT_ID', 'marker vaultId does not match the restore journal');
+  }
+  const hash = await sha256File(path.join(directory, MARKER_NAME));
+  if (hash !== journal.markerSha256) {
+    throw new VaultSnapshotError('JOURNAL_MARKER_HASH', 'marker hash does not match the restore journal');
+  }
+  return marker;
+}
+
+async function validateRestoreJournal(journalPath) {
+  const file = path.resolve(String(journalPath || ''));
+  const stat = await fsp.lstat(file).catch(() => null);
+  if (!stat || !stat.isFile() || stat.isSymbolicLink()) {
+    throw new VaultSnapshotError('JOURNAL', `restore journal is missing: ${file}`);
+  }
+  let journal;
+  try {
+    journal = JSON.parse(await fsp.readFile(file, 'utf8'));
+  } catch {
+    throw new VaultSnapshotError('JOURNAL', 'restore journal is not valid JSON');
+  }
+  if (!journal || journal.schemaVersion !== JOURNAL_SCHEMA || journal.kind !== 'memoflow-restore-journal') {
+    throw new VaultSnapshotError('JOURNAL', 'restore journal is invalid');
+  }
+  if (!UUID_V4.test(String(journal.journalId || '')) || !UUID_V4.test(String(journal.vaultId || ''))) {
+    throw new VaultSnapshotError('JOURNAL_ID', 'restore journal id/vaultId is invalid');
+  }
+  if (!HASH_HEX.test(String(journal.markerSha256 || '')) || !HASH_HEX.test(String(journal.backupProof || ''))) {
+    throw new VaultSnapshotError('JOURNAL_HASH', 'restore journal hashes are invalid');
+  }
+  if (!JOURNAL_PHASES.has(journal.phase)) throw new VaultSnapshotError('JOURNAL_PHASE', 'restore journal phase is invalid');
+  if (!['merge', 'replace'].includes(journal.mode)) throw new VaultSnapshotError('JOURNAL_MODE', 'restore journal mode is invalid');
+  if (!journal.backupFormat || !['v2', 'legacy-m01'].includes(journal.backupFormat)) {
+    throw new VaultSnapshotError('JOURNAL_BACKUP', 'restore journal backup format is invalid');
+  }
+  if (!journal.target || !journal.oldTarget || !journal.staging || !journal.backup) {
+    throw new VaultSnapshotError('JOURNAL', 'restore journal paths are incomplete');
+  }
+  if (!path.isAbsolute(journal.target) || !path.isAbsolute(journal.oldTarget) || !path.isAbsolute(journal.staging) || !path.isAbsolute(journal.backup)) {
+    throw new VaultSnapshotError('JOURNAL_PATH', 'restore journal paths must be absolute');
+  }
+  const target = path.resolve(journal.target);
+  const oldTarget = path.resolve(journal.oldTarget);
+  const staging = path.resolve(journal.staging);
+  const backupDir = path.resolve(journal.backup);
+  if (path.basename(target) !== 'MemoFlow-Test') {
+    throw new VaultSnapshotError('JOURNAL_TARGET', 'restore journal target must be a MemoFlow-Test vault');
+  }
+  const parent = path.dirname(target);
+  if (path.dirname(oldTarget) !== parent || path.dirname(staging) !== parent || path.dirname(file) !== parent) {
+    throw new VaultSnapshotError('JOURNAL_PATH', 'restore journal and targets must share the target parent');
+  }
+  if (!path.basename(file).startsWith('.memoflow-restore-') || !path.basename(file).endsWith('.json')) {
+    throw new VaultSnapshotError('JOURNAL_PATH', 'restore journal filename is not recognized');
+  }
+  if (!oldTarget.startsWith(`${target}.before-restore-`)
+      || !path.basename(staging).startsWith(`.${path.basename(target)}.restore-`)) {
+    throw new VaultSnapshotError('JOURNAL_PATH', 'restore journal paths are not recognized restore paths');
+  }
+  await assertOutsidePath(REPO_ROOT, target, 'repository');
+  await assertOutsidePath(target, backupDir, 'backup');
+  if (!fs.existsSync(backupDir)) throw new VaultSnapshotError('JOURNAL_BACKUP', 'restore journal backup is missing');
+  const backup = await verifyBackup(backupDir, { strict: true });
+  if (backup.format !== journal.backupFormat) {
+    throw new VaultSnapshotError('JOURNAL_BACKUP', 'restore journal backup format does not match the backup');
+  }
+  const proof = await backupProof(backupDir, backup.format);
+  if (proof !== journal.backupProof) {
+    throw new VaultSnapshotError('JOURNAL_BACKUP_PROOF', 'restore journal backup proof does not match the backup');
+  }
+
+  const targetExists = fs.existsSync(target);
+  const oldExists = fs.existsSync(oldTarget);
+  if (!targetExists && !oldExists) {
+    throw new VaultSnapshotError('JOURNAL_TARGET', 'neither target nor old target exists');
+  }
+  const canonicalTarget = targetExists
+    ? fs.realpathSync(target)
+    : path.join(await fsp.realpath(parent), path.basename(target));
+  if (canonicalTarget !== target) {
+    throw new VaultSnapshotError('JOURNAL_PATH', 'restore journal target is not canonical');
+  }
+  if (targetExists) {
+    const valid = validateTestVault(target, { repoRoot: REPO_ROOT });
+    if (!valid.ok) throw new VaultSnapshotError('JOURNAL_TARGET', 'current target is not a valid test vault');
+    await markerForRecovery(target, target, journal);
+  }
+  if (oldExists) {
+    const oldStat = await fsp.lstat(oldTarget);
+    if (oldStat.isSymbolicLink() || !oldStat.isDirectory()) {
+      throw new VaultSnapshotError('JOURNAL_PATH', 'old target must be a real directory');
+    }
+    await markerForRecovery(oldTarget, target, journal);
+  }
+  return { file, journal, target, oldTarget, staging, backupDir, targetExists, oldExists };
+}
+
 async function writeJournal(journalPath, journal) {
   const temp = `${journalPath}.tmp`;
   await fsp.writeFile(temp, JSON.stringify(journal, null, 2) + '\n', 'utf8');
@@ -751,9 +905,18 @@ async function applyRestore(plan, {
     obsidianRunning: false,
     now,
   });
+  const markerMeta = plan.targetManifest.marker;
+  if (!markerMeta || !markerMeta.vaultId) {
+    throw new VaultSnapshotError('TARGET_MARKER', 'target marker metadata is missing');
+  }
   const journal = {
     schemaVersion: JOURNAL_SCHEMA,
     kind: 'memoflow-restore-journal',
+    journalId: crypto.randomUUID(),
+    vaultId: markerMeta.vaultId,
+    markerSha256: plan.targetMarker.sha256,
+    backupFormat: plan.backup.format,
+    backupProof: await backupProof(plan.backupDir, plan.backup.format),
     createdAt: new Date().toISOString(),
     target,
     staging,
@@ -849,45 +1012,39 @@ async function applyRestore(plan, {
 }
 
 async function recoverInterruptedRestore(journalPath, { hooks = {} } = {}) {
-  const file = path.resolve(String(journalPath || ''));
-  const stat = await fsp.lstat(file).catch(() => null);
-  if (!stat || !stat.isFile() || stat.isSymbolicLink()) {
-    throw new VaultSnapshotError('JOURNAL', `restore journal is missing: ${file}`);
-  }
-  const journal = JSON.parse(await fsp.readFile(file, 'utf8'));
-  if (!journal || journal.schemaVersion !== JOURNAL_SCHEMA || journal.kind !== 'memoflow-restore-journal') {
-    throw new VaultSnapshotError('JOURNAL', 'restore journal is invalid');
-  }
-  const target = path.resolve(journal.target);
-  const oldTarget = path.resolve(journal.oldTarget);
-  const staging = path.resolve(journal.staging);
-  if (path.basename(target) !== 'MemoFlow-Test') throw new VaultSnapshotError('JOURNAL', 'journal target must be a MemoFlow-Test vault');
-  if (path.dirname(oldTarget) !== path.dirname(target) || path.dirname(staging) !== path.dirname(target)) {
-    throw new VaultSnapshotError('JOURNAL', 'journal paths must share the target parent');
-  }
-  if (!oldTarget.startsWith(`${target}.before-restore-`) || !path.basename(staging).startsWith(`.${path.basename(target)}.restore-`)) {
-    throw new VaultSnapshotError('JOURNAL', 'journal paths are not recognized restore paths');
-  }
-  await assertOutsidePath(REPO_ROOT, target, 'repository');
+  const validated = await validateRestoreJournal(journalPath);
+  const { file, journal, target, oldTarget, staging, targetExists, oldExists } = validated;
   await hooks.beforeRecover?.({ journal, target, oldTarget, staging });
-  const targetExists = fs.existsSync(target);
-  const oldExists = fs.existsSync(oldTarget);
+  let movedNew = null;
   if (targetExists && oldExists) {
-    const moved = uniquePath(`${target}.recovered-new-${nowStamp()}`);
-    await fsp.rename(target, moved);
-    await fsp.rename(oldTarget, target);
+    movedNew = uniquePath(`${target}.recovered-new-${nowStamp()}`);
+    await fsp.rename(target, movedNew);
+    try {
+      await fsp.rename(oldTarget, target);
+      const valid = validateTestVault(target, { repoRoot: REPO_ROOT });
+      if (!valid.ok) throw new VaultSnapshotError('JOURNAL_TARGET', 'restored old target is not a valid test vault');
+    } catch (error) {
+      if (fs.existsSync(target)) {
+        await fsp.rename(target, uniquePath(`${target}.invalid-recovered-${nowStamp()}`)).catch(() => {});
+      }
+      if (fs.existsSync(movedNew)) await fsp.rename(movedNew, target).catch(() => {});
+      throw new VaultSnapshotError('JOURNAL_RECOVER', `could not restore the old target: ${error.message}`);
+    }
   } else if (!targetExists && oldExists) {
-    const marker = readMarker(oldTarget);
-    if (!marker || marker.ok === false) throw new VaultSnapshotError('JOURNAL', 'old target is not a valid test vault');
     await fsp.rename(oldTarget, target);
+    const valid = validateTestVault(target, { repoRoot: REPO_ROOT });
+    if (!valid.ok) {
+      await fsp.rename(target, oldTarget).catch(() => {});
+      throw new VaultSnapshotError('JOURNAL_TARGET', 'restored target is not a valid test vault');
+    }
   } else if (targetExists) {
     const valid = validateTestVault(target, { repoRoot: REPO_ROOT });
-    if (!valid.ok) throw new VaultSnapshotError('JOURNAL', 'current target is not a valid test vault');
+    if (!valid.ok) throw new VaultSnapshotError('JOURNAL_TARGET', 'current target is not a valid test vault');
   } else {
-    throw new VaultSnapshotError('JOURNAL', 'neither target nor old target exists');
+    throw new VaultSnapshotError('JOURNAL_TARGET', 'neither target nor old target exists');
   }
   await fsp.rm(file, { force: true });
-  return { target, oldTarget, staging, phase: journal.phase, recovered: true };
+  return { target, oldTarget, staging, phase: journal.phase, recovered: true, movedNew };
 }
 
 module.exports = {
@@ -909,6 +1066,8 @@ module.exports = {
   sanitizeLabel,
   defaultBackupRoot,
   isDefaultVault,
+  isDefaultVaultPath,
+  assertObsidianClosedForTarget,
   isObsidianRunning,
   checkFreeSpace,
   walkVault,
@@ -928,5 +1087,6 @@ module.exports = {
   validateManifestPaths,
   applyRestore,
   recoverInterruptedRestore,
+  validateRestoreJournal,
   assertOutsidePath,
 };

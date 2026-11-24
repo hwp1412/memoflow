@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const snapshot = require('../scripts/vault-snapshot.js');
@@ -58,6 +59,31 @@ async function fingerprint(root) {
 
 async function backup(vault, out, options = {}) {
   return snapshot.createBackup({ vault, outRoot: out, label: 'test', ...options });
+}
+
+async function journalFor({ target, markerDir = target, oldTarget, staging, backupDir, phase = 'old-renamed', overrides = {} } = {}) {
+  const targetReal = fs.existsSync(target)
+    ? fs.realpathSync(target)
+    : path.join(fs.realpathSync(path.dirname(target)), path.basename(target));
+  const markerPath = path.join(markerDir, '.memoflow-test-vault');
+  const marker = JSON.parse(await fsp.readFile(markerPath, 'utf8'));
+  return {
+    schemaVersion: 1,
+    kind: 'memoflow-restore-journal',
+    journalId: crypto.randomUUID(),
+    vaultId: marker.vaultId,
+    markerSha256: await snapshot.sha256File(markerPath),
+    backupFormat: 'v2',
+    backupProof: await snapshot.sha256File(path.join(backupDir, 'manifest.json')),
+    createdAt: new Date().toISOString(),
+    target: targetReal,
+    staging: path.resolve(staging),
+    oldTarget: path.resolve(oldTarget),
+    backup: path.resolve(backupDir),
+    mode: 'merge',
+    phase,
+    ...overrides,
+  };
 }
 
 function assertCode(code) {
@@ -314,33 +340,33 @@ test('failure after verification rolls the target back', async (t) => {
 
 test('interrupted restore recovery puts the old target back', async (t) => {
   const target = await makeTarget(t, { extra: true });
-  const before = await fingerprint(target.target);
-  const parent = path.dirname(target.target);
+  const targetReal = fs.realpathSync(target.target);
+  const before = await fingerprint(targetReal);
+  const parent = path.dirname(targetReal);
+  const backupDir = path.join(parent, 'backups');
+  const backupResult = await backup(targetReal, backupDir);
   const oldTarget = path.join(parent, 'MemoFlow-Test.before-restore-fixed');
   const staging = path.join(parent, '.MemoFlow-Test.restore-fixed');
   const journalPath = path.join(parent, '.memoflow-restore-fixed.json');
   await fsp.mkdir(staging, { recursive: true });
-  await fsp.rename(target.target, oldTarget);
-  await fsp.writeFile(journalPath, JSON.stringify({
-    schemaVersion: 1,
-    kind: 'memoflow-restore-journal',
-    createdAt: new Date().toISOString(),
-    target: target.target,
-    staging,
+  await fsp.rename(targetReal, oldTarget);
+  await fsp.writeFile(journalPath, JSON.stringify(await journalFor({
+    target: targetReal,
+    markerDir: oldTarget,
     oldTarget,
-    backup: path.join(parent, 'backup'),
-    mode: 'merge',
+    staging,
+    backupDir: backupResult.dir,
     phase: 'old-renamed',
-  }));
+  })));
   const result = await snapshot.recoverInterruptedRestore(journalPath);
   assert.equal(result.recovered, true);
-  assert.deepEqual(await fingerprint(target.target), before);
+  assert.deepEqual(await fingerprint(targetReal), before);
   assert.equal(fs.existsSync(journalPath), false);
   assert.ok(fs.existsSync(staging));
 });
 
 test('interrupted swap recovery prefers the old target', async (t) => {
-  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'mf-m02-swap-'));
+  const root = fs.realpathSync(await fsp.mkdtemp(path.join(os.tmpdir(), 'mf-m02-swap-')));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const target = path.join(root, 'MemoFlow-Test');
   const oldTarget = path.join(root, 'MemoFlow-Test.before-restore-fixed');
@@ -349,21 +375,20 @@ test('interrupted swap recovery prefers the old target', async (t) => {
   await fsp.mkdir(path.join(target, '.obsidian'), { recursive: true });
   guard.initMarker(target);
   await fsp.writeFile(path.join(target, 'old.md'), 'old\n');
+  const backupDir = path.join(root, 'backups');
+  const backupResult = await backup(target, backupDir);
   await fsp.cp(target, oldTarget, { recursive: true });
   await fsp.rm(path.join(target, 'old.md'));
   await fsp.writeFile(path.join(target, 'new.md'), 'new\n');
   await fsp.mkdir(staging, { recursive: true });
-  await fsp.writeFile(journalPath, JSON.stringify({
-    schemaVersion: 1,
-    kind: 'memoflow-restore-journal',
-    createdAt: new Date().toISOString(),
+  await fsp.writeFile(journalPath, JSON.stringify(await journalFor({
     target,
-    staging,
+    markerDir: target,
     oldTarget,
-    backup: path.join(root, 'backup'),
-    mode: 'merge',
+    staging,
+    backupDir: backupResult.dir,
     phase: 'swapped',
-  }));
+  })));
   await snapshot.recoverInterruptedRestore(journalPath);
   assert.equal(await fsp.readFile(path.join(target, 'old.md'), 'utf8'), 'old\n');
   assert.equal(fs.existsSync(path.join(target, 'new.md')), false);
@@ -371,8 +396,135 @@ test('interrupted swap recovery prefers the old target', async (t) => {
   assert.ok(names.some(name => name.includes('.recovered-new-')));
 });
 
+test('recover rejects a journal outside the target parent', async (t) => {
+  const target = await makeTarget(t, { extra: true });
+  const targetReal = fs.realpathSync(target.target);
+  const parent = path.dirname(targetReal);
+  const other = await fsp.mkdtemp(path.join(os.tmpdir(), 'mf-m02-journal-'));
+  t.after(() => fsp.rm(other, { recursive: true, force: true }));
+  const backupDir = path.join(parent, 'backups');
+  const backupResult = await backup(targetReal, backupDir);
+  const journal = await journalFor({
+    target: targetReal,
+    markerDir: targetReal,
+    oldTarget: path.join(parent, 'MemoFlow-Test.before-restore-bad'),
+    staging: path.join(parent, '.MemoFlow-Test.restore-bad'),
+    backupDir: backupResult.dir,
+  });
+  const journalPath = path.join(other, '.memoflow-restore-bad.json');
+  await fsp.writeFile(journalPath, JSON.stringify(journal));
+  await assert.rejects(snapshot.recoverInterruptedRestore(journalPath), assertCode('JOURNAL_PATH'));
+});
+
+test('recover rejects an old target marker that does not belong to the target path', async (t) => {
+  const target = await makeTarget(t, { extra: true });
+  const targetReal = fs.realpathSync(target.target);
+  const parent = path.dirname(targetReal);
+  const backupDir = path.join(parent, 'backups');
+  const backupResult = await backup(targetReal, backupDir);
+  const oldTarget = path.join(parent, 'MemoFlow-Test.before-restore-bad');
+  const staging = path.join(parent, '.MemoFlow-Test.restore-bad');
+  const journalPath = path.join(parent, '.memoflow-restore-bad.json');
+  await fsp.mkdir(staging, { recursive: true });
+  await fsp.rename(targetReal, oldTarget);
+  const markerPath = path.join(oldTarget, '.memoflow-test-vault');
+  const marker = JSON.parse(await fsp.readFile(markerPath, 'utf8'));
+  marker.pathHash = '0'.repeat(64);
+  await fsp.writeFile(markerPath, JSON.stringify(marker, null, 2) + '\n');
+  await fsp.writeFile(journalPath, JSON.stringify(await journalFor({
+    target: targetReal,
+    markerDir: oldTarget,
+    oldTarget,
+    staging,
+    backupDir: backupResult.dir,
+  })));
+  await assert.rejects(snapshot.recoverInterruptedRestore(journalPath), assertCode('JOURNAL_MARKER_PATH'));
+});
+
+test('recover rejects a vaultId mismatch and a marker hash mismatch', async (t) => {
+  const target = await makeTarget(t, { extra: true });
+  const targetReal = fs.realpathSync(target.target);
+  const parent = path.dirname(targetReal);
+  const backupDir = path.join(parent, 'backups');
+  const backupResult = await backup(targetReal, backupDir);
+  const oldTarget = path.join(parent, 'MemoFlow-Test.before-restore-bad');
+  const staging = path.join(parent, '.MemoFlow-Test.restore-bad');
+  const journalPath = path.join(parent, '.memoflow-restore-bad.json');
+  await fsp.mkdir(staging, { recursive: true });
+  await fsp.rename(targetReal, oldTarget);
+  const base = await journalFor({ target: targetReal, markerDir: oldTarget, oldTarget, staging, backupDir: backupResult.dir });
+  await fsp.writeFile(journalPath, JSON.stringify({ ...base, vaultId: crypto.randomUUID() }));
+  await assert.rejects(snapshot.recoverInterruptedRestore(journalPath), assertCode('JOURNAL_VAULT_ID'));
+  await fsp.writeFile(journalPath, JSON.stringify({ ...base, markerSha256: '0'.repeat(64) }));
+  await assert.rejects(snapshot.recoverInterruptedRestore(journalPath), assertCode('JOURNAL_MARKER_HASH'));
+});
+
+test('recover rejects a backup proof mismatch', async (t) => {
+  const target = await makeTarget(t, { extra: true });
+  const targetReal = fs.realpathSync(target.target);
+  const parent = path.dirname(targetReal);
+  const backupDir = path.join(parent, 'backups');
+  const backupResult = await backup(targetReal, backupDir);
+  const oldTarget = path.join(parent, 'MemoFlow-Test.before-restore-bad');
+  const staging = path.join(parent, '.MemoFlow-Test.restore-bad');
+  const journalPath = path.join(parent, '.memoflow-restore-bad.json');
+  await fsp.mkdir(staging, { recursive: true });
+  await fsp.rename(targetReal, oldTarget);
+  const journal = await journalFor({ target: targetReal, markerDir: oldTarget, oldTarget, staging, backupDir: backupResult.dir });
+  await fsp.writeFile(journalPath, JSON.stringify({ ...journal, backupProof: '0'.repeat(64) }));
+  await assert.rejects(snapshot.recoverInterruptedRestore(journalPath), assertCode('JOURNAL_BACKUP_PROOF'));
+});
+
+test('recover rejects an invalid journal id and a symlinked journal', async (t) => {
+  const target = await makeTarget(t, { extra: true });
+  const targetReal = fs.realpathSync(target.target);
+  const parent = path.dirname(targetReal);
+  const backupDir = path.join(parent, 'backups');
+  const backupResult = await backup(targetReal, backupDir);
+  const oldTarget = path.join(parent, 'MemoFlow-Test.before-restore-bad');
+  const staging = path.join(parent, '.MemoFlow-Test.restore-bad');
+  const journalPath = path.join(parent, '.memoflow-restore-bad.json');
+  const base = await journalFor({ target: targetReal, markerDir: targetReal, oldTarget, staging, backupDir: backupResult.dir });
+  await fsp.writeFile(journalPath, JSON.stringify({ ...base, journalId: 'not-a-uuid' }));
+  await assert.rejects(snapshot.recoverInterruptedRestore(journalPath), assertCode('JOURNAL_ID'));
+  if (process.platform !== 'win32') {
+    const realJournal = path.join(parent, '.memoflow-restore-real.json');
+    await fsp.writeFile(realJournal, JSON.stringify(base));
+    await fsp.rm(journalPath, { force: true });
+    await fsp.symlink(realJournal, journalPath);
+    await assert.rejects(snapshot.recoverInterruptedRestore(journalPath), assertCode('JOURNAL'));
+  }
+});
+
+test('assertObsidianClosedForTarget honors injected state', () => {
+  const target = '/tmp/MemoFlow-Test';
+  assert.throws(
+    () => snapshot.assertObsidianClosedForTarget(target, {
+      isDefault: () => true,
+      isRunning: () => ({ running: true, supported: true }),
+    }),
+    assertCode('OBSIDIAN_RUNNING'),
+  );
+  assert.throws(
+    () => snapshot.assertObsidianClosedForTarget(target, {
+      isDefault: () => true,
+      isRunning: () => ({ running: false, supported: false }),
+    }),
+    assertCode('OBSIDIAN_UNVERIFIED'),
+  );
+  assert.doesNotThrow(() => snapshot.assertObsidianClosedForTarget(target, {
+    isDefault: () => true,
+    isRunning: () => ({ running: false, supported: false }),
+    confirmed: true,
+  }));
+  assert.doesNotThrow(() => snapshot.assertObsidianClosedForTarget(target, {
+    isDefault: () => false,
+    isRunning: () => ({ running: true, supported: true }),
+  }));
+});
+
 test('restore CLI --recover restores the old target', async (t) => {
-  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'mf-m02-cli-recover-'));
+  const root = fs.realpathSync(await fsp.mkdtemp(path.join(os.tmpdir(), 'mf-m02-cli-recover-')));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const target = path.join(root, 'MemoFlow-Test');
   const oldTarget = path.join(root, 'MemoFlow-Test.before-restore-fixed');
@@ -381,20 +533,17 @@ test('restore CLI --recover restores the old target', async (t) => {
   await fsp.mkdir(path.join(target, '.obsidian'), { recursive: true });
   guard.initMarker(target);
   await fsp.writeFile(path.join(target, 'old.md'), 'old\n');
+  const backupResult = await backup(target, path.join(root, 'backups'));
   await fsp.cp(target, oldTarget, { recursive: true });
   await fsp.rm(target, { recursive: true, force: true });
   await fsp.mkdir(staging, { recursive: true });
-  await fsp.writeFile(journalPath, JSON.stringify({
-    schemaVersion: 1,
-    kind: 'memoflow-restore-journal',
-    createdAt: new Date().toISOString(),
+  await fsp.writeFile(journalPath, JSON.stringify(await journalFor({
     target,
-    staging,
+    markerDir: oldTarget,
     oldTarget,
-    backup: path.join(root, 'backup'),
-    mode: 'merge',
-    phase: 'old-renamed',
-  }));
+    staging,
+    backupDir: backupResult.dir,
+  })));
   const stdout = execFileSync(process.execPath, [
     path.join(REPO, 'scripts/restore-test-vault.mjs'),
     '--recover',

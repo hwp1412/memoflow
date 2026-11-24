@@ -6,6 +6,7 @@ import snapshot from './vault-snapshot.js';
 
 const {
   applyRestore,
+  assertObsidianClosedForTarget,
   formatBytes,
   isDefaultVault,
   isObsidianRunning,
@@ -71,7 +72,13 @@ async function handleRecover(argv) {
     process.exitCode = 2;
     return;
   }
-  const result = await recoverInterruptedRestore(path.resolve(journal));
+  const result = await recoverInterruptedRestore(path.resolve(journal), {
+    hooks: {
+      beforeRecover: ({ journal: restoreJournal }) => assertObsidianClosedForTarget(restoreJournal.target, {
+        confirmed: argv.includes('--confirm-obsidian-closed'),
+      }),
+    },
+  });
   if (argv.includes('--json')) {
     console.log(JSON.stringify({ ok: true, ...result }, null, 2));
     return;
@@ -90,7 +97,7 @@ async function main() {
       '                                      [--mode merge|replace] [--select <path> ...]',
       '                                      [--yes] [--confirm-remove-extra] [--json]',
       '                                      [--confirm-obsidian-closed]',
-      '  node scripts/restore-test-vault.mjs --recover --journal <path>',
+      '  node scripts/restore-test-vault.mjs --recover --journal <path> [--confirm-obsidian-closed]',
     ].join('\n'));
     return;
   }
