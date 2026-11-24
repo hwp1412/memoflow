@@ -81,11 +81,12 @@ class FakeView {
     this.editor = editor;
     this.saves = 0;
     this.saveError = null;
+    this.diskAfterSave = null;
   }
   async save() {
     this.saves++;
     if (this.saveError) throw this.saveError;
-    this.app.disk.set(this.file.path, this.editor.text);
+    this.app.disk.set(this.file.path, this.diskAfterSave == null ? this.editor.text : this.diskAfterSave);
   }
 }
 
@@ -328,4 +329,31 @@ test('target history changing during confirmation is rejected by the fresh plan'
   const result = await controller.restoreVersion({ targetOperationId: op1.operationId, targetSide: 'before' });
   assert.equal(result, null);
   assert.equal(editor.text, body);
+});
+
+
+test('applied status failure leaves the editor changed but reports no success', async (t) => {
+  const { app, editor, prompts, controller, view } = setup(t);
+  const { op1 } = await twoRefines(editor, prompts, controller);
+  const disk = app.disk.get(NOTE_PATH);
+  const original = controller.store.setStatus.bind(controller.store);
+  controller.store.setStatus = async (id, status, options) => {
+    if (status === 'applied') throw new Error('status failed');
+    return original(id, status, options);
+  };
+  const result = await controller.restoreVersion({ targetOperationId: op1.operationId, targetSide: 'before' });
+  assert.equal(result, null);
+  assert.equal(app.disk.get(NOTE_PATH), disk);
+  assert.notEqual(editor.text, disk);
+  assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'prepared');
+});
+
+test('save readback mismatch is a conflict, not success', async (t) => {
+  const { app, editor, prompts, controller, view } = setup(t);
+  const { op1 } = await twoRefines(editor, prompts, controller);
+  view.diskAfterSave = 'not the expected content';
+  const result = await controller.restoreVersion({ targetOperationId: op1.operationId, targetSide: 'before' });
+  assert.equal(result, null);
+  assert.equal(app.disk.get(NOTE_PATH), 'not the expected content');
+  assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
 });

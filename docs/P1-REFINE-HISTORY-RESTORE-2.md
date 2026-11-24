@@ -121,7 +121,7 @@ validate
 - protection 6；
 - restore flow 11；
 - history modal restore state 2；
-- 全量 **376/376**；
+- 全量 **378/378**；
 - 原有 357 保留。
 
 覆盖：
