@@ -1,9 +1,9 @@
 # Phase 1 子摘录创建 — 验收报告
 
 - 任务：Phase 1 第一项最小功能 — 从已有 Extract 创建子 Extract
-- 当前状态：待项目所有者人工验收
+- 当前状态：已同步 P1-SAFETY-1，待项目所有者人工验收
 - 分支：`feat/phase1-child-extract`
-- 基线 Commit：`7216f03`（M03 合并后的 main）
+- 基线 Commit：`efb901f`（P1-SAFETY-1 合并后的 main）
 - 实现范围：MemoFlow `createTimestampExtract` / `clipboardExtract`
 - 未修改：根 `main.js`、MF-US-1、SR、发布流程、现有测试 Vault
 
@@ -46,15 +46,15 @@ node --test test/memoflow-write-regression.test.js
 # fail 0
 
 node --test test/*.test.js
-# tests 214
-# pass 214
+# tests 234
+# pass 234
 # fail 0
 
 npm run check
-通过（validate-release + 214 tests）
+通过（validate-release + 234 tests）
 
 npm run verify:memoflow
-通过（构建 + node --check + 214 tests + validate-memoflow）
+通过（构建 + node --check + 234 tests + validate-memoflow）
 ```
 
 - M03 的 24 项旧断言未修改。
@@ -99,7 +99,7 @@ Source -> E1 -> E2 -> E3 -> E4 -> E5
 - 源/父 priority 不更新；
 - Notice 明确报告“摘录已创建…父级更新失败…笔记已保留”。
 
-## 5. Legacy 发现与限制
+## 5. Legacy / 限制
 
 ### 5.1 `openParent()` 仍跳原始 Source
 
@@ -109,14 +109,16 @@ Source -> E1 -> E2 -> E3 -> E4 -> E5
 - 这是只读导航问题，不写入数据；
 - 本轮按批准的边界**不修改根 `main.js`**；已用 Mock 测试记录。
 
-### 5.2 跨来源移动后子树遍历可能波及已移动节点
+### 5.2 跨来源移动（P1-SAFETY-1 已修复）
 
-`walkSubtree()` 同时匹配 `parent` 和 `source`。新数据中 `source` 保留原始根，因此：
+Phase 1 分支已合并 main `efb901f`（P1-SAFETY-1）：
 
-- 将 E1 从 Source A 移到 Source B 后，树索引按 `parent` 显示在 B；
-- 从 Source A 执行 `boost` / `postponeSubtree` 时，仍可能通过 `source=[[Source A]]` 把 E1（及子节点）纳入写入范围；
-- 已用 Mock 测试复现并记录；
-- 这是**潜在数据写入风险**，但属于既有 `walkSubtree` 语义；本轮未擅自修复，等待你决定后续处理。
+- `walkSubtree()` 现在优先 `parent`，只有没有 parent 时才回退 `source`；
+- E1 从 Source A 移到 Source B 后：
+  - 从 A 执行 boost/postpone：E1/E2 不被写入；
+  - 从 B 执行：正常更新；
+- Phase 1 原先“legacy 跨来源会波及”的两项断言已更新为 P1 修复后的安全断言（不删除测试，只改为断言正确行为）；
+- M03 24 项旧断言未修改。
 
 ### 5.3 删除/完成不级联
 
@@ -152,14 +154,14 @@ Source -> E1 -> E2 -> E3 -> E4 -> E5
 ## 7. 数据风险与回滚
 
 - 无真实 Vault 写入；无数据迁移。
-- 未修改 SR 数据、调度算法、根 `main.js`。
+- 未修改 SR 数据、调度算法、Phase 1 源码；P1-SAFETY-1 的根 `main.js` 修复已通过 main 合并进入本分支。
 - 回滚：删除分支/PR，或 `git revert` 本 PR 的 src/test/docs commits；无需恢复 Vault。
-- 如果未来接受“source 原始根 + 移动”语义，需另行决定 `walkSubtree` 的 source 匹配策略。
 
 ## 8. PR / CI
 
 - 分支：`feat/phase1-child-extract`
-- 基线：`7216f03`
+- 基线：`efb901f`
+- 同步 Merge Commit：`ce83d15`
 - PR：待创建
 - GitHub Actions：尚未运行；PR 创建后需 `npm ci` + `npm run check` 通过。
 - 未合并、未发布、未进入 MF-US-1。

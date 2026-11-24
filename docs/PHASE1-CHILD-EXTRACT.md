@@ -2,8 +2,8 @@
 
 - 任务：Phase 1 第一项最小功能 — 从已有 Extract 创建子 Extract
 - 分支：`feat/phase1-child-extract`
-- 基线：`7216f03`（M03 合并后的 main）
-- 状态：已实施，自动化测试通过；待人工验收
+- 基线：`efb901f`（P1-SAFETY-1 合并后的 main）
+- 状态：已同步 P1-SAFETY-1，234 项自动化测试通过；待人工验收
 
 ## 1. 范围
 
@@ -54,7 +54,7 @@
 | P1-6 | 新文件名避开其他 IR basename |
 | P1-7 | 父级 bump 失败时笔记保留，并明确报告部分成功 |
 | P1-8 | 创建子摘录不自动完成父节点、不增加 review_count |
-| P1-9 | M03 24 项不变；全量 214 项通过；`npm run verify:memoflow` 通过 |
+| P1-9 | M03 24 项不变；全量 234 项通过；`npm run verify:memoflow` 通过 |
 | P1-10 | 临时 Obsidian Vault 完成 5 级实机验收；现有 MemoFlow-Test 未修改 |
 | P1-11 | GitHub Actions 通过；PR 由所有者验收后合并 |
 

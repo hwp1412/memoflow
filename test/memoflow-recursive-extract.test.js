@@ -260,7 +260,7 @@ test('subtree boost from an Extract does not touch a sibling', async (t) => {
   assert.equal(app.vault.readFm(sibling).priority, 50);
 });
 
-test('legacy cross-source subtree boost includes a moved Extract via source', async (t) => {
+test('P1 safety: cross-source boost from the original source does not touch moved extracts', async (t) => {
   const { plugin, app } = setup(t);
   const sourceA = addSource(app, 'Sources/Source-A.md');
   const sourceB = addSource(app, 'Sources/Source-B.md');
@@ -276,14 +276,18 @@ test('legacy cross-source subtree boost includes a moved Extract via source', as
   assert.equal(index.childrenOf.get('source-b').some(page => page.basename === 'Moved-E1'), true);
   assert.equal(app.vault.readFm(e1).parent, '[[Source-B]]');
   assert.equal(app.vault.readFm(e1).source, '[[Source-A]]');
+  const e1WritesBefore = app.fileManager.writes.filter(write => write.file.path === e1.path).length;
+  const e2WritesBefore = app.fileManager.writes.filter(write => write.file.path === e2.path).length;
   app.activeFile = sourceA;
   app.__promptState.quality = 5;
   app.__promptState.confirm = true;
   await plugin.boost();
-  // Current walkSubtree matches source as well as parent; a moved node is
-  // still included when boosting the original source. Recorded legacy risk.
-  assert.equal(app.vault.readFm(e1).priority, 45);
-  assert.equal(app.vault.readFm(e2).priority, 45);
+  // P1-SAFETY-1: source is fallback only when parent is absent. A moved
+  // Extract is no longer a child of its original source.
+  assert.equal(app.vault.readFm(e1).priority, 50);
+  assert.equal(app.vault.readFm(e2).priority, 50);
+  assert.equal(app.fileManager.writes.filter(write => write.file.path === e1.path).length, e1WritesBefore);
+  assert.equal(app.fileManager.writes.filter(write => write.file.path === e2.path).length, e2WritesBefore);
   assert.notEqual(index.childrenOf.get('source-a')?.some(page => page.basename === 'Moved-E1'), true);
   assert.equal(sourceA.basename, 'Source-A');
   assert.equal(sourceB.basename, 'Source-B');
@@ -356,7 +360,7 @@ test('over-depth root chain refuses creation without writes', async (t) => {
   assert.equal(source.basename, 'Source');
 });
 
-test('legacy cross-source postpone subtree also follows source and touches moved notes', async (t) => {
+test('P1 safety: cross-source postpone from the original source does not touch moved extracts', async (t) => {
   const { plugin, app } = setup(t);
   const sourceA = addSource(app, 'Sources/Postpone-A.md');
   const sourceB = addSource(app, 'Sources/Postpone-B.md');
@@ -368,11 +372,14 @@ test('legacy cross-source postpone subtree also follows source and touches moved
   await plugin.reparent(e1.path, 'Postpone-B');
   plugin.irFilesCache = null;
   plugin.irRowsCache = null;
+  const e1WritesBefore = app.fileManager.writes.filter(write => write.file.path === e1.path).length;
+  const e2WritesBefore = app.fileManager.writes.filter(write => write.file.path === e2.path).length;
   app.activeFile = sourceA;
   app.__promptState.quality = 3;
   const before = app.vault.readFm(e1).next_review;
   await plugin.postponeSubtree();
-  assert.notEqual(app.vault.readFm(e1).next_review, before);
-  assert.equal(app.vault.readFm(e2).next_review, app.vault.readFm(e1).next_review);
+  assert.equal(app.vault.readFm(e1).next_review, before);
+  assert.equal(app.fileManager.writes.filter(write => write.file.path === e1.path).length, e1WritesBefore);
+  assert.equal(app.fileManager.writes.filter(write => write.file.path === e2.path).length, e2WritesBefore);
   assert.equal(sourceB.basename, 'Postpone-B');
 });
