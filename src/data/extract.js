@@ -61,6 +61,7 @@ function cleanExtractBody(body) {
 
 function buildExtractContent({
   sourceTitle,
+  parentTitle = null,
   body,
   priority,
   interval,
@@ -73,6 +74,7 @@ function buildExtractContent({
     '---',
     'type: extract',
     `source: ${JSON.stringify(`[[${sourceTitle}]]`)}`,
+    ...(parentTitle ? [`parent: ${JSON.stringify(`[[${parentTitle}]]`)}`] : []),
     'status: pending',
     `priority: ${priority}`,
     `next_review: ${nextReview}`,
