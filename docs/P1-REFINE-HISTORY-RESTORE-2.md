@@ -58,7 +58,9 @@
 9. 当前 Frontmatter 与 fresh snapshot 一致；
 10. 受保护结构签名；
 11. `_assertUnchanged`；
-12. 才写 prepared 历史。
+12. 才写 prepared 历史；
+13. prepared 后再次检查历史数量、目标存在性/state/关系；
+14. 任一变化 → conflict，正文不替换。
 
 ## 4. 受保护结构
 
@@ -121,7 +123,7 @@ validate
 - protection 6；
 - restore flow 11；
 - history modal restore state 2；
-- 全量 **378/378**；
+- 全量 **380/380**；
 - 原有 357 保留。
 
 覆盖：

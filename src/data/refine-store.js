@@ -18,6 +18,7 @@ const {
   assertCurrentTrustedState,
   classifyCompletedEntry,
   assertNoRestoreCycle,
+  validateHistoryRelationships,
   requireCurrentExtractType,
   splitContent,
   sha256Text,
@@ -424,6 +425,7 @@ class RefineHistoryStore {
       bodyHash: current.currentBodyHash,
       bodyBytes: current.currentBodyBytes,
       index: current.trusted.index,
+      historyCount: current.trusted.index + 1,
     };
     const target = {
       operationId: targetOperation.operationId,
@@ -449,6 +451,33 @@ class RefineHistoryStore {
     assertNoRestoreCycle(operation, operationsById);
     await validateRestoreRelationship(operation, targetOperation, { operationsById });
     return { status: 'ok', current: base, target, operation };
+  }
+
+  async assertVersionRestoreTarget(operation, expectedHistoryCount = null) {
+    if (!operation || operation.schemaVersion !== 2 || !operation.restoreTarget) {
+      throw new RefineError('INVALID_RESTORE_TARGET', 'version restore operation is invalid');
+    }
+    const entries = await this.listEntries(operation.note.path);
+    if (expectedHistoryCount != null && entries.length !== expectedHistoryCount) {
+      throw new RefineError('HISTORY_CHANGED', 'history changed after prepare', {
+        expected: expectedHistoryCount,
+        actual: entries.length,
+      });
+    }
+    await validateHistoryRelationships(entries);
+    const target = entries.find(entry => entry.operation.operationId === operation.restoreOf);
+    if (!target) {
+      throw new RefineError('RESTORE_REFERENCE_MISSING', 'restore target disappeared after prepare');
+    }
+    classifyCompletedEntry(target);
+    await validateRestoreRelationship(operation, target.operation);
+    const state = await this.readState(operation.operationId);
+    if (state.status !== 'prepared') {
+      throw new RefineError('INVALID_STATUS_TRANSITION', 'restore operation is no longer prepared', {
+        status: state.status,
+      });
+    }
+    return target;
   }
 
   // 1A only prepares the restore history/plan. 1B must revalidate the real

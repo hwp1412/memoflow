@@ -357,3 +357,39 @@ test('save readback mismatch is a conflict, not success', async (t) => {
   assert.equal(app.disk.get(NOTE_PATH), 'not the expected content');
   assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
 });
+
+test('target history disappearing after prepared is rejected before body replacement', async (t) => {
+  const { app, adapter, editor, prompts, controller } = setup(t);
+  const { op1 } = await twoRefines(editor, prompts, controller);
+  const body = editor.text;
+  const original = controller.store.writeRestorePlan.bind(controller.store);
+  controller.store.writeRestorePlan = async plan => {
+    const result = await original(plan);
+    for (const key of [...adapter.files.keys()]) {
+      if (key.includes(op1.operationId) && key.endsWith('.json') && !key.includes('.state')) adapter.files.delete(key);
+    }
+    return result;
+  };
+  const result = await controller.restoreVersion({ targetOperationId: op1.operationId, targetSide: 'before' });
+  assert.equal(result, null);
+  assert.equal(editor.text, body);
+  assert.equal(app.disk.get(NOTE_PATH), body);
+  assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+});
+
+test('external body change after prepared is rejected before replacement', async (t) => {
+  const { app, editor, prompts, controller } = setup(t);
+  const { op1 } = await twoRefines(editor, prompts, controller);
+  const original = controller.store.writeRestorePlan.bind(controller.store);
+  controller.store.writeRestorePlan = async plan => {
+    const result = await original(plan);
+    editor.text += 'external-after-prepared';
+    app.disk.set(NOTE_PATH, editor.text);
+    return result;
+  };
+  const result = await controller.restoreVersion({ targetOperationId: op1.operationId, targetSide: 'before' });
+  assert.equal(result, null);
+  assert.equal(editor.text, app.disk.get(NOTE_PATH));
+  assert.match(editor.text, /external-after-prepared$/);
+  assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+});

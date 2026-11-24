@@ -1,7 +1,7 @@
 # P1-REFINE-HISTORY-RESTORE-2 验收报告
 
 - 基线：`cff090d`
-- 测试：**378/378**
+- 测试：**380/380**
 - 实际恢复：成功，v2 状态 `restored`
 - Frontmatter hash 恢复前后一致
 - Editor/磁盘一致
@@ -11,8 +11,8 @@
 
 ```text
 node --test test/*.test.js
-# tests 378
-# pass 378
+# tests 380
+# pass 380
 # fail 0
 
 npm run check

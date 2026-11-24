@@ -624,6 +624,7 @@ class RefineEditorController {
       operation = plan.operation;
 
       try {
+        await this.store.assertVersionRestoreTarget(operation, plan.current.historyCount + 1);
         await this._assertUnchanged(fresh);
       } catch (error) {
         await this._conflict(operation);
