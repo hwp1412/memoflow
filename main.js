@@ -1311,36 +1311,174 @@ async function resolveIRFromActive(app, settings, { allowCard = true, allowPdfFa
   return null;
 }
 
-// BFS subtree walk via parent + source links.
-function walkSubtree(app, settings, rootBasename, rootPath, { includeCards = true, rows = null } = {}) {
+// Subtree walk using the same parent precedence as treeCore.effectiveParent:
+// tree_root -> none, explicit parent -> parent, no parent -> legacy source.
+// Path-aware links, aliases and case are resolved against the actual IR files.
+// strict=true is used by write operations; it refuses when an invalid relation
+// could affect the requested subtree, before any Frontmatter is written.
+function walkSubtree(app, settings, rootBasename, rootPath, {
+  includeCards = true,
+  rows = null,
+  strict = false,
+  onIssue = null,
+} = {}) {
   const allPages = (rows || getAllIRFiles(app, settings).map(f => ({ tfile: f, fm: getFm(app, f) })))
     .filter(p => p.fm && (p.fm.type === 'source' || p.fm.type === 'extract' || (includeCards && p.fm.type === 'card')));
-  const paths = new Set([rootPath]);
-  const frontier = [rootBasename];
-  const basenameCounts = new Map();
+  const pageByPath = new Map();
+  const byBasename = new Map();
   for (const page of allPages) {
+    pageByPath.set(page.tfile.path.toLowerCase(), page);
     const key = page.tfile.basename.toLowerCase();
-    basenameCounts.set(key, (basenameCounts.get(key) || 0) + 1);
+    if (!byBasename.has(key)) byBasename.set(key, []);
+    byBasename.get(key).push(page);
   }
-  while (frontier.length) {
-    const next = [];
-    for (const name of frontier) {
-      if ((basenameCounts.get(name.toLowerCase()) || 0) > 1) continue;
-      for (const p of allPages) {
-        if (paths.has(p.tfile.path)) continue;
-        if (linkPointsTo(p.fm.parent, name) || linkPointsTo(p.fm.source, name)) {
-          paths.add(p.tfile.path);
-          next.push(p.tfile.basename);
-        }
+
+  const issues = [];
+  const addIssue = (page, code, link, role, extra = {}) => {
+    issues.push({ page, code, link: link || null, role, ...extra });
+  };
+
+  const normalizeLinkPath = (value) => {
+    let name = String(value || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').toLowerCase();
+    if (name.endsWith('.md')) name = name.slice(0, -3);
+    return name;
+  };
+  const resolveLink = (link) => {
+    const raw = treeCore.linkTargetName(link);
+    if (!raw) return { page: null, code: 'MISSING' };
+    const key = String(raw).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').toLowerCase();
+    const noExt = key.endsWith('.md') ? key.slice(0, -3) : key;
+    if (noExt.includes('/')) {
+      const matches = allPages.filter(p => normalizeLinkPath(p.tfile.path) === noExt);
+      if (matches.length === 1) return { page: matches[0], code: null };
+      return { page: null, code: matches.length ? 'AMBIGUOUS' : 'MISSING' };
+    }
+    const matches = byBasename.get(noExt) || [];
+    if (matches.length === 1) return { page: matches[0], code: null };
+    return { page: null, code: matches.length ? 'AMBIGUOUS' : 'MISSING' };
+  };
+  const linkMatchesPage = (link, page) => {
+    const raw = treeCore.linkTargetName(link);
+    if (!raw) return false;
+    const key = String(raw).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').toLowerCase();
+    const noExt = key.endsWith('.md') ? key.slice(0, -3) : key;
+    if (noExt.includes('/')) return normalizeLinkPath(page.tfile.path) === noExt;
+    return page.tfile.basename.toLowerCase() === noExt;
+  };
+
+  const rootKey = String(rootBasename || '').toLowerCase();
+  let rootPage = pageByPath.get(String(rootPath || '').toLowerCase());
+  if (!rootPage) {
+    const matches = byBasename.get(rootKey) || [];
+    if (matches.length === 1) rootPage = matches[0];
+  }
+  if (!rootPage) {
+    addIssue(null, 'ROOT_NOT_FOUND', rootBasename, 'root');
+    if (strict) {
+      const error = new Error(`Subtree root not found: ${rootBasename}`);
+      error.code = 'SUBTREE_ROOT';
+      error.issues = issues;
+      throw error;
+    }
+    return [];
+  }
+  if ((byBasename.get(rootPage.tfile.basename.toLowerCase()) || []).length > 1) {
+    addIssue(rootPage, 'AMBIGUOUS_ROOT', rootPage.tfile.basename, 'root');
+  }
+
+  const childrenByParentPath = new Map();
+  for (const page of allPages) {
+    if (page === rootPage) continue;
+    const fm = page.fm;
+    if (fm.tree_root === true) continue;
+    const hasParentField = Object.prototype.hasOwnProperty.call(fm, 'parent');
+    const parentLink = hasParentField ? treeCore.linkTargetName(fm.parent) : null;
+    const sourceLink = treeCore.linkTargetName(fm.source);
+    let target = null;
+    let invalid = null;
+    if (hasParentField) {
+      if (!parentLink) {
+        invalid = { code: 'INVALID_PARENT', link: fm.parent == null ? '' : String(fm.parent), role: 'parent' };
+      } else {
+        const resolved = resolveLink(parentLink);
+        if (resolved.page) target = resolved.page;
+        else invalid = { code: resolved.code, link: parentLink, role: 'parent' };
+      }
+    } else if (sourceLink) {
+      const resolved = resolveLink(sourceLink);
+      if (resolved.page) target = resolved.page;
+      else invalid = { code: resolved.code, link: sourceLink, role: 'source' };
+    }
+    if (invalid) {
+      addIssue(page, invalid.code, invalid.link, invalid.role, { sourceLink });
+      continue;
+    }
+    if (target) {
+      const key = target.tfile.path.toLowerCase();
+      if (!childrenByParentPath.has(key)) childrenByParentPath.set(key, []);
+      childrenByParentPath.get(key).push(page);
+    }
+  }
+
+  const visited = new Map([[rootPage.tfile.path, rootPage]]);
+  const queue = [{ page: rootPage, depth: 0 }];
+  while (queue.length) {
+    const current = queue.shift();
+    const children = childrenByParentPath.get(current.page.tfile.path.toLowerCase()) || [];
+    // Cards are traversal leaves: their children must never be pulled into a
+    // write scope, even if a malformed Extract was attached below a Card.
+    if (current.page.fm.type === 'card') continue;
+    for (const child of children) {
+      if (visited.has(child.tfile.path)) {
+        addIssue(child, 'CYCLE', treeCore.linkTargetName(child.fm.parent) || treeCore.linkTargetName(child.fm.source), 'cycle');
+        continue;
+      }
+      if (current.depth >= 64) {
+        addIssue(child, 'TOO_DEEP', treeCore.linkTargetName(child.fm.parent) || treeCore.linkTargetName(child.fm.source), 'depth');
+        continue;
+      }
+      visited.set(child.tfile.path, child);
+      queue.push({ page: child, depth: current.depth + 1 });
+    }
+  }
+
+  // The seed's own parent normally lies outside the subtree, but if it points
+  // back into the visited set the parent graph is cyclic.
+  if (rootPage.fm && rootPage.fm.tree_root !== true) {
+    const rootParentLink = treeCore.linkTargetName(rootPage.fm.parent)
+      || treeCore.linkTargetName(rootPage.fm.source);
+    if (rootParentLink) {
+      const rootParent = resolveLink(rootParentLink).page;
+      if (rootParent && visited.has(rootParent.tfile.path)) {
+        addIssue(rootPage, 'CYCLE', rootParentLink, 'cycle');
       }
     }
-    frontier.length = 0;
-    frontier.push(...next);
   }
-  return Array.from(paths).map(path => {
-    const tfile = app.vault.getAbstractFileByPath(path);
-    return tfile ? { tfile, fm: getFm(app, tfile) } : null;
-  }).filter(Boolean);
+
+  const visitedPages = Array.from(visited.values());
+  const relatedIssues = issues.filter(issue => {
+    if (!issue.page) return true;
+    if (issue.role === 'root') return true;
+    if (issue.role === 'cycle' || issue.role === 'depth') return true;
+    const links = [issue.link];
+    // An invalid explicit parent must not fall back to source, but a source
+    // pointing into this subtree still makes membership ambiguous.
+    if (issue.role === 'parent' && issue.sourceLink) links.push(issue.sourceLink);
+    return links.some(link => visitedPages.some(page => linkMatchesPage(link, page)));
+  });
+
+  if (relatedIssues.length && onIssue) {
+    for (const issue of relatedIssues) onIssue(issue);
+  }
+  if (strict && relatedIssues.length) {
+    const first = relatedIssues[0];
+    const pageName = first.page ? first.page.tfile.basename : rootBasename;
+    const error = new Error(`Unsafe subtree relation near "${pageName}" (${first.code})`);
+    error.code = 'SUBTREE_RELATION';
+    error.issues = relatedIssues;
+    throw error;
+  }
+  return visitedPages.map(page => ({ tfile: page.tfile, fm: page.fm }));
 }
 
 // ============================================================================
@@ -4232,27 +4370,53 @@ class IncrementalReadingPlugin extends Plugin {
     const cascade = await confirmDialog(this.app, 'Cascade boost to all descendants in subtree?');
     const orig = r.fm.priority ?? 50;
     const newPri = Math.max(1, orig - delta);
-    await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
-      if (fmw.boost_from == null) fmw.boost_from = orig;
-      fmw.priority = newPri;
-    });
+
+    // Preflight first: a cascade must never write the root and then discover
+    // that the descendant set is unsafe. Non-cascade stays single-node.
+    let subtree = null;
+    if (cascade) {
+      try {
+        subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, {
+          rows: this.getIRRows(),
+          strict: true,
+        });
+      } catch (error) {
+        new Notice(`Cascade boost refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
+        return;
+      }
+    }
 
     let cascaded = 0;
-    if (cascade) {
-      const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, { rows: this.getIRRows() });
-      for (const p of subtree) {
-        if (p.tfile.path === r.tfile.path) continue;
-        if (p.fm.type === 'card') continue;
-        const childOrig = p.fm.priority ?? 50;
-        const childNew = Math.max(1, childOrig - delta);
-        if (childNew !== childOrig) {
-          await this.app.fileManager.processFrontMatter(p.tfile, (fmw) => {
-            if (fmw.boost_from == null) fmw.boost_from = childOrig;
-            fmw.priority = childNew;
-          });
-          cascaded++;
+    let rootUpdated = false;
+    let failedPath = r.tfile.path;
+    try {
+      await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
+        if (fmw.boost_from == null) fmw.boost_from = orig;
+        fmw.priority = newPri;
+      });
+      rootUpdated = true;
+      if (cascade) {
+        for (const p of subtree) {
+          if (p.tfile.path === r.tfile.path) continue;
+          if (p.fm.type === 'card') continue;
+          const childOrig = p.fm.priority ?? 50;
+          const childNew = Math.max(1, childOrig - delta);
+          if (childNew !== childOrig) {
+            failedPath = p.tfile.path;
+            await this.app.fileManager.processFrontMatter(p.tfile, (fmw) => {
+              if (fmw.boost_from == null) fmw.boost_from = childOrig;
+              fmw.priority = childNew;
+            });
+            cascaded++;
+          }
         }
       }
+    } catch (error) {
+      const state = rootUpdated
+        ? `root updated; ${cascaded} descendant${cascaded === 1 ? '' : 's'} updated`
+        : 'no changes applied';
+      new Notice(`Boost stopped at ${failedPath}: ${error.message || 'write failed'}. ${state}; no atomic rollback.`, 12000);
+      return;
     }
     const cmsg = cascade ? ` + ${cascaded} descendant${cascaded === 1 ? '' : 's'}` : '';
     new Notice(`Boosted: ${orig} → ${newPri}${cmsg}. boost_from preserved.`);
@@ -4272,11 +4436,14 @@ class IncrementalReadingPlugin extends Plugin {
     if (!filter) return;
 
     const today = todayDate();
+    let issueCount = 0;
     let subset = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, {
       includeCards: false,
       rows: this.getIRRows(),
+      onIssue: () => { issueCount++; },
     })
       .filter(p => p.tfile.path !== r.tfile.path);
+    if (issueCount > 0) new Notice(`Subset review excluded ${issueCount} ambiguous or invalid relation${issueCount === 1 ? '' : 's'}.`, 8000);
     if (filter === 'due') subset = subset.filter(p => isDue(p.fm, today, this.settings));
     subset = subset.filter(p => p.fm.status !== 'done' && p.fm.status !== 'container' && p.fm.status !== 'dismissed');
     if (subset.length === 0) { new Notice(`No descendants match.`); return; }
@@ -4336,22 +4503,38 @@ class IncrementalReadingPlugin extends Plugin {
       'Postpone subtree by'
     );
     if (!choice) return;
-    const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, { rows: this.getIRRows() });
+    let subtree = null;
+    try {
+      subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, {
+        rows: this.getIRRows(),
+        strict: true,
+      });
+    } catch (error) {
+      new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
+      return;
+    }
     let postponed = 0;
-    for (const p of subtree) {
-      const fm = p.fm;
-      if (fm.type === 'card') continue;
-      if (fm.status === 'done' || fm.status === 'container' || fm.status === 'dismissed') continue;
-      let baseDate = todayDateString(this.settings);
-      if (fm.next_review) {
-        const candidate = parseDateValue(fm.next_review, this.settings);
-        if (candidate && candidate > todayDate()) baseDate = fm.next_review;
+    let failedPath = r.tfile.path;
+    try {
+      for (const p of subtree) {
+        const fm = p.fm;
+        if (fm.type === 'card') continue;
+        if (fm.status === 'done' || fm.status === 'container' || fm.status === 'dismissed') continue;
+        let baseDate = todayDateString(this.settings);
+        if (fm.next_review) {
+          const candidate = parseDateValue(fm.next_review, this.settings);
+          if (candidate && candidate > todayDate()) baseDate = fm.next_review;
+        }
+        const baseObj = parseDateValue(baseDate, this.settings) || todayDate();
+        baseObj.setDate(baseObj.getDate() + choice);
+        const newDate = formatDateValue(baseObj, this.settings);
+        failedPath = p.tfile.path;
+        await this.app.fileManager.processFrontMatter(p.tfile, (fmw) => { fmw.next_review = newDate; });
+        postponed++;
       }
-      const baseObj = parseDateValue(baseDate, this.settings) || todayDate();
-      baseObj.setDate(baseObj.getDate() + choice);
-      const newDate = formatDateValue(baseObj, this.settings);
-      await this.app.fileManager.processFrontMatter(p.tfile, (fmw) => { fmw.next_review = newDate; });
-      postponed++;
+    } catch (error) {
+      new Notice(`Subtree postpone stopped at ${failedPath}: ${error.message || 'write failed'}. ${postponed} element${postponed === 1 ? '' : 's'} updated; no atomic rollback.`, 12000);
+      return;
     }
     new Notice(`Subtree postponed +${choice}d · ${postponed} element${postponed === 1 ? '' : 's'}.`);
   }
