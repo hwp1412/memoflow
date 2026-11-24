@@ -397,7 +397,7 @@ await note('欢迎使用 MemoFlow.md', {
   date_added: dmy(0),
 }, `# 欢迎使用 MemoFlow（测试 Vault）
 
-这个 Vault 只用于验收 MemoFlow 第一阶段页面，**不影响**你的 \`supermemo\` 真实库。
+这个 Vault 只用于验收 MemoFlow 第一阶段页面，**不影响**你的真实学习库。
 
 ## 打开页面
 

@@ -26,9 +26,11 @@ try {
   process.exit(1);
 }
 
-const books = path.resolve(root, '..', '书籍');
-const defaultBookName = '被讨厌的勇气.pdf';
-const bookPath = process.env.MF_BOOK_PDF ? path.resolve(process.env.MF_BOOK_PDF) : path.join(books, defaultBookName);
+const bookPath = process.env.MF_BOOK_PDF ? path.resolve(process.env.MF_BOOK_PDF) : null;
+if (!bookPath) {
+  console.error('[seed:book] set MF_BOOK_PDF to a PDF used only for the disposable test vault.');
+  process.exit(2);
+}
 const bookName = path.basename(bookPath);
 const bookTitle = path.basename(bookPath, path.extname(bookPath));
 const targetPdf = assertInside(vault, path.join(vault, 'test', bookName));

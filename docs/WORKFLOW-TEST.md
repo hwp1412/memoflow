@@ -28,8 +28,8 @@ node scripts/build.mjs --install-test
 
 - `seed-test-vault.mjs` 生成 4 个来源、8 条摘录、2 张卡片、2 个分类和 Review Log；
 - `seed-book-workflow.mjs` 把 `MF_BOOK_PDF` 指向的 PDF 复制到测试库 `test/`，并创建
-  265 页来源（`read_point: 1`、`priority: 25`）；不设置 `MF_BOOK_PDF` 时使用
-  `<repo>/../书籍/<book>.pdf` 的默认位置；
+  265 页来源（`read_point: 1`、`priority: 25`）；`MF_BOOK_PDF` 必须显式设置，
+  脚本不再内置任何本机书名或目录；
 - `seed-test-vault.mjs` 会保留已安装的 Spaced Repetition，并把它合并进
   `community-plugins.json`；
 - 默认不覆盖已有笔记；覆盖必须 `--force --approve-overwrite`，且需要项目所有者明确批准；

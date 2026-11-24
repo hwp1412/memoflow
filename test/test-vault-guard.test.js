@@ -152,7 +152,7 @@ test('a vault inside the repository is rejected', (t) => {
 });
 
 test('a daily-vault-like folder name is rejected even with a marker', (t) => {
-  const { root, vault } = makeVault(t, { name: 'HWP的知识仓库' });
+  const { root, vault } = makeVault(t, { name: 'My-Daily-Vault' });
   const result = validateTestVault(vault, { repoRoot: path.join(root, 'repo') });
   assert.equal(result.ok, false);
   assert.ok(codes(result).includes('VAULT_NAME'));
