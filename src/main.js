@@ -14,6 +14,9 @@ const { MemoFlowPriorityModal } = require('./views/priority-modal.js');
 const { MemoFlowOverloadModal } = require('./views/overload-modal.js');
 const { MemoFlowUserGuideModal } = require('./views/user-guide-modal.js');
 const { ExtractOpenModal } = require('./views/extract-open-modal.js');
+const { RefinePreviewModal } = require('./views/refine-modal.js');
+const { RefineHistoryStore } = require('./data/refine-store.js');
+const { RefineEditorController } = require('./data/refine-editor.js');
 const { ConfirmActionModal } = require('./views/confirm-modal.js');
 const priorityCore = require('./data/priority.js');
 const cardCore = require('./data/card.js');
@@ -63,6 +66,16 @@ class MemoFlowPlugin extends BasePlugin {
       id: 'memoflow-clipboard-extract',
       name: '从剪贴板生成摘录',
       callback: () => this.clipboardExtract(),
+    });
+    this.addCommand({
+      id: 'memoflow-refine-extract',
+      name: '原位精简当前摘录',
+      callback: () => this._getRefineController().refineActive(),
+    });
+    this.addCommand({
+      id: 'memoflow-restore-refine',
+      name: '恢复上次精简',
+      callback: () => this._getRefineController().restoreActive(),
     });
 
     this._applyChineseCommandNames();
@@ -1147,6 +1160,34 @@ class MemoFlowPlugin extends BasePlugin {
       }
     }
     return null;
+  }
+
+  _getRefineController() {
+    if (!this._refineController) {
+      this._refineStore = new RefineHistoryStore({ adapter: this.app.vault.adapter });
+      this._refineController = new RefineEditorController({
+        app: this.app,
+        store: this._refineStore,
+        settings: this.settings,
+        notice: (message, duration) => new Notice(message, duration),
+        getActiveView: () => this.app.workspace.getActiveViewOfType(MarkdownView),
+        promptPreview: options => new Promise(resolve => {
+          new RefinePreviewModal(this.app, options).open().then(resolve);
+        }),
+        promptRestore: options => new Promise(resolve => {
+          const current = String(options.currentBody || '').slice(0, 500);
+          const restored = String(options.restoredBody || '').slice(0, 500);
+          new ConfirmActionModal(this.app, {
+            title: '恢复上次精简？',
+            body: `当前正文：\n${current}\n\n将恢复为：\n${restored}\n\nFrontmatter、parent/source 和调度数据不会修改。`,
+            confirmText: '恢复',
+            onConfirm: () => resolve(true),
+            onCancel: () => resolve(false),
+          }).open();
+        }),
+      });
+    }
+    return this._refineController;
   }
 
   _selectionOrClipboard(fromSelection) {
