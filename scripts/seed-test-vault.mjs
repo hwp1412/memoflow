@@ -1,10 +1,30 @@
 #!/usr/bin/env node
 import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import process from 'node:process';
+import testVault from './test-vault.js';
 
-const root = process.cwd();
-const vault = path.resolve(root, '..', 'MemoFlow-Test');
+const { assertTestVault, assertInside } = testVault;
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+const argv = new Set(process.argv.slice(2));
+const dryRun = argv.has('--dry-run');
+const force = argv.has('--force');
+const approveOverwrite = argv.has('--approve-overwrite');
+if (force && !approveOverwrite) {
+  console.error('[seed] --force requires --approve-overwrite (explicit owner approval).');
+  process.exit(2);
+}
+
+let vault;
+try {
+  ({ vault } = assertTestVault({ repoRoot: root }));
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
+
 const sourceDir = path.join(vault, 'Sources', 'Incremental Reading');
 const dirs = {
   sources: path.join(sourceDir, 'Sources'),
@@ -13,8 +33,14 @@ const dirs = {
   categories: path.join(sourceDir, 'Categories'),
 };
 
-for (const dir of Object.values(dirs)) await mkdir(dir, { recursive: true });
-await mkdir(path.join(vault, '.obsidian', 'plugins', 'memoflow'), { recursive: true });
+const stats = { created: [], skipped: [], overwritten: [] };
+const exists = async target => { try { await access(target); return true; } catch { return false; } };
+const vaultPath = relative => assertInside(vault, path.join(vault, relative));
+
+if (!dryRun) {
+  for (const dir of Object.values(dirs)) await mkdir(assertInside(vault, dir), { recursive: true });
+  await mkdir(assertInside(vault, path.join(vault, '.obsidian', 'plugins', 'memoflow')), { recursive: true });
+}
 
 function dmy(offset = 0) {
   const d = new Date();
@@ -42,22 +68,42 @@ function frontmatter(values) {
 }
 
 async function note(relativePath, values, body) {
-  const full = path.join(vault, relativePath);
-  await mkdir(path.dirname(full), { recursive: true });
+  const full = vaultPath(relativePath);
+  const present = await exists(full);
+  if (present) {
+    if (!force) { stats.skipped.push(relativePath); return; }
+    stats.overwritten.push(relativePath);
+  } else {
+    stats.created.push(relativePath);
+  }
+  if (dryRun) return;
+  await mkdir(assertInside(vault, path.dirname(full)), { recursive: true });
   await writeFile(full, frontmatter(values) + body.trim() + '\n', 'utf8');
 }
 
 let hasPdf = false;
-try {
-  await access('/Users/Admin/Documents/Obsidian/supermemo/test/学会提问.pdf');
-  await mkdir(path.join(vault, 'test'), { recursive: true });
-  await copyFile(
-    '/Users/Admin/Documents/Obsidian/supermemo/test/学会提问.pdf',
-    path.join(vault, 'test', '学会提问.pdf'),
-  );
-  hasPdf = true;
-} catch {
-  hasPdf = false;
+let pdfRel = null;
+const samplePdf = process.env.MF_SAMPLE_PDF ? path.resolve(process.env.MF_SAMPLE_PDF) : '';
+if (samplePdf) {
+  try {
+    await access(samplePdf);
+    pdfRel = `test/${path.basename(samplePdf)}`;
+    const targetPdf = vaultPath(pdfRel);
+    const present = await exists(targetPdf);
+    if (present && !force) stats.skipped.push(pdfRel);
+    else {
+      if (present) stats.overwritten.push(pdfRel); else stats.created.push(pdfRel);
+      hasPdf = true;
+      if (!dryRun) {
+        await mkdir(assertInside(vault, path.dirname(targetPdf)), { recursive: true });
+        await copyFile(samplePdf, targetPdf);
+      }
+    }
+    if (present && !force) hasPdf = true;
+  } catch {
+    hasPdf = false;
+    pdfRel = null;
+  }
 }
 
 const sourceBase = {
@@ -101,11 +147,11 @@ await note('Sources/Incremental Reading/Sources/学会提问.md', {
   last_reviewed: dmy(-4),
   read_point: 96,
   total_pages: 308,
-  ...(hasPdf ? { pdf_path: 'test/学会提问.pdf', pdf_vault_path: 'test/学会提问.pdf' } : {}),
+  ...(pdfRel ? { pdf_path: pdfRel, pdf_vault_path: pdfRel } : {}),
 }, `# 学会提问
 
 > [!tip] 测试 Vault
-> 这是 MemoFlow 测试库的示例来源。${hasPdf ? 'Vault 内已放入 PDF，可用于移动端页码跳转测试。' : '未复制 PDF，页码进度仍可显示。'}
+> 这是 MemoFlow 测试库的示例来源。${hasPdf ? 'Vault 内已放入示例 PDF，可用于页码跳转测试。' : '未复制 PDF，页码进度仍可显示。'}
 
 ## 阅读笔记
 
@@ -337,7 +383,15 @@ for (let offset = 13; offset >= 0; offset--) {
     logLines.push(`| ${dmy(-offset)} | [[${logElements[(offset + index) % logElements.length]}]] | ${index === 0 ? 'extract' : 'source'} | — | 3 |`);
   }
 }
-await writeFile(path.join(sourceDir, 'Review Log.md'), logLines.join('\n') + '\n', 'utf8');
+const reviewLog = vaultPath('Sources/Incremental Reading/Review Log.md');
+const reviewLogExists = await exists(reviewLog);
+if (reviewLogExists && !force) {
+  stats.skipped.push('Sources/Incremental Reading/Review Log.md');
+} else {
+  if (reviewLogExists) stats.overwritten.push('Sources/Incremental Reading/Review Log.md');
+  else stats.created.push('Sources/Incremental Reading/Review Log.md');
+  if (!dryRun) await writeFile(reviewLog, logLines.join('\n') + '\n', 'utf8');
+}
 
 await note('欢迎使用 MemoFlow.md', {
   date_added: dmy(0),
@@ -354,7 +408,7 @@ await note('欢迎使用 MemoFlow.md', {
 ## 这个库里有什么
 
 - 4 个来源、8 条摘录、2 张卡片、2 个分类，日期相对今天生成。
-- 学会提问 PDF（如果本机存在）用于测试 Vault 内 PDF 页码跳转。
+- 可选的示例 PDF（通过 \`MF_SAMPLE_PDF\` 指定）用于测试 Vault 内 PDF 页码跳转。
 - 页面右上角 \`⋯\` 可以切换示例数据 / 真实数据。
 
 ## 注意
@@ -374,27 +428,51 @@ node scripts/build.mjs --install-test
 `);
 
 const enabledPlugins = ['memoflow'];
-try {
-  await access(path.join(vault, '.obsidian', 'plugins', 'obsidian-spaced-repetition', 'manifest.json'));
-  enabledPlugins.push('obsidian-spaced-repetition');
-} catch {
-  // SR is optional for the page-only test vault.
-}
-await writeFile(path.join(vault, '.obsidian', 'community-plugins.json'), JSON.stringify(enabledPlugins, null, 2) + '\n', 'utf8');
+const srManifest = path.join(vault, '.obsidian', 'plugins', 'obsidian-spaced-repetition', 'manifest.json');
+if (await exists(srManifest)) enabledPlugins.push('obsidian-spaced-repetition');
 
-// Copy the built plugin if it exists; otherwise the caller can run --install-test later.
+const communityPath = vaultPath('.obsidian/community-plugins.json');
+if (dryRun) {
+  console.log('[dry-run] merge .obsidian/community-plugins.json (preserve existing entries)');
+} else {
+  let current = [];
+  try { current = JSON.parse(await readFile(communityPath, 'utf8')); } catch { current = []; }
+  if (!Array.isArray(current)) current = [];
+  const merged = current.slice();
+  for (const plugin of enabledPlugins) if (!merged.includes(plugin)) merged.push(plugin);
+  const next = JSON.stringify(merged, null, 2) + '\n';
+  let existingText = null;
+  try { existingText = await readFile(communityPath, 'utf8'); } catch { existingText = null; }
+  if (existingText !== next) await writeFile(communityPath, next, 'utf8');
+}
+
+// Only the three build artifacts are installed. data.json and other user data
+// are never touched by the seed script.
 const dist = path.join(root, 'dist', 'memoflow');
 const pluginDir = path.join(vault, '.obsidian', 'plugins', 'memoflow');
-try {
-  const manifest = JSON.parse(await readFile(path.join(dist, 'manifest.json'), 'utf8'));
-  await mkdir(pluginDir, { recursive: true });
-  for (const name of ['main.js', 'manifest.json', 'styles.css']) {
-    await copyFile(path.join(dist, name), path.join(pluginDir, name));
-  }
-  console.log(`[seed] installed MemoFlow ${manifest.version} into ${path.relative(root, pluginDir)}`);
-} catch {
+let distManifest = null;
+try { distManifest = JSON.parse(await readFile(path.join(dist, 'manifest.json'), 'utf8')); } catch { distManifest = null; }
+if (!distManifest) {
   console.log('[seed] dist/memoflow not found yet; run: node scripts/build.mjs --install-test');
+} else {
+  const installed = await exists(path.join(pluginDir, 'main.js'));
+  if (installed && !force) {
+    stats.skipped.push('.obsidian/plugins/memoflow/{main.js,manifest.json,styles.css}');
+  } else {
+    if (installed) stats.overwritten.push('plugin artifacts'); else stats.created.push('plugin artifacts');
+    if (!dryRun) {
+      await mkdir(assertInside(vault, pluginDir), { recursive: true });
+      for (const name of ['main.js', 'manifest.json', 'styles.css']) {
+        await copyFile(path.join(dist, name), assertInside(vault, path.join(pluginDir, name)));
+      }
+    }
+  }
 }
 
+const verb = dryRun ? 'dry run' : 'seed';
+console.log(`[seed] ${verb}: created ${stats.created.length}, skipped ${stats.skipped.length}, overwritten ${stats.overwritten.length}`);
+for (const item of stats.created.slice(0, 20)) console.log(`  + ${item}`);
+for (const item of stats.skipped.slice(0, 20)) console.log(`  = ${item}`);
+if (dryRun) console.log('[seed] dry run: no files were written.');
 console.log(`[seed] test vault -> ${vault}`);
 console.log('[seed] open it in Obsidian: Open folder as vault');

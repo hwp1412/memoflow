@@ -3,13 +3,36 @@ import { access, copyFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
-const root = process.cwd();
-const vault = path.resolve(root, '..', 'MemoFlow-Test');
+import { fileURLToPath } from 'node:url';
+import testVault from './test-vault.js';
+
+const { assertTestVault, assertInside } = testVault;
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+const argv = new Set(process.argv.slice(2));
+const dryRun = argv.has('--dry-run');
+const force = argv.has('--force');
+const approveOverwrite = argv.has('--approve-overwrite');
+if (force && !approveOverwrite) {
+  console.error('[seed:book] --force requires --approve-overwrite (explicit owner approval).');
+  process.exit(2);
+}
+
+let vault;
+try {
+  ({ vault } = assertTestVault({ repoRoot: root }));
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
+
 const books = path.resolve(root, '..', '书籍');
-const bookName = '被讨厌的勇气.pdf';
-const bookPath = path.join(books, bookName);
-const targetPdf = path.join(vault, 'test', bookName);
-const sourcePath = path.join(vault, 'Sources', 'Incremental Reading', 'Sources', '被讨厌的勇气.md');
+const defaultBookName = '被讨厌的勇气.pdf';
+const bookPath = process.env.MF_BOOK_PDF ? path.resolve(process.env.MF_BOOK_PDF) : path.join(books, defaultBookName);
+const bookName = path.basename(bookPath);
+const bookTitle = path.basename(bookPath, path.extname(bookPath));
+const targetPdf = assertInside(vault, path.join(vault, 'test', bookName));
+const sourcePath = assertInside(vault, path.join(vault, 'Sources', 'Incremental Reading', 'Sources', `${bookTitle}.md`));
 const totalPages = 265;
 
 const exists = async file => {
@@ -21,15 +44,21 @@ if (!await exists(bookPath)) {
   process.exit(1);
 }
 
-await mkdir(path.dirname(targetPdf), { recursive: true });
-await mkdir(path.dirname(sourcePath), { recursive: true });
-if (!await exists(targetPdf)) {
+const pdfExists = await exists(targetPdf);
+const sourceExists = await exists(sourcePath);
+if (pdfExists && !force) {
+  console.log('[seed:book] PDF already exists; skipped');
+} else if (!dryRun) {
+  await mkdir(assertInside(vault, path.dirname(targetPdf)), { recursive: true });
   await copyFile(bookPath, targetPdf);
-  console.log(`[seed:book] copied ${bookName} -> test/${bookName}`);
+  console.log(`[seed:book] ${pdfExists ? 'overwrote' : 'copied'} ${bookName} -> test/${bookName}`);
+} else {
+  console.log('[dry-run] would copy PDF into test/');
 }
 
-if (await exists(sourcePath)) {
+if (sourceExists && !force) {
   console.log('[seed:book] source already exists; leaving it untouched');
+  if (dryRun) console.log('[seed:book] dry run: no files were written.');
   process.exit(0);
 }
 
@@ -58,10 +87,10 @@ const frontmatter = [
   `pdf_vault_path: "test/${bookName}"`,
   '---',
   '',
-  '# 被讨厌的勇气',
+  `# ${bookTitle}`,
   '',
   '> [!tip] 模拟书籍',
-  '> 来自 `插件开发/书籍/被讨厌的勇气.pdf`，用于在测试 Vault 里跑完整的 SuperMemo 工作流。',
+  '> 来自本机测试 PDF，用于在测试 Vault 里跑完整的 SuperMemo 工作流。',
   '> 打开 PDF 后，用阅读条「评阅并下一项」记录页码；摘录会带上 PDF 页码引用。',
   '',
   '## 阅读笔记',
@@ -74,6 +103,10 @@ const frontmatter = [
   '',
 ].join('\n');
 
-await writeFile(sourcePath, frontmatter, 'utf8');
+if (!dryRun) {
+  await mkdir(assertInside(vault, path.dirname(sourcePath)), { recursive: true });
+  await writeFile(sourcePath, frontmatter, 'utf8');
+}
 console.log(`[seed:book] created ${path.relative(vault, sourcePath)} · ${totalPages} pages`);
+if (dryRun) console.log('[seed:book] dry run: no files were written.');
 console.log('[seed:book] open the test vault and run "构建今日学习队列" or the ribbon dashboard.');
