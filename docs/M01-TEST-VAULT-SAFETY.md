@@ -92,7 +92,7 @@ node scripts/test-vault.js --init-marker --vault "<test-vault>" --confirm --forc
 | 脚本 | 是否写 Vault | 规则 |
 |---|---|---|
 | `scripts/seed-test-vault.mjs` | 是 | 守卫 + `--dry-run`；默认跳过已存在文件；`--force --approve-overwrite` 才覆盖 |
-| `scripts/seed-book-workflow.mjs` | 是 | 守卫 + `--dry-run`；默认跳过已存在 PDF/来源；`--force --approve-overwrite` 才覆盖 |
+| `scripts/seed-book-workflow.mjs` | 是 | 守卫 + `--dry-run`；必须显式 `MF_BOOK_PDF`；默认跳过已存在 PDF/来源；`--force --approve-overwrite` 才覆盖 |
 | `scripts/build.mjs --install-test` | 是（仅 3 个插件产物） | 守卫 + `--dry-run`；只写 `main.js`、`manifest.json`、`styles.css`；从不写 `data.json` |
 | `scripts/screenshot.mjs` | 否 | 不访问 Vault |
 | `test/*.test.js` | 否（仅系统临时目录） | 不访问真实测试库 |

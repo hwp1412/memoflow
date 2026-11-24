@@ -5,6 +5,7 @@
 - 分支：`test/m01-test-vault-guard`
 - 基线 Commit：`ea86c48`
 - 实现 Commit：`55eb615`
+- 隐私修复 Commit：`48bc753`
 - 验收报告 Commit：本文件所在提交（分支 HEAD）
 - PR：方案 A，等待创建：<https://github.com/hwp1412/memoflow/pull/new/test/m01-test-vault-guard>
 - 合并状态：**未合并**；未发布；未开始下一任务
@@ -28,17 +29,21 @@
    - `--force` 单独使用报错；必须同时 `--approve-overwrite`，且需要项目所有者明确批准。
 5. 插件安装只处理三个构建产物：`main.js`、`manifest.json`、`styles.css`；从不写 `data.json`。
 6. 新增 20 项守卫测试；新增 `docs/M01-TEST-VAULT-SAFETY.md`；更新 `docs/WORKFLOW-TEST.md` 并去除本机绝对路径/具体书目。
-7. **未修改**任何 MemoFlow 运行时业务代码、SR 集成、调度算法、笔记、`data.json` 或现有数据格式。
+7. 隐私修复：
+   - 测试夹具中的真实 Vault 名称改为虚构 `My-Daily-Vault`。
+   - 移除种子脚本中的真实 Vault 名称、绝对路径和内置私人 PDF 文件名/目录。
+   - `seed-book-workflow.mjs` 改为必须显式设置 `MF_BOOK_PDF`，不再内置本机书名或目录。
+8. **未修改**任何 MemoFlow 运行时业务代码、SR 集成、调度算法、笔记、`data.json` 或现有数据格式。
 
 ## 2. 修改文件
 
 | 文件 | 类型 | 说明 |
 |---|---|---|
 | `scripts/test-vault.js` | 新增 | 测试 Vault 解析、标记、边界与写入目标守卫 |
-| `test/test-vault-guard.test.js` | 新增 | 20 项守卫/负向/临时库测试 |
+| `test/test-vault-guard.test.js` | 新增 | 20 项守卫/负向/临时库测试；使用虚构 `My-Daily-Vault` |
 | `docs/M01-TEST-VAULT-SAFETY.md` | 新增 | 安全流程、备份恢复、覆盖规则 |
-| `scripts/seed-test-vault.mjs` | 修改 | 接入守卫；`--dry-run`；默认不覆盖；仅 3 个插件产物 |
-| `scripts/seed-book-workflow.mjs` | 修改 | 接入守卫；`--dry-run`；默认不覆盖；`MF_BOOK_PDF` 可配置 |
+| `scripts/seed-test-vault.mjs` | 修改 | 接入守卫；`--dry-run`；默认不覆盖；仅 3 个插件产物；移除真实 Vault 名称 |
+| `scripts/seed-book-workflow.mjs` | 修改 | 接入守卫；`--dry-run`；默认不覆盖；必须显式 `MF_BOOK_PDF`，无内置书名/路径 |
 | `scripts/build.mjs` | 修改 | 仅 `--install-test` 接入守卫；`--dry-run` 零构建；显式 3 文件安装 |
 | `docs/WORKFLOW-TEST.md` | 修改 | 增加安全前置、dry-run、标记说明；脱敏 |
 | `package.json` | 修改 | 新增 `test-vault:check` 脚本 |
@@ -97,10 +102,26 @@ node scripts/build.mjs   # 在 /tmp 仓库副本中执行，避免改动仓库 d
 | 临时测试库 `--dry-run` 前后逐文件 SHA-256 | 完全一致（零写入） |
 | 临时测试库预置自定义笔记后正常运行 seed | 自定义笔记内容原样保留；只创建缺失文件 |
 | `build.mjs --install-test --dry-run` 前后 `dist/` 和测试库插件 mtime | 完全一致（未清理、未重建、未安装） |
+| `build.mjs --install-test` 在临时 Vault 中实际执行 | 只安装 3 个产物；预置 `data.json`/`keep.txt`/`note.md` 不变；见 4.3 |
 | symlink 测试库 / symlink `.obsidian` / symlink 标记 / 越界写入目标 | 均被拒绝 |
 | 名称类似日常 Vault 的目录 + 复制标记 | 被拒绝（名称/路径哈希不匹配） |
 
-### 4.3 测试库保全校验
+### 4.3 临时库实际安装测试（新增）
+
+- 目的：验证 `build.mjs --install-test` 的**实际安装**，不仅是 `--dry-run`；不在现有 `MemoFlow-Test` 或真实库执行。
+- 方法：在 `/tmp` 创建仓库副本和名为 `MemoFlow-Test` 的一次性临时 Vault，预置：
+  - `.obsidian/plugins/memoflow/data.json`（sentinel 内容）
+  - `.obsidian/plugins/memoflow/keep.txt`
+  - `note.md`
+- 执行：`node scripts/build.mjs --install-test`
+- 结果：
+  - 插件目录最终 5 个文件：`data.json`、`keep.txt`、`main.js`、`manifest.json`、`styles.css`；
+  - 安装的 3 个产物与临时仓库 `dist/memoflow/` 哈希一致；
+  - `data.json`、`keep.txt`、`note.md` 的 SHA-256 与安装前一致；
+  - 没有删除或新增其他文件；
+  - 临时目录已删除。
+
+### 4.4 测试库保全校验
 
 - 备份前：43 个文件，15,099,567 字节。
 - M01 后：43 个原文件逐文件 SHA-256 与备份清单**完全一致**；仅新增标记，文件总数 44。
@@ -108,7 +129,7 @@ node scripts/build.mjs   # 在 /tmp 仓库副本中执行，避免改动仓库 d
 - Spaced Repetition `data.json` 哈希：`107a36fa…`（未变）。
 - 26 篇笔记：5 source / 11 extract / 6 card / 2 category + 欢迎页 + Review Log（未变）。
 
-### 4.4 备份与恢复演练
+### 4.5 备份与恢复演练
 
 - 备份位置：`<workspace>/MemoFlow-Backups/<timestamp>_pre-M01/`
   - 完整副本：`MemoFlow-Test/`（43 个文件）
@@ -120,12 +141,12 @@ node scripts/build.mjs   # 在 /tmp 仓库副本中执行，避免改动仓库 d
 - 在 `/tmp` 临时目录做恢复演练：43 个文件恢复，`shasum -c` 43 项全部 OK，0 项失败，`data.json` 与备份一致；演练后删除临时目录。
 - 备份期间 Obsidian 已完全退出（`pgrep -x Obsidian` 为空）。
 
-### 4.5 未执行 / 未验证
+### 4.6 未执行 / 未验证
 
 | 项 | 状态 | 原因 |
 |---|---|---|
 | 实际运行 `seed-test-vault.mjs` / `seed-book-workflow.mjs` | **未执行** | 按约束只跑 `--dry-run` 和临时库，不覆盖现有测试库 |
-| 实际运行 `build.mjs --install-test` | **未执行** | 会覆盖测试库插件；等 M01 验收后再按需执行 |
+| 实际运行 `build.mjs --install-test` | **已在临时库执行** | 临时仓库副本 + 一次性 Vault，见 4.3；未在 `MemoFlow-Test` 执行 |
 | 实际运行 `--force --approve-overwrite` | **未执行** | 未获得单独批准 |
 | Obsidian 实机验收 | **未验证** | 需你打开测试库确认 UI/队列/阅读条 |
 | 移动端 / Windows 平板 | **未验证** | 无设备 |
@@ -159,18 +180,24 @@ node scripts/build.mjs   # 在 /tmp 仓库副本中执行，避免改动仓库 d
 - 守卫拒绝 symlink 路径；如通过 symlink 访问测试库，需改用真实路径。
 - 备份与测试库在同一磁盘，不能防磁盘故障；建议同时保留 Time Machine/外置盘副本。
 - `--force --approve-overwrite` 仍是高风险入口，本次未使用；后续使用前必须单独批准。
+- `seed-book-workflow.mjs` 现在要求 `MF_BOOK_PDF`；未设置会退出 2，不会写文件。
 - PR 创建需要你点击方案 A 链接；本机没有 `gh`/API token。
 
 ### 回滚
 
 1. **测试库**：退出 Obsidian，把当前测试库改名保留，`ditto` 备份副本回原路径，`shasum -c` 校验。
 2. **只撤销标记**：删除 `<test-vault>/.memoflow-test-vault`；脚本会 fail closed，不会误写。
-3. **代码**：分支未合并；`git revert 55eb615` 或删除分支即可；`main` 未改动。
+3. **代码**：分支未合并；删除分支，或按逆序 `git revert 48bc753 55eb615`；`main` 未改动。
 4. **备份**：`<workspace>/MemoFlow-Backups/<timestamp>_pre-M01/` 保留至你确认不再需要。
 
 ## 8. 隐私与脱敏
 
-本报告与新增文档不包含本机绝对路径、日常 Vault 名称或具体 PDF 文件名；路径统一使用 `<repo>`、`<workspace>`、`<test-vault>`、`<backup>` 占位符。
+本报告与新增文档不包含本机绝对路径、日常 Vault 名称或具体 PDF 文件名。已处理：
+
+- 测试夹具中的真实 Vault 名称改为虚构 `My-Daily-Vault`。
+- 移除 `scripts/seed-test-vault.mjs` 中的真实 Vault 名称。
+- 移除 `scripts/seed-book-workflow.mjs` 中的内置私人 PDF 文件名和本机目录默认值；现要求 `MF_BOOK_PDF`。
+- 路径统一使用 `<repo>`、`<workspace>`、`<test-vault>`、`<backup>` 占位符。
 
 ## 9. 建议下一任务
 
