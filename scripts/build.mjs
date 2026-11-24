@@ -55,8 +55,9 @@ async function buildPlugin() {
   const memoCss = await readFile(path.join(root, 'src', 'ui', 'dashboard.css'), 'utf8');
   const readingCss = await readFile(path.join(root, 'src', 'ui', 'reading-bar.css'), 'utf8');
   const cardCss = await readFile(path.join(root, 'src', 'ui', 'card-modal.css'), 'utf8');
+  const refineCss = await readFile(path.join(root, 'src', 'ui', 'refine.css'), 'utf8');
   const reviewCss = await readFile(path.join(root, 'src', 'ui', 'review.css'), 'utf8');
-  const combined = `/* MemoFlow 0.1.0 — styles: upstream Incremental Reading Toolkit 1.1.8 + MemoFlow dashboard + reading bar + card modal. */\n\n${upstreamCss.trimEnd()}\n\n/* ===== MemoFlow dashboard ===== */\n\n${memoCss.trimEnd()}\n\n/* ===== MemoFlow reading bar ===== */\n\n${readingCss.trimEnd()}\n\n/* ===== MemoFlow card modal ===== */\n\n${cardCss.trimEnd()}\n\n/* ===== MemoFlow unified review ===== */\n\n${reviewCss.trimEnd()}\n`;
+  const combined = `/* MemoFlow 0.1.0 — styles: upstream Incremental Reading Toolkit 1.1.8 + MemoFlow dashboard + reading bar + card modal + refine. */\n\n${upstreamCss.trimEnd()}\n\n/* ===== MemoFlow dashboard ===== */\n\n${memoCss.trimEnd()}\n\n/* ===== MemoFlow reading bar ===== */\n\n${readingCss.trimEnd()}\n\n/* ===== MemoFlow card modal ===== */\n\n${cardCss.trimEnd()}\n\n/* ===== MemoFlow refine ===== */\n\n${refineCss.trimEnd()}\n\n/* ===== MemoFlow unified review ===== */\n\n${reviewCss.trimEnd()}\n`;
   await writeFile(path.join(distDir, 'styles.css'), combined, 'utf8');
 
   await cp(path.join(root, 'plugin', 'manifest.json'), path.join(distDir, 'manifest.json'));
