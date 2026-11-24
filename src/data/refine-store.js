@@ -214,7 +214,13 @@ class RefineHistoryStore {
       }
       if (operation.note.path === notePath) entries.push({ operation, state });
     }
-    entries.sort((a, b) => String(a.operation.createdAt).localeCompare(String(b.operation.createdAt)));
+    entries.sort((a, b) => {
+      const byCreated = String(a.operation.createdAt).localeCompare(String(b.operation.createdAt));
+      if (byCreated !== 0) return byCreated;
+      const byState = String(a.state.updatedAt).localeCompare(String(b.state.updatedAt));
+      if (byState !== 0) return byState;
+      return String(a.operation.operationId).localeCompare(String(b.operation.operationId));
+    });
     return entries;
   }
 
