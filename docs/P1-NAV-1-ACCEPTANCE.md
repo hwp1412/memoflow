@@ -106,8 +106,10 @@ npm run verify:memoflow
 
 ## 6. PR / CI
 
-- 分支已推送（见最终交付消息中的 HEAD）
-- 本机没有可用的 GitHub PR 凭据，未能自动创建 Draft PR；创建链接：
-  `https://github.com/hwp1412/memoflow/pull/new/fix/p1-nav-1`
-- 因 PR 未创建，GitHub Actions 尚未运行；本地 `npm run check` / `verify:memoflow` 已通过。
-- 不合并、不发布。
+- PR #8：<https://github.com/hwp1412/memoflow/pull/8>
+- base：`2e76ce5`
+- 兼容性结论提交 HEAD：`1aa0857`
+- GitHub Actions：Run `45440329589`，success
+  - `npm ci` success
+  - `npm run check` success
+- 未合并、未发布。
