@@ -496,6 +496,27 @@ test('recover rejects an invalid journal id and a symlinked journal', async (t) 
   }
 });
 
+test('recover rejects malformed journal fields', async (t) => {
+  const target = await makeTarget(t, { extra: true });
+  const targetReal = fs.realpathSync(target.target);
+  const parent = path.dirname(targetReal);
+  const backupResult = await backup(targetReal, path.join(parent, 'backups'));
+  const oldTarget = path.join(parent, 'MemoFlow-Test.before-restore-bad');
+  const staging = path.join(parent, '.MemoFlow-Test.restore-bad');
+  const journalPath = path.join(parent, '.memoflow-restore-bad.json');
+  const base = await journalFor({ target: targetReal, markerDir: targetReal, oldTarget, staging, backupDir: backupResult.dir });
+  const cases = [
+    [{ kind: 'wrong' }, 'JOURNAL'],
+    [{ phase: 'wrong' }, 'JOURNAL_PHASE'],
+    [{ mode: 'wrong' }, 'JOURNAL_MODE'],
+    [{ backupFormat: 'wrong' }, 'JOURNAL_BACKUP'],
+  ];
+  for (const [overrides, code] of cases) {
+    await fsp.writeFile(journalPath, JSON.stringify({ ...base, ...overrides }));
+    await assert.rejects(snapshot.recoverInterruptedRestore(journalPath), assertCode(code));
+  }
+});
+
 test('assertObsidianClosedForTarget honors injected state', () => {
   const target = '/tmp/MemoFlow-Test';
   assert.throws(

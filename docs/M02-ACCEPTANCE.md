@@ -26,7 +26,7 @@
   - `scripts/backup-test-vault.mjs`
   - `scripts/verify-test-vault-backup.mjs`
   - `scripts/restore-test-vault.mjs`（默认 dry-run）
-- 新增 `test/vault-backup.test.js`（29 项）。
+- 新增 `test/vault-backup.test.js`（30 项）。
 - 新增 `docs/M02-TEST-VAULT-BACKUP.md`。
 - `package.json` 新增三个 npm 脚本。
 - `docs/M01-TEST-VAULT-SAFETY.md` 备份章节改为引用 M02。
@@ -37,19 +37,19 @@
 
 ```text
 node --test test/*.test.js
-1..171
-# tests 171
-# pass 171
+1..172
+# tests 172
+# pass 172
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
 
 npm run check
-通过（validate-release + 171 tests）
+通过（validate-release + 172 tests）
 ```
 
-新增 29 项测试覆盖：
+新增 30 项测试覆盖：
 
 - 备份分类计数、manifest/checksums、空目录、Unicode/空格路径；
 - `--dry-run` 零写入；
@@ -212,10 +212,10 @@ node scripts/backup-test-vault.mjs --label m02-acceptance
    - 旧目录 marker 的 pathHash 不属于 target；
    - journal vaultId / marker hash 不匹配；
    - backup proof 不匹配；
-   - journalId 非法、journal 为 symlink；
+   - journalId 非法、kind/phase/mode/backupFormat 非法、journal 为 symlink；
    - Obsidian 检测 helper 的 running/unsupported/confirmed 分支。
 
-实际重跑：`node --test test/*.test.js` → **171 pass / 0 fail**；`npm run check` 通过。  
+实际重跑：`node --test test/*.test.js` → **172 pass / 0 fail**；`npm run check` 通过。  
 GitHub Actions（Run `45398556663`）的 `npm ci` 与 `npm run check` 均通过。  
 修复后再次在一次性临时 Vault 执行 Replace 实际恢复：`diff -r --exclude='.memoflow-test-vault'` 无差异。
 
