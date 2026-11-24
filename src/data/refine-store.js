@@ -159,16 +159,6 @@ class RefineHistoryStore {
     return operation;
   }
 
-  async readState(operationId) {
-    const text = await this.readText(this.statePath(operationId), 'STATE_MISSING');
-    let state;
-    try {
-      state = JSON.parse(text);
-    } catch (error) {
-      throw new RefineError('STATE_CORRUPT', 'history state JSON is corrupt', { operationId });
-    }
-    return validateState(state, operationId);
-  }
 
   async readEntry(operationId) {
     const operation = await this.readOperation(operationId);
@@ -192,10 +182,7 @@ class RefineHistoryStore {
       recovery: [...(state.recovery || []), ...recovery],
     };
     validateState(next, operation.operationId);
-    const statePath = this.statePath(operationId);
-    await this.writeAtomic(statePath, JSON.stringify(next, null, 2), { tempSuffix: 'state-tmp' });
-    const readback = JSON.parse(await this.readText(statePath));
-    validateState(readback, operationId);
+    const readback = await this.writeStateEvent(operationId, next);
     return readback;
   }
 
@@ -244,14 +231,65 @@ class RefineHistoryStore {
     return this._writeStatus(operationId, 'restored', { recovery: [{ at: this.now(), reason: 'restored body verified' }] });
   }
 
-  async listFiles() {
+  async listRootNames() {
     if (!await this.adapter.exists(this.root)) return [];
     const listing = await this.adapter.list(this.root);
     const files = Array.isArray(listing) ? listing : (listing.files || []);
-    return files
-      .map(file => String(file).split('/').pop())
-      .filter(name => name.endsWith('.json') && !name.endsWith('.state.json') && !name.includes('.op-tmp-') && !name.includes('.state-tmp-'))
+    return files.map(file => String(file).split('/').pop());
+  }
+
+  async listFiles() {
+    return (await this.listRootNames())
+      .filter(name => name.endsWith('.json') && !name.includes('.state') && !name.includes('.op-tmp-') && !name.includes('.state-tmp-'))
       .sort();
+  }
+
+  async listStateFiles(operationId) {
+    const prefix = `${operationId}.state`;
+    const initial = `${operationId}.state.json`;
+    const names = await this.listRootNames();
+    const out = [];
+    if (names.includes(initial)) out.push({ sequence: 0, name: initial });
+    for (const name of names) {
+      if (!name.startsWith(`${prefix}.`) || !name.endsWith('.json')) continue;
+      const middle = name.slice(prefix.length + 1, -5);
+      const match = middle.match(/^(\d+)-/);
+      if (match) out.push({ sequence: Number(match[1]), name });
+    }
+    return out.sort((a, b) => a.sequence - b.sequence);
+  }
+
+  async readState(operationId) {
+    const stateFiles = await this.listStateFiles(operationId);
+    if (!stateFiles.length) throw new RefineError('STATE_MISSING', 'history state is missing', { operationId });
+    let corrupt = null;
+    for (const entry of [...stateFiles].reverse()) {
+      try {
+        const text = await this.readText(joinPath(this.root, entry.name), 'STATE_MISSING');
+        const parsed = JSON.parse(text);
+        validateState(parsed, operationId);
+        if (corrupt) continue; // any corrupt state remains a safety stop
+        return parsed;
+      } catch (error) {
+        if (error instanceof RefineError && error.code === 'STATE_MISSING') continue;
+        corrupt = error;
+      }
+    }
+    if (corrupt) {
+      throw new RefineError('STATE_CORRUPT', 'history state is corrupt', { operationId });
+    }
+    throw new RefineError('STATE_MISSING', 'history state is missing', { operationId });
+  }
+
+  async writeStateEvent(operationId, state) {
+    const files = await this.listStateFiles(operationId);
+    const nextSequence = files.reduce((max, entry) => Math.max(max, entry.sequence), 0) + 1;
+    const name = `${operationId}.state.${String(nextSequence).padStart(6, '0')}-${Math.random().toString(36).slice(2)}.json`;
+    const statePath = joinPath(this.root, name);
+    await this.writeAtomic(statePath, JSON.stringify(state, null, 2), { mustNotExist: true, tempSuffix: 'state-event-tmp' });
+    const readback = JSON.parse(await this.readText(statePath));
+    validateState(readback, operationId);
+    return readback;
   }
 
   async listEntries(notePath) {
@@ -304,9 +342,10 @@ class RefineHistoryStore {
     return verified[verified.length - 1];
   }
 
-  // A verified restore is itself a valid current-state history event. Keep
-  // latestVerified for the original operation and expose the resolved view
-  // used by restore planning.
+  // 1A supports restoring only the latest not-yet-restored refinement.
+  // A restored event is a terminal state, not a new "undo" step. A verified
+  // restore that has not been marked restored is still pending and must not
+  // be treated as a fresh refinement.
   async latestRestorable(notePath) {
     const entries = await this.listEntries(notePath);
     const unresolved = entries.filter(entry => isUnresolvedStatus(entry.state.status) || entry.state.missingState);
@@ -316,9 +355,18 @@ class RefineHistoryStore {
         operationIds: unresolved.map(entry => entry.operation.operationId),
       });
     }
-    const resolved = entries.filter(entry => entry.state.status === 'verified' || entry.state.status === 'restored');
-    if (!resolved.length) throw new RefineError('NO_VERIFIED_HISTORY', 'no verified or restored history for note');
-    return resolved[resolved.length - 1];
+    if (!entries.length) throw new RefineError('NO_VERIFIED_HISTORY', 'no verified history for note');
+    const last = entries[entries.length - 1];
+    if (last.state.status === 'restored') {
+      throw new RefineError('ALREADY_RESTORED', 'latest refinement has already been restored');
+    }
+    if (last.operation.restoreOf) {
+      throw new RefineError('RESTORE_PENDING', 'restore event is verified but not marked restored');
+    }
+    if (last.state.status !== 'verified') {
+      throw new RefineError('NO_VERIFIED_HISTORY', 'no verified refinement available to restore');
+    }
+    return last;
   }
 
   async planRestore(notePath, currentContent) {

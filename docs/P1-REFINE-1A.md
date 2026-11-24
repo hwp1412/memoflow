@@ -11,8 +11,9 @@
 
 ```text
 MemoFlow History/refine/
-  <operationId>.json          # 不可变快照
-  <operationId>.state.json    # 状态/恢复事件
+  <operationId>.json                         # 不可变快照
+  <operationId>.state.json                   # 初始 prepared 状态
+  <operationId>.state.<sequence>-<id>.json   # 后续状态事件（只追加）
 ```
 
 不可变快照包含：
@@ -29,6 +30,8 @@ MemoFlow History/refine/
 - `status`：`prepared | applied | verified | restored | failed | conflict`；
 - `updatedAt`；
 - `recovery[]` 记录。
+- 初始状态写入 `<operationId>.state.json`；后续更新写入新的
+  `<operationId>.state.<sequence>-<id>.json`，**不覆盖、不删除旧状态**。`readState` 选择最高 sequence。
 
 不可变快照不包含可变 `status`，避免状态更新损坏原文历史。
 
@@ -70,7 +73,7 @@ prepared/applied -> failed | conflict
   - 要求当前状态为 `verified`；
   - 必须是 restore 操作，`restoreOf` 必须指向已有 operation；
   - 当前 type/body 必须匹配；
-  - 且 `before.bodyHash` 必须等于被引用 operation 的 `after.bodyHash`、`after.body` 必须等于被引用 operation 的 `before.body`；
+  - 且 `note.bodyHash`（当前恢复前 body）必须等于被引用 operation 的 `after.bodyHash`、`after.body` 必须等于被引用 operation 的 `before.body`；
   - 普通 refine operation 不能被标记为 restored；
   - 通过后进入 `restored`。
 - 1A 只证明“调用者提供的内容”匹配；真实 Editor/disk 读取由 1B 负责，1B 不可绕过 `markVerified`。
@@ -104,7 +107,9 @@ list(path)
 
 ## 7. 恢复计划
 
-- 只使用最近 `verified`/`restored` 历史；
+- 只使用最近 `verified` 且尚未恢复的历史；
+- 最近状态为 `restored` → `ALREADY_RESTORED`；
+- 最近为 verified 但它是尚未 markRestored 的 restore 事件 → `RESTORE_PENDING`；
 - 有未解决操作 → 拒绝；
 - 当前笔记必须仍为 Extract；
 - 当前 body hash 必须等于目标历史的 `after.bodyHash`；
@@ -147,12 +152,18 @@ list(path)
 ## 10. 已知风险
 
 - 无跨实例锁；1A 在本地 `writeOperation` 前做未解决检查，但不同实例仍可能竞态；1B 必须串行化 UI/写入。
+- 真实 Obsidian 1.15.1 / macOS / FileSystemAdapter 已证明：对已存在的目标 `rename` 返回 `Destination file already exists!`；因此状态更新改为 append-only event，不再依赖覆盖。
 - `setStatus` 不允许直接 verified/restored；调用方必须提供当前内容通过 `markVerified`/`markRestored`，但 1A 无法证明内容来自真实磁盘，信任边界由 1B 重新读取。
 - `parseFrontmatterType()` 要求 `type` 恰好出现一次；重复声明即使值相同也视为歧义。
 - `createRefineOperation()`/`createRestoreOperation()` 从完整当前内容重新解析 type，不只信任调用方 noteType。
 - 路径不是稳定 ID，重命名后历史安全停止但不自动跟随。
 - 临时文件/rename 不具备事务保证；崩溃后需诊断/恢复。
 - 4 MiB 上限与 1 MiB note 上限需真实笔记大小样本验证。
-- Adapter `rename` 覆盖语义未由 Obsidian 文档保证；已用不覆盖目标 Adapter 验证“rename 失败时旧 state 保留”，但仍不宣称跨平台事务/fsync。
-- **真实 Obsidian DataAdapter 未在独立 Vault 实测**：这是 1B 前必须解决的兼容性阻塞；如实际不支持覆盖，需要改为 append-only state。
+- mobile DataAdapter 未实测；事件文件会持续累积，清理策略未定。
+- 真实 Obsidian 1.15.1（macOS，FileSystemAdapter）已实测：
+  - 对已存在的目标 rename 失败：`Destination file already exists!`；
+  - 因此当前策略改为 append-only state event，绝不覆盖旧 state；
+  - 实际 prepared→applied→verified 与重启读取 verified 均通过。
+- 仅验证了桌面 macOS；移动端仍未实测，不宣称跨平台覆盖/事务/fsync。
+- 不删除旧 state；event 文件长期保留，清理策略未定。
 - 1A 不实现历史清理，长期容量策略未定。

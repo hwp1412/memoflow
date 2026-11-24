@@ -14,24 +14,24 @@ node --test test/refine-history.test.js
 # fail 0
 
 node --test test/refine-store.test.js
-# tests 27
-# pass 27
+# tests 30
+# pass 30
 # fail 0
 
 node --test test/*.test.js
-# tests 292
-# pass 292
+# tests 295
+# pass 295
 # fail 0
 
 npm run check
-通过（validate-release + 292 tests）
+通过（validate-release + 295 tests）
 
 npm run verify:memoflow
-通过（构建 + node --check + 292 tests + validate-memoflow）
+通过（构建 + node --check + 295 tests + validate-memoflow）
 ```
 
 - M03 24 项、P1-SAFETY-1、Phase 1、P1-NAV-1 断言全部保留。
-- 1A 测试使用内存 Adapter，不写 MemoFlow-Test，不写任何真实笔记正文/Frontmatter。
+- 自动化测试使用内存 Adapter；真实 Adapter 探针只在专用临时目录执行并已清理，不写任何 Source/Extract/Card 正文/Frontmatter。
 
 ## 2. 覆盖
 
@@ -41,7 +41,7 @@ npm run verify:memoflow
 - 历史写失败、读回失败、rename 失败、state 写失败；
 - prepared/applied/failed/conflict/缺失 state 阻止新 operation 与恢复；
 - 重复 operationId 拒绝覆盖；
-- 并发不同 operation 独立历史（无跨实例锁声明）；
+- 未解决历史阻止后续 operation；不同实例仍无锁（不宣称跨实例保护）；
 - 历史缺失/损坏；
 - 路径重命名不自动匹配；
 - 恢复 body-only、保留当前 Frontmatter；
@@ -49,9 +49,11 @@ npm run verify:memoflow
 - body 变化冲突；
 - 直接 setStatus verified/restored 被拒绝；markVerified 校验 body/type；
 - 普通 refine operation 不能标记 restored；恢复操作必须校验 restoreOf 关系；
+- 已 restored / verified-but-not-restored 的恢复不能被再次当作可恢复；
+- 新精简后恢复重新可用；
 - type 重复声明（即使值相同）拒绝；
 - createRefineOperation/createRestoreOperation 从内容重新解析 type，不信任调用方 noteType；
-- 不覆盖目标 Adapter 的 rename 失败保留旧 state；
+- append-only state event，不覆盖旧 state；
 - 软 20 条限制不自动删除；
 - 1 MiB note 拒绝；
 - 所有测试写入都在 history root，不写真实笔记。
@@ -61,7 +63,7 @@ npm run verify:memoflow
 见 `docs/P1-REFINE-1A.md`：
 
 - 不可变 `<operationId>.json`；
-- 独立 `<operationId>.state.json`；
+- 初始 `<operationId>.state.json` + 只追加的状态事件 `<operationId>.state.<sequence>-<id>.json`；
 - `prepared → applied → verified → restored`；
 - failed/conflict 作为安全终止状态；
 - 快照包含完整原文、前后 body/full hash、选区、替换内容、restoreOf。
@@ -69,24 +71,43 @@ npm run verify:memoflow
 ## 4. 安全限制
 
 - 不宣称 history+body 事务原子性；
-- temp/rename 只是风险降低；
+- state 更新使用 append-only event，不覆盖/删除旧 state；temp/rename 仍只是风险降低；
 - 失败保留诊断文件，不静默删除；
 - 1A 不执行真实正文写入；
 - 无跨实例锁；
 - 路径不是稳定 ID；
 - 历史容量策略未最终确定。
 
-## 5. Adapter 行为核实
+## 5. 真实 DataAdapter 验证
 
-- `DataAdapter.rename` 的目标覆盖语义不视为跨平台保证。
-- 使用“目标已存在即失败”的内存 Adapter 注入测试：
-  - state rename 失败；
-  - 旧 state 文件内容保持不变；
-  - 新 state temp 保留用于诊断；
-  - operation/history 不丢失。
-- **真实 Obsidian DataAdapter 未在独立一次性 Vault 中实测**。本轮不把内存 Adapter 测试当成实机兼容性证明。
-- **阻塞项**：1B 前必须用真实 desktop/mobile DataAdapter 验证 prepared→applied→verified 状态更新链；若目标覆盖不受支持，必须在 1B 前实现 append-only state 或等价安全替代方案。
-- 仍不宣称 temp+rename 为事务或具备 fsync 保证。
+环境：
+
+- Obsidian：`1.15.1`
+- OS：macOS `darwin`
+- Electron：`43.8.9`
+- Adapter：`FileSystemAdapter`（实际构造名经压缩为 `ai`，`instanceof FileSystemAdapter === true`）
+
+### 结果
+
+1. 对已存在的目标执行 temp + rename：
+   - 失败：`Destination file already exists!`
+   - 目标保持 prepared；未删除、未损坏。
+2. 因此停止使用“覆盖已有 state 的 rename”方案。
+3. 改为 **append-only state event**：
+   - 初始 `<id>.state.json`；
+   - 后续 `<id>.state.<sequence>-<id>.json`；
+   - 绝不覆盖、绝不删除旧 state。
+4. 真实 Obsidian 中实际执行：
+   - prepared；
+   - applied；
+   - verified；
+   - 读回均正确；
+   - 关闭/重开 Obsidian 后读回 `verified`。
+5. 状态文件哈希：
+   - 见 `Phase1-验收证据/P1-REFINE-1A-state-hashes.sha256`。
+6. 清理后与启动前备份 `diff -qr` 为空，无 Source/Extract/Card 修改。
+
+仍不宣称跨平台原子事务或 fsync；mobile 未实测。
 
 ## 6. 1B 接入
 
@@ -102,8 +123,8 @@ npm run verify:memoflow
 ## 7. 1B 前置条件
 
 - 1A 的 history/verification/type/restore 契约已通过测试。
-- **仍未满足 1B 前置条件**：真实 Obsidian DataAdapter 的 state 更新兼容性未验证。
-- 在实机 Adapter 验证或 append-only state 替代方案完成前，不启动 1B。
+- 真实桌面 DataAdapter 与 append-only state 已验证；1A 合并条件基本满足。
+- mobile Adapter 尚未实测，仍作为 1A 合并后的平台风险；不阻止 1A 合并，但 1B 实机验收必须覆盖移动端。
 
 ## 8. 回滚
 

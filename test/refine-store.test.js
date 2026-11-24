@@ -276,7 +276,7 @@ test('state update failure after a body-like applied state preserves applied his
   const op = await operation();
   await store.writeOperation(op);
   await store.setStatus(op.operationId, 'applied');
-  adapter.writeFailures.push('state-tmp');
+  adapter.writeFailures.push('state-event-tmp');
   await assert.rejects(() => store.markVerified(op.operationId, afterContent(op)), error => error.code === 'HISTORY_WRITE_FAILED');
   const entry = await store.readEntry(op.operationId);
   assert.equal(entry.state.status, 'applied');
@@ -305,7 +305,47 @@ test('restored event becomes the latest restorable history', async () => {
   await store.markVerified(restoreId, afterContent(plan.operation));
   await store.markRestored(restoreId, afterContent(plan.operation));
   assert.equal((await store.latestVerified(notePath)).operation.operationId, op.operationId);
-  assert.equal((await store.latestRestorable(notePath)).operation.operationId, restoreId);
+  await assert.rejects(() => store.latestRestorable(notePath), error => error.code === 'ALREADY_RESTORED');
+  await assert.rejects(() => store.planRestore(notePath, '---\ntype: extract\n---\nHello world\n'), error => error.code === 'ALREADY_RESTORED');
+});
+
+test('a verified restore event is pending, not a new restorable refinement', async () => {
+  const { store } = await storeWithAdapter();
+  const op = await operation();
+  await store.writeOperation(op);
+  await verifyOp(store, op);
+  const plan = await store.planRestore(notePath, '---\ntype: extract\n---\nHi world\n');
+  await store.writeRestorePlan(plan);
+  const restoreId = plan.operation.operationId;
+  await store.setStatus(restoreId, 'applied');
+  await store.markVerified(restoreId, afterContent(plan.operation));
+  await assert.rejects(() => store.latestRestorable(notePath), error => error.code === 'RESTORE_PENDING');
+  await assert.rejects(() => store.planRestore(notePath, '---\ntype: extract\n---\nHello world\n'), error => error.code === 'RESTORE_PENDING');
+  await store.markRestored(restoreId, afterContent(plan.operation));
+  await assert.rejects(() => store.latestRestorable(notePath), error => error.code === 'ALREADY_RESTORED');
+});
+
+test('a new refinement after restore makes restore available again', async () => {
+  const { store } = await storeWithAdapter();
+  const op = await operation();
+  await store.writeOperation(op);
+  await verifyOp(store, op);
+  const plan = await store.planRestore(notePath, '---\ntype: extract\n---\nHi world\n');
+  await store.writeRestorePlan(plan);
+  await store.setStatus(plan.operation.operationId, 'applied');
+  await store.markVerified(plan.operation.operationId, afterContent(plan.operation));
+  await store.markRestored(plan.operation.operationId, afterContent(plan.operation));
+
+  const next = await createRefineOperation({
+    operationId: uuid(), notePath,
+    fullContent: '---\ntype: extract\n---\nHello world\n',
+    selection: { start: 0, end: 5 }, replacementText: 'Again',
+  });
+  await store.writeOperation(next);
+  await verifyOp(store, next);
+  const nextPlan = await store.planRestore(notePath, '---\ntype: extract\n---\nAgain world\n');
+  assert.equal(nextPlan.latest.operation.operationId, next.operationId);
+  assert.equal(nextPlan.operation.before.body, 'Again world\n');
 });
 
 test('failed, conflict and missing state records block a new operation', async () => {
@@ -373,18 +413,28 @@ test('restore plan rejects current Source, missing type and ambiguous type', asy
   }
 });
 
-test('non-overwriting rename failure preserves the previous state file', async () => {
+test('append-only state never overwrites the initial state file', async () => {
+  const { adapter, store } = await storeWithAdapter();
+  const op = await operation();
+  await store.writeOperation(op);
+  await verifyOp(store, op);
+  assert.equal(JSON.parse(adapter.files.get(store.statePath(op.operationId))).status, 'prepared');
+  assert.equal((await store.readState(op.operationId)).status, 'verified');
+  assert.ok((await store.listStateFiles(op.operationId)).length >= 2);
+});
+
+test('state event rename failure preserves the last valid state', async () => {
   const { adapter, store } = await storeWithAdapter();
   const op = await operation();
   await store.writeOperation(op);
   await store.setStatus(op.operationId, 'applied');
   const stateBefore = await store.readState(op.operationId);
-  adapter.overwriteRename = false;
+  adapter.renameFailures.push('state-event-tmp');
   await assert.rejects(() => store.markVerified(op.operationId, afterContent(op)), error => error.code === 'HISTORY_WRITE_FAILED');
   const stateAfter = await store.readState(op.operationId);
   assert.deepEqual(stateAfter, stateBefore);
   assert.equal(stateAfter.status, 'applied');
-  assert.ok([...adapter.files.keys()].some(path => path.includes('.state-tmp-')));
+  assert.ok([...adapter.files.keys()].some(path => path.includes('.state-event-tmp-')));
 });
 
 
