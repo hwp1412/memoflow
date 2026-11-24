@@ -2,13 +2,17 @@
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import process from 'node:process';
+import testVault from './test-vault.js';
 
-const root = process.cwd();
+const { assertTestVault, assertInside } = testVault;
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = path.join(root, 'dist', 'memoflow');
 const withPreview = process.argv.includes('--preview');
 const withInstall = process.argv.includes('--install-test');
+const dryRun = process.argv.includes('--dry-run');
 const require = createRequire(import.meta.url);
 const { localizeBaseSource } = require(path.join(root, 'src', 'i18n', 'base-zh.js'));
 const localizeBasePlugin = {
@@ -76,13 +80,45 @@ async function buildPreview() {
 }
 
 async function installTestVault() {
-  const vault = path.join(root, '..', 'MemoFlow-Test');
+  const { vault } = assertTestVault({ repoRoot: root });
   const pluginDir = path.join(vault, '.obsidian', 'plugins', 'memoflow');
-  await mkdir(pluginDir, { recursive: true });
-  await cp(distDir, pluginDir, { recursive: true });
-  console.log(`[build] installed -> ${path.relative(root, pluginDir)}`);
+  // Only the three build artifacts are installed. data.json is never touched.
+  const artifacts = ['main.js', 'manifest.json', 'styles.css'];
+  if (dryRun) {
+    console.log(`[dry-run] would install ${artifacts.join(', ')} -> ${path.relative(root, pluginDir)}`);
+    return;
+  }
+  await mkdir(assertInside(vault, pluginDir), { recursive: true });
+  for (const name of artifacts) {
+    await cp(path.join(distDir, name), assertInside(vault, path.join(pluginDir, name)));
+  }
+  console.log(`[build] installed 3 artifacts -> ${path.relative(root, pluginDir)}`);
 }
 
-await buildPlugin();
-if (withPreview) await buildPreview();
-if (withInstall) await installTestVault();
+if (dryRun) {
+  if (withInstall) {
+    try {
+      const { vault } = assertTestVault({ repoRoot: root });
+      const pluginDir = path.join(vault, '.obsidian', 'plugins', 'memoflow');
+      console.log(`[dry-run] test vault OK`);
+      console.log(`[dry-run] would install main.js, manifest.json, styles.css -> ${path.relative(root, pluginDir)}`);
+    } catch (error) {
+      console.error(error.message);
+      process.exit(1);
+    }
+  }
+  if (withPreview) console.log('[dry-run] preview build skipped');
+  console.log('[dry-run] no files were written.');
+} else {
+  if (withInstall) {
+    try {
+      assertTestVault({ repoRoot: root });
+    } catch (error) {
+      console.error(error.message);
+      process.exit(1);
+    }
+  }
+  await buildPlugin();
+  if (withPreview) await buildPreview();
+  if (withInstall) await installTestVault();
+}
