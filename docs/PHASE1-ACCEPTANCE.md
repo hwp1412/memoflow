@@ -162,6 +162,6 @@ Phase 1 分支已合并 main `efb901f`（P1-SAFETY-1）：
 - 分支：`feat/phase1-child-extract`
 - 基线：`efb901f`
 - 同步 Merge Commit：`ce83d15`
-- PR：待创建
+- PR：#6：<https://github.com/hwp1412/memoflow/pull/6>
 - GitHub Actions：尚未运行；PR 创建后需 `npm ci` + `npm run check` 通过。
 - 未合并、未发布、未进入 MF-US-1。
