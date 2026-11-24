@@ -6,6 +6,9 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "test-vault:check": "node scripts/test-vault.js --check",
+    "backup:test-vault": "node scripts/backup-test-vault.mjs",
+    "verify:test-vault-backup": "node scripts/verify-test-vault-backup.mjs",
+    "restore:test-vault": "node scripts/restore-test-vault.mjs",
     "validate": "node scripts/validate-release.mjs",
     "check": "node --check main.js && node --check tree-core.js && node --check status-core.js && node --check spaced-repetition-core.js && node --check date-core.js && node --check topic-core.js && npm run validate && npm test",
     "build": "npm run check",
