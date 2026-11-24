@@ -118,6 +118,11 @@ styles.css
 
 ## 7. 备份与恢复
 
+> M02 已提供正式工具，优先使用 [M02 测试 Vault 备份与恢复](M02-TEST-VAULT-BACKUP.md)：
+> `backup-test-vault.mjs`、`verify-test-vault-backup.mjs`、`restore-test-vault.mjs`。
+> 下面的手动命令仅作历史参考，不再作为日常流程。
+
+
 备份放在测试库和仓库之外：
 
 ```text
