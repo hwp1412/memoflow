@@ -1,13 +1,13 @@
 # MemoFlow M01 验收报告
 
 - 任务 ID / 名称：M01 — 保护并规范现有 MemoFlow-Test 测试环境
-- 当前状态：待项目所有者人工验收
+- 当前状态：待项目所有者人工验收；GitHub Actions 失败已确认为基线问题（见第 9 节）
 - 分支：`test/m01-test-vault-guard`
 - 基线 Commit：`ea86c48`
 - 实现 Commit：`55eb615`
 - 隐私修复 Commit：`48bc753`
 - 验收报告 Commit：本文件所在提交（分支 HEAD）
-- PR：方案 A，等待创建：<https://github.com/hwp1412/memoflow/pull/new/test/m01-test-vault-guard>
+- PR：#2（用户已创建）：<https://github.com/hwp1412/memoflow/pull/2>
 - 合并状态：**未合并**；未发布；未开始下一任务
 
 ## 1. 本次实现
@@ -151,7 +151,8 @@ node scripts/build.mjs   # 在 /tmp 仓库副本中执行，避免改动仓库 d
 | Obsidian 实机验收 | **未验证** | 需你打开测试库确认 UI/队列/阅读条 |
 | 移动端 / Windows 平板 | **未验证** | 无设备 |
 | SR 1.15.4 评分交互 | **未验证** | 本次未打开 Obsidian、未评分 |
-| PR 实际创建 | **未完成** | 方案 A：需你点击链接创建 |
+| GitHub Actions CI | **失败（基线问题）** | `Run npm ci` 失败；`npm run check` 被跳过；见第 9 节 |
+| PR 实际创建 | **已完成** | PR #2 |
 
 ## 5. 用户手动验收步骤
 
@@ -199,6 +200,43 @@ node scripts/build.mjs   # 在 /tmp 仓库副本中执行，避免改动仓库 d
 - 移除 `scripts/seed-book-workflow.mjs` 中的内置私人 PDF 文件名和本机目录默认值；现要求 `MF_BOOK_PDF`。
 - 路径统一使用 `<repo>`、`<workspace>`、`<test-vault>`、`<backup>` 占位符。
 
-## 9. 建议下一任务
+## 9. CI 基线失败分析（只读，不属 M01 代码范围）
 
-**无。** 等待你人工验收 M01、创建 PR 并决定是否合并；在明确批准前不开始 M02 或 Phase 1。
+### 9.1 失败位置
+
+- PR #2 的 Actions run：`45388291970`，job `138424917262`。
+- Step 4 `Run npm ci`：**failure，exit code 1**。
+- Step 5 `Run npm run check`：**skipped**，因此 CI 中从未执行测试或构建。
+- main 分支基线 run：`45364939766`，job `138344115082`，**同样在 `Run npm ci` 失败，`npm run check` 跳过**。
+
+### 9.2 原因
+
+- `package.json` 声明了 `devDependencies.esbuild: "^0.28.2"`。
+- `package-lock.json` 仍是旧 lock（lockfileVersion 3），其中没有 `esbuild`，也没有任何 `@esbuild/*` 条目；`packages[""]` 也没有 `devDependencies`。
+- 在 `/tmp` 临时目录用 npm 12.2.3 对同一份 `package.json` + `package-lock.json` 执行：
+  `npm ci --dry-run --ignore-scripts`
+  复现出：
+  `EUSAGE: npm ci can only install packages when your package.json and package-lock.json are in sync`
+  以及 `Missing: esbuild@0.28.2 from lock file` 和全部 `@esbuild/*` 平台包。
+- M01 没有修改 `package-lock.json`；`package.json` 只新增了 `test-vault:check`。main 与 M01 分支的 lock 文件一致，失败也一致。
+
+**结论：这是 M01 之前就存在的基线问题，不是 M01 新引入的失败。**
+
+### 9.3 影响
+
+- CI 在依赖安装阶段即失败，M01 的 142 项测试和 `npm run check` 在 CI 中**没有执行**；不能把 CI 红当成 M01 测试失败。
+- 本地 / DSH 环境中已实际执行并全部通过：142 项测试、`validate-memoflow`、守卫检查、临时库实际安装测试（见 4.1–4.3）。
+- 另有一个独立基线问题：CI 的 `npm run check` 校验的是上游根 `manifest.json` 1.1.8，不构建 `dist/memoflow`，即使修好 lockfile 也不会验证 MemoFlow 发布物。该问题应归入独立的 CI/发布任务，不在 M01 处理。
+
+### 9.4 后续独立修复方案（待批准，不纳入 M01）
+
+- 建议任务 ID：`CI-BASELINE-1`。
+- 用 npm 重新生成 `package-lock.json`（`npm install --package-lock-only`，或干净环境下的 `npm install`），提交 lock 文件。
+- 在临时副本验证：`npm ci` 成功 → `npm test` 通过 → `npm run check` 通过。
+- 单独开分支/PR，不混入 M01；不改 `.github/workflows/`（修改工作流需专项授权）。
+- 是否让 CI 构建/校验 `dist/memoflow`，作为后续 CI/Phase 6 任务单独讨论。
+
+## 10. 建议下一任务
+
+**M01 范围内：无。** 等待你最终验收并决定是否合并 PR #2。  
+CI 修复请按第 9.4 节作为独立任务单独批准；在明确批准前不开始 M02 或 Phase 1。
