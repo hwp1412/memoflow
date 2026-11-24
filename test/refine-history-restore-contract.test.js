@@ -399,3 +399,22 @@ test('internally self-consistent v2 record pointing at the wrong history snapsho
     error => error.code === 'RESTORE_RELATION_MISMATCH',
   );
 });
+
+test('a restore target with a missing referenced operation is not trusted', async () => {
+  const op = await refine(A);
+  const v2 = await createVersionRestoreOperation({
+    operationId: crypto.randomUUID(),
+    currentContent: B,
+    currentNotePath: NOTE,
+    targetOperation: op,
+  });
+  const missing = crypto.randomUUID();
+  v2.restoreOf = missing;
+  v2.restoreTarget.operationId = missing;
+  await validateOperationIntegrity(v2);
+  const entries = [entry(op, 'verified'), entry(v2, 'restored')];
+  await assert.rejects(
+    () => assertCurrentTrustedState({ entries, notePath: NOTE, currentContent: B }),
+    error => error.code === 'RESTORE_REFERENCE_MISSING',
+  );
+});

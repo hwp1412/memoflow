@@ -114,8 +114,8 @@ no-op：
 
 ## 7. 测试
 
-- 新增 14 项 RESTORE-1 测试；
-- 全量 **356/356**；
+- 新增 15 项 RESTORE-1 测试；
+- 全量 **357/357**；
 - `npm run check`、`npm run verify:memoflow` 通过。
 
 覆盖：
@@ -135,6 +135,7 @@ no-op：
 - 混合 v1/v2；
 - 旧插件 schema 拒绝；
 - 内部 hash 自洽但指向错误历史快照；
+- 目标引用缺失的 operation；
 - plan 零写入；
 - 失败不改历史；
 - 342 旧回归。

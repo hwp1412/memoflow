@@ -571,7 +571,23 @@ function latestTrustedState(entries = []) {
   };
 }
 
+async function validateHistoryRelationships(entries, operationsById = null) {
+  const map = operationsById || new Map(entries.map(entry => [entry.operation.operationId, entry.operation]));
+  for (const entry of entries) {
+    const operation = entry.operation;
+    if (!operation.restoreOf) continue;
+    const referenced = map.get(operation.restoreOf);
+    if (!referenced) {
+      throw new RefineError('RESTORE_REFERENCE_MISSING', 'restoreOf does not reference an existing operation');
+    }
+    assertNoRestoreCycle(operation, map);
+    await validateRestoreRelationship(operation, referenced, { operationsById: map });
+  }
+  return true;
+}
+
 async function assertCurrentTrustedState({ entries, notePath, currentContent, editorContent = null }) {
+  await validateHistoryRelationships(entries);
   const trusted = latestTrustedState(entries);
   if (trusted.operation.note.path !== notePath) {
     throw new RefineError('RESTORE_CROSS_NOTE', 'history belongs to another note');
@@ -676,5 +692,6 @@ module.exports = {
   classifyCompletedEntry,
   latestTrustedState,
   assertCurrentTrustedState,
+  validateHistoryRelationships,
   planRestore,
 };
