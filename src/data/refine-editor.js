@@ -395,6 +395,10 @@ class RefineEditorController {
         path: snapshot.path,
         selectedText: snapshot.selection.selectedText,
         replacementText: snapshot.selection.selectedText,
+        validate: async value => {
+          this._assertSafe(snapshot, value);
+          await this._assertUnchanged(snapshot);
+        },
       });
       if (replacement == null) return null;
       const replacementText = String(replacement);

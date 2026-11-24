@@ -441,6 +441,13 @@ class MemoFlowPlugin extends BasePlugin {
         case 'create-card':
           await this.openCardDialog(file);
           return;
+        case 'refine-extract':
+          if (fm.type !== 'extract') {
+            new Notice('原位精简只支持 Extract。');
+            return;
+          }
+          await this._getRefineController().refineActive();
+          return;
         case 'clipboard-extract':
           await this.clipboardExtract(file);
           return;
@@ -503,7 +510,7 @@ class MemoFlowPlugin extends BasePlugin {
       }
     } catch (error) {
       console.error('[MemoFlow] reading action failed', action, error);
-      new Notice(`${({ complete: '完成阅读', skip: '下一项', postpone: '延后', dismiss: '移出队列', 'mark-done': '标记完成', 'clipboard-extract': '剪贴摘录', 'create-card': '制卡', priority: '设置优先级', 'open-pdf': '打开 PDF' })[action] || '操作'}失败：${error.message || '未知错误'}。可重试；仍失败时打开原笔记或重载 Obsidian。`, 8000);
+      new Notice(`${({ complete: '完成阅读', skip: '下一项', postpone: '延后', dismiss: '移出队列', 'mark-done': '标记完成', 'clipboard-extract': '剪贴摘录', 'create-card': '制卡', 'refine-extract': '原位精简', priority: '设置优先级', 'open-pdf': '打开 PDF' })[action] || '操作'}失败：${error.message || '未知错误'}。可重试；仍失败时打开原笔记或重载 Obsidian。`, 8000);
     } finally {
       this._syncReadingSurface();
     }
@@ -575,6 +582,9 @@ class MemoFlowPlugin extends BasePlugin {
       }
       if (this.app.workspace.getActiveFile()?.extension !== 'pdf') {
         add('从当前摘录制卡', 'create-card');
+      }
+      if (fm.type === 'extract') {
+        add('原位精简…', 'refine-extract');
       }
       separator();
       add('设置优先级…', 'priority');
@@ -703,6 +713,7 @@ class MemoFlowPlugin extends BasePlugin {
       addButton(fm.type === 'extract' ? '完成并下一项' : '评阅并下一项', 'complete', 'is-primary');
       addButton('跳过', 'skip');
       addButton('制卡', 'create-card');
+      if (fm.type === 'extract') addButton('精简', 'refine-extract');
       const postpone = addButton('延后');
       postpone.addEventListener('click', event => {
         event.preventDefault();
