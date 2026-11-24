@@ -417,9 +417,13 @@ function createPlugin({ settings = null, today = dateCore.formatDate(new Date(),
 }
 
 function withFrozenDate(t, date = new Date(2026, 10, 24, 12, 0, 0)) {
-  const RealDate = global.Date;
+  const previousDate = global.Date;
+  const hadWindow = Object.prototype.hasOwnProperty.call(global, 'window');
+  const previousWindow = global.window;
+  const previousWindowHadSetTimeout = Boolean(previousWindow && Object.prototype.hasOwnProperty.call(previousWindow, 'setTimeout'));
+  const previousSetTimeout = previousWindow ? previousWindow.setTimeout : undefined;
   const fixed = date.getTime();
-  class FakeDate extends RealDate {
+  class FakeDate extends previousDate {
     constructor(...args) {
       if (args.length === 0) super(fixed);
       else super(...args);
@@ -427,12 +431,22 @@ function withFrozenDate(t, date = new Date(2026, 10, 24, 12, 0, 0)) {
     static now() { return fixed; }
   }
   global.Date = FakeDate;
-  global.window = global.window || {};
+  if (previousWindow) global.window = previousWindow;
+  else global.window = {};
   global.window.setTimeout = global.setTimeout;
   t.after(() => {
-    global.Date = RealDate;
+    global.Date = previousDate;
+    if (!hadWindow) {
+      delete global.window;
+      return;
+    }
+    global.window = previousWindow;
+    if (previousWindow) {
+      if (previousWindowHadSetTimeout) previousWindow.setTimeout = previousSetTimeout;
+      else delete previousWindow.setTimeout;
+    }
   });
-  return new RealDate(fixed);
+  return new previousDate(fixed);
 }
 
 function flushAsync() {

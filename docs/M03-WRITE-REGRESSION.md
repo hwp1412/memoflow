@@ -29,14 +29,14 @@
 新增：
 
 - `test/helpers/obsidian-mock.js`：Obsidian Mock、内存 Vault、自动 Modal 响应、插件实例化。
-- `test/memoflow-write-regression.test.js`：20 项特征化测试。
+- `test/memoflow-write-regression.test.js`：24 项特征化测试。
 
 关键设计：
 
 1. `Module._load` 拦截 `obsidian`，加载 `src/main.js`；不调用 `onload()`。
 2. Mock `Modal` 自动响应内部 `TextPromptModal` / `ConfirmModal` / `GenericSuggestModal`，不修改生产代码。
 3. 内存 Vault 记录 `processFrontMatter`、`process`、`append`、`create` 的实际调用和结果。
-4. `withFrozenDate` 固定到 `2026-11-24T12:00`，所有日期可精确断言。
+4. `withFrozenDate` 固定到 `2026-11-24T12:00`，所有日期可精确断言；测试结束恢复原 `Date`、原 `window`/`setTimeout`，无 window 时删除该全局。
 5. 设置 fixture 复制默认值；测试不读取 `MemoFlow-Test`，不打开 Obsidian。
 
 ## 3. 测试清单

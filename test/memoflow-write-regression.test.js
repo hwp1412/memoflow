@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const Module = require('node:module');
 const dateCore = require('../date-core.js');
 const topicCore = require('../topic-core.js');
 const {
@@ -487,4 +488,77 @@ test('createTimestampExtract writes extract fields and bumps the parent source (
   assert.equal(parent.a_factor, 1.575);
   assert.equal(writesFor(app, source).length, 2);
   assert.equal(writesFor(app, created).length, 0);
+});
+
+test('withFrozenDate restores Date and removes window when none existed', () => {
+  const originalDate = global.Date;
+  const hadWindow = Object.prototype.hasOwnProperty.call(global, 'window');
+  const originalWindow = global.window;
+  delete global.window;
+  const callbacks = [];
+  const fakeT = { after: callback => callbacks.push(callback) };
+  try {
+    withFrozenDate(fakeT);
+    assert.notEqual(global.Date, originalDate);
+    assert.equal(typeof global.window, 'object');
+    assert.equal(global.window.setTimeout, global.setTimeout);
+    callbacks.forEach(callback => callback());
+    assert.equal(global.Date, originalDate);
+    assert.equal(Object.prototype.hasOwnProperty.call(global, 'window'), false);
+  } finally {
+    global.Date = originalDate;
+    if (hadWindow) global.window = originalWindow;
+    else delete global.window;
+  }
+});
+
+test('withFrozenDate restores an existing window.setTimeout', () => {
+  const originalDate = global.Date;
+  const hadWindow = Object.prototype.hasOwnProperty.call(global, 'window');
+  const originalWindow = global.window;
+  const sentinel = () => {};
+  global.window = { marker: 'keep', setTimeout: sentinel };
+  const callbacks = [];
+  const fakeT = { after: callback => callbacks.push(callback) };
+  try {
+    withFrozenDate(fakeT);
+    assert.equal(global.window.marker, 'keep');
+    assert.equal(global.window.setTimeout, global.setTimeout);
+    callbacks.forEach(callback => callback());
+    assert.equal(global.window.marker, 'keep');
+    assert.equal(global.window.setTimeout, sentinel);
+    assert.equal(global.Date, originalDate);
+  } finally {
+    global.Date = originalDate;
+    if (hadWindow) global.window = originalWindow;
+    else delete global.window;
+  }
+});
+
+test('withFrozenDate removes setTimeout added to an existing window', () => {
+  const originalDate = global.Date;
+  const hadWindow = Object.prototype.hasOwnProperty.call(global, 'window');
+  const originalWindow = global.window;
+  global.window = { marker: 'keep' };
+  const callbacks = [];
+  const fakeT = { after: callback => callbacks.push(callback) };
+  try {
+    withFrozenDate(fakeT);
+    assert.equal(global.window.marker, 'keep');
+    assert.equal(typeof global.window.setTimeout, 'function');
+    callbacks.forEach(callback => callback());
+    assert.equal(global.window.marker, 'keep');
+    assert.equal(Object.prototype.hasOwnProperty.call(global.window, 'setTimeout'), false);
+    assert.equal(global.Date, originalDate);
+  } finally {
+    global.Date = originalDate;
+    if (hadWindow) global.window = originalWindow;
+    else delete global.window;
+  }
+});
+
+test('plugin loader restores Module._load after loading', () => {
+  const before = Module._load;
+  createPlugin({ settings: makeSettings() });
+  assert.equal(Module._load, before);
 });
