@@ -107,3 +107,33 @@ test('history modal displays read errors without inventing entries', () => {
   assert.match(JSON.stringify(modal.contentEl), /不会伪造|未伪造/);
   assert.match(JSON.stringify(modal.contentEl), /历史文件损坏/);
 });
+
+test('restore action is enabled only for a selected completed historical target', async () => {
+  const model = await view();
+  const modal = new RefineHistoryModal({}, {
+    path: NOTE,
+    model,
+    onRestore: async () => {},
+  });
+  modal.onOpen();
+  assert.equal(modal._restoreButton.disabled, false);
+  const target = modal._restoreTarget();
+  assert.ok(target);
+  assert.equal(target.side, 'after');
+});
+
+test('restore action is disabled for dirty current body and for no-op target', async () => {
+  const model = await view();
+  model.current.dirty = true;
+  const dirty = new RefineHistoryModal({}, { path: NOTE, model, onRestore: async () => {} });
+  dirty.onOpen();
+  assert.equal(dirty._restoreButton.disabled, true);
+  assert.match(dirty._restoreHint.textContent, /未保存/);
+
+  model.current.dirty = false;
+  model.current.text = model.events[0].after.text;
+  model.snapshots[0].text = model.events[0].after.text;
+  const noop = new RefineHistoryModal({}, { path: NOTE, model, onRestore: async () => {} });
+  noop.onOpen();
+  assert.equal(noop._restoreButton.disabled, true);
+});

@@ -32,11 +32,12 @@ function statusTone(status) {
 }
 
 class RefineHistoryModal extends Modal {
-  constructor(app, { path = '', model = null, error = null } = {}) {
+  constructor(app, { path = '', model = null, error = null, onRestore = null } = {}) {
     super(app);
     this.path = path;
     this.model = model;
     this.error = error;
+    this.onRestore = onRestore;
     this.baseId = model?.current?.id || 'current';
     this.targetId = model?.events?.length
       ? model.events[model.events.length - 1].after.id
@@ -46,6 +47,8 @@ class RefineHistoryModal extends Modal {
     this._preview = null;
     this._diff = null;
     this._summary = null;
+    this._restoreButton = null;
+    this._restoreHint = null;
   }
 
   onOpen() {
@@ -65,7 +68,7 @@ class RefineHistoryModal extends Modal {
         text: `${this.model.count} 次操作 · 约 ${this._sizeLabel(this.model.historyBytes)}`,
       });
     }
-    head.createDiv({ cls: 'mf-refine-badge', text: '只读' });
+    head.createDiv({ cls: 'mf-refine-badge', text: '历史' });
 
     if (this.error) {
       const err = contentEl.createDiv({ cls: 'mf-refine-error', attr: { role: 'alert' } });
@@ -158,17 +161,26 @@ class RefineHistoryModal extends Modal {
       this._render();
     });
     this._summary = tools.createDiv({ cls: 'mf-refine-history-summary', text: '' });
+    const restoreWrap = tools.createDiv({ cls: 'mf-refine-history-restore-wrap' });
+    this._restoreButton = restoreWrap.createEl('button', {
+      text: '恢复此快照…',
+      cls: 'mf-refine-history-restore',
+      attr: { type: 'button' },
+    });
+    this._restoreButton.addEventListener('click', () => this._requestRestore());
+    this._restoreHint = restoreWrap.createDiv({ cls: 'mf-refine-history-restore-hint', text: '' });
 
     this._preview = main.createDiv({ cls: 'mf-refine-history-preview', attr: { 'aria-label': '历史正文预览' } });
     const diffHead = main.createDiv({ cls: 'mf-refine-diff-head' });
     diffHead.createDiv({ cls: 'mf-refine-pane-label', text: '只读差异' });
     this._diffSummary = diffHead.createDiv({ cls: 'mf-refine-count', text: '' });
     this._diff = main.createDiv({ cls: 'mf-refine-diff mf-refine-history-diff', attr: { 'aria-label': '历史文本差异' } });
-    main.createDiv({ cls: 'mf-refine-history-footnote', text: '只读浏览；不会修改正文、Frontmatter 或历史。指定版本恢复不在本任务范围。' });
+    main.createDiv({ cls: 'mf-refine-history-footnote', text: '选择历史快照后可恢复。恢复只替换正文，不修改 Frontmatter、parent/source、调度或 SR 数据；会新增一条恢复历史。' });
 
     this._populateSelects();
     this._syncSelects();
     this._render();
+    this._updateRestoreState();
   }
 
   _sizeLabel(bytes) {
@@ -222,6 +234,58 @@ class RefineHistoryModal extends Modal {
       const line = this._diff.createDiv({ cls: `mf-refine-diff-line is-${row.type}` });
       line.createSpan({ cls: 'mf-refine-diff-marker', text: row.type === 'ins' ? '+' : row.type === 'del' ? '−' : ' ' });
       line.createSpan({ cls: 'mf-refine-diff-text', text: row.text || ' ' });
+    }
+    this._updateRestoreState();
+  }
+
+  _restoreTarget() {
+    if (!this.onRestore || this.error || !this.model) return null;
+    const target = this._snapshot(this.targetId);
+    if (!target || !target.operationId || target.id === 'current') return null;
+    const event = this.model.events.find(item => item.operationId === target.operationId);
+    if (!event) return null;
+    const completed = event.typeCode === 'restore'
+      ? event.status === 'restored'
+      : event.status === 'verified';
+    if (!completed) return null;
+    const current = this.model.current;
+    if (current.dirty) return null;
+    if (target.text === current.text) return null;
+    return { target, event, operationId: event.operationId, side: target.side };
+  }
+
+  _updateRestoreState() {
+    if (!this._restoreButton) return;
+    const info = this._restoreTarget();
+    let reason = '';
+    if (!this.onRestore) reason = '历史恢复不可用';
+    else if (this.model?.unresolved) reason = '存在未完成历史，暂不能恢复';
+    else if (this.model?.current?.dirty) reason = 'Editor 有未保存修改，请先保存';
+    else if (!info) {
+      const target = this._snapshot(this.targetId);
+      if (!target || !target.operationId || target.id === 'current') reason = '当前正文不是可恢复的历史快照';
+      else if (target.text === this.model?.current?.text) reason = '当前正文与目标快照相同';
+      else reason = '该历史状态不可恢复';
+    }
+    this._restoreButton.disabled = !info;
+    if (reason) this._restoreButton.setAttribute('title', reason);
+    else this._restoreButton.removeAttribute?.('title');
+    if (this._restoreHint) this._restoreHint.setText(reason);
+  }
+
+  async _requestRestore() {
+    const info = this._restoreTarget();
+    if (!info || !this.onRestore || this._restoreButton?.disabled) return;
+    this._restoreButton.disabled = true;
+    const previous = this._restoreButton.textContent;
+    this._restoreButton.setText('请确认…');
+    try {
+      await this.onRestore(info);
+    } finally {
+      if (this._restoreButton) {
+        this._restoreButton.setText(previous || '恢复此快照…');
+        this._updateRestoreState();
+      }
     }
   }
 

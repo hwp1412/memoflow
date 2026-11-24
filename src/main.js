@@ -15,7 +15,8 @@ const { MemoFlowOverloadModal } = require('./views/overload-modal.js');
 const { MemoFlowUserGuideModal } = require('./views/user-guide-modal.js');
 const { ExtractOpenModal } = require('./views/extract-open-modal.js');
 const { RefinePreviewModal } = require('./views/refine-modal.js');
-const { RefineHistoryModal } = require('./views/refine-history-modal.js');
+const { RefineHistoryModal, formatTime } = require('./views/refine-history-modal.js');
+const { RefineRestoreModal } = require('./views/refine-restore-modal.js');
 const { buildHistoryView } = require('./data/refine-history-read.js');
 const { RefineHistoryStore } = require('./data/refine-store.js');
 const { RefineEditorController } = require('./data/refine-editor.js');
@@ -1225,10 +1226,30 @@ class MemoFlowPlugin extends BasePlugin {
           currentDirty,
         });
       }
-      new RefineHistoryModal(this.app, { path: file.path, model, error }).open();
+      let modal = null;
+      modal = new RefineHistoryModal(this.app, {
+        path: file.path,
+        model,
+        error,
+        onRestore: target => this._restoreHistoryTarget(target, modal),
+      });
+      modal.open();
     } catch (error) {
       new Notice(`无法打开精简历史：${error.message || '未知错误'}。笔记未修改。`, 8000);
     }
+  }
+
+  async _restoreHistoryTarget(target, modal) {
+    if (!target) return null;
+    const result = await this._getRefineController().restoreVersion({
+      targetOperationId: target.operationId,
+      targetSide: target.side,
+    });
+    if (result && result.operationId) {
+      modal?.close?.();
+      await this.openRefineHistory();
+    }
+    return result;
   }
 
   _getRefineController() {
@@ -1250,6 +1271,14 @@ class MemoFlowPlugin extends BasePlugin {
             title: '恢复上次精简？',
             body: `当前正文：\n${current}\n\n将恢复为：\n${restored}\n\nFrontmatter、parent/source 和调度数据不会修改。`,
             confirmText: '恢复',
+            onConfirm: () => resolve(true),
+            onCancel: () => resolve(false),
+          }).open();
+        }),
+        promptVersionRestore: options => new Promise(resolve => {
+          new RefineRestoreModal(this.app, {
+            ...options,
+            targetCreatedAt: options.targetCreatedAt ? formatTime(options.targetCreatedAt) : '',
             onConfirm: () => resolve(true),
             onCancel: () => resolve(false),
           }).open();
