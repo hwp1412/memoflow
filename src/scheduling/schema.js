@@ -13,7 +13,8 @@
 // object untouched.
 
 const { fail } = require('./errors.js');
-const { TOPIC_TYPES, SPEC_CONFIG } = require('./constants.js');
+const { TOPIC_TYPES, SPEC_CONFIG, ALGORITHM_VERSION } = require('./constants.js');
+const { assertDateString } = require('./dates.js');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -145,8 +146,67 @@ function assertConfig(config) {
   return SPEC_CONFIG;
 }
 
+// Statuses that exist in MemoFlow data. SPEC A8: inbox/pending/container are
+// legacy states whose meaning must come from a compatibility adapter — the pure
+// core never guesses what they mean, it only reports that an event cannot be
+// applied to them yet.
+const KNOWN_STATUSES = Object.freeze(['active', 'done', 'dismissed', 'inbox', 'pending', 'container']);
+const ACTIVE_STATUS = 'active';
+const REACTIVATABLE_STATUSES = Object.freeze(['done', 'dismissed']);
+
+function validateStatus(value, field = 'status') {
+  if (typeof value !== 'string' || !KNOWN_STATUSES.includes(value)) {
+    fail('E_STATUS_UNKNOWN', `${field} is not a known scheduling status`, { field, value });
+  }
+  return value;
+}
+
+function validateRevision(value, field = 'mf_revision') {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    fail('E_REVISION_INVALID', `${field} must be a non-negative safe integer`, { field, value });
+  }
+  return value;
+}
+
+function validateCount(value, field = 'review_count') {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    fail('E_REVIEW_COUNT_INVALID', `${field} must be a non-negative safe integer`, { field, value });
+  }
+  return value;
+}
+
+// Full validation of an existing, normalised MF-US-1 topic. Used by applyEvent
+// and the due calculations; it never repairs a field.
+function validateTopic(topic, field = 'topic') {
+  assertPlainObject(topic, field);
+  validateTopicType(topic.type);
+  validatePriority(topic.priority);
+  validateIntervalDays(topic.mf_interval_days);
+  validateAFactor(topic.a_factor);
+  validateStatus(topic.status);
+  validateRevision(topic.mf_revision);
+  if (topic.mf_id == null) {
+    fail('E_ID_REQUIRED', 'topic.mf_id is required for MF-US-1 scheduling', { field: 'mf_id' });
+  }
+  validateUuid(topic.mf_id, 'mf_id');
+  if (topic.mf_scheduler_version !== ALGORITHM_VERSION) {
+    fail('E_VERSION_UNSUPPORTED', `topic.mf_scheduler_version must be ${ALGORITHM_VERSION}`, {
+      field: 'mf_scheduler_version',
+      value: topic.mf_scheduler_version,
+    });
+  }
+  assertDateString(topic.mf_ideal_due, 'mf_ideal_due');
+  if (topic.mf_not_before != null) assertDateString(topic.mf_not_before, 'mf_not_before');
+  validateCount(topic.review_count, 'review_count');
+  if (topic.last_reviewed != null) assertDateString(topic.last_reviewed, 'last_reviewed');
+  return topic;
+}
+
 module.exports = {
   UUID_RE,
+  KNOWN_STATUSES,
+  ACTIVE_STATUS,
+  REACTIVATABLE_STATUSES,
   isPlainObject,
   assertPlainObject,
   validatePriority,
@@ -156,5 +216,9 @@ module.exports = {
   validateTopicType,
   validateUuid,
   validateOptionalUuid,
+  validateStatus,
+  validateRevision,
+  validateCount,
+  validateTopic,
   assertConfig,
 };

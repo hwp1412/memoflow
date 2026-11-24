@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-CORE-01 r2（PR-01 取整精度与新建契约修复）
+> 最后更新：P2-US1-CORE-02（事件状态机、Effective Due、内存幂等模型）
 
 ## 0. 状态定义
 
@@ -34,15 +34,15 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 9 | INIT-04 | 新建 Topic 字段初始化（active、`mf_not_before=null`、`review_count=0`、version=1） | A3.3, A8 | `TESTED` | 01 | 不生成 ID、不读时钟；r2：非 active/非法历史一律显式报错 |
 | 10 | INIT-05 | 父子继承与创建语义（只继承 Priority 数值；不改父节点） | A3.4 | `NOT_STARTED` | 06 | 需适配器与 ID 映射 |
 | 11 | REV-01 | 后续间隔 `clamp(roundHalfUp(I×A),1,3650)` 与“不重新初始化”保护 | A4.1, A13 T11 | `TESTED` | 01 | 与 Priority 无关；r2：I×A 精确十进制，无容差吸附 |
-| 12 | EVT-01 | ADVANCED / HOLD / SOON 评阅 | A4.2 | `NOT_STARTED` | 02 | |
-| 13 | EVT-02 | COMPLETE / DISMISS | A4.3, A8 | `NOT_STARTED` | 02 | |
-| 14 | EVT-03 | REACTIVATE 与恢复日期策略 | A4.3 | `NOT_STARTED` | 02 | 待裁决 Q5 |
-| 15 | EVT-04 | SKIP（不改任何学习字段） | A5.1 | `NOT_STARTED` | 02 | 待裁决 Q6 |
-| 16 | EVT-05 | POSTPONE（只写 `mf_not_before`） | A5.2 | `NOT_STARTED` | 02 | |
-| 17 | EVT-06 | MANUAL_SCHEDULE（写 `mf_ideal_due`、保留间隔） | A5.3 | `NOT_STARTED` | 02 | |
-| 18 | EVT-07 | SET_PRIORITY（不重排理想日期） | A5.4, A13 T10 | `NOT_STARTED` | 02 | |
-| 19 | EVT-08 | 事件对象契约、`eventId` 幂等、`mf_revision` 乐观并发 | A8, A13 T13 | `NOT_STARTED` | 02 | 待裁决 Q9 |
-| 20 | DUE-01 | Ideal Due / Not Before / Effective Due 三日期语义与分别统计 | A2.4 | `NOT_STARTED` | 02 | |
+| 12 | EVT-01 | ADVANCED / HOLD / SOON 评阅 | A4.2 | `TESTED` | 02 | T05–T07；清行政延期、count+1、revision+1 |
+| 13 | EVT-02 | COMPLETE / DISMISS | A4.3, A8 | `TESTED` | 02 | T12；保留间隔/日期/评阅历史，不级联删除 |
+| 14 | EVT-03 | REACTIVATE 与恢复日期策略 | A4.3 | `TESTED` | 02 | Q5 已裁决：显式恢复日期必填，清行政延期，不计评阅 |
+| 15 | EVT-04 | SKIP（不改任何学习字段） | A5.1 | `TESTED` | 02 | Q6 已裁决：零写入、不增 revision、不更新 last_event_id |
+| 16 | EVT-05 | POSTPONE（只写 `mf_not_before`） | A5.2 | `TESTED` | 02 | T09；不可提前；无可见变化返回 no-op（见 §7.1） |
+| 17 | EVT-06 | MANUAL_SCHEDULE（写 `mf_ideal_due`、保留间隔） | A5.3 | `TESTED` | 02 | 强制记录 reason；清旧 not_before |
+| 18 | EVT-07 | SET_PRIORITY（不重排理想日期） | A5.4, A13 T10 | `TESTED` | 02 | T10；不改间隔/日期/A-Factor/子节点 |
+| 19 | EVT-08 | 事件对象契约、`eventId` 幂等、`mf_revision` 乐观并发 | A8, A13 T13 | `TESTED` | 02 | T13；内存账本；持久化未实现（见 WRITE-01/Q14） |
+| 20 | DUE-01 | Ideal Due / Not Before / Effective Due 三日期语义与分别统计 | A2.4 | `TESTED` | 02 | 三类统计分离，不用改日期掩盖积压 |
 | 21 | QUEUE-01 | 到期候选筛选（仅 Source/Extract、可调度状态） | A6.1 | `NOT_STARTED` | 03 | |
 | 22 | QUEUE-02 | Priority 排序、逾期补偿、五级稳定键 | A6.2, A13 T14 | `NOT_STARTED` | 03 | |
 | 23 | QUEUE-03 | 每日时间预算与贪心选择 | A6.3 | `NOT_STARTED` | 03 | 待裁决 Q4 |
@@ -76,14 +76,14 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | T03 | 新 P1 Source → I0=1 | `PASS` | 同上 |
 | T04 | 新 P100 Source → I0=21 | `PASS` | 同上 |
 | T05 | I=3,A=1.5,ADVANCED → 5 | `PASS` | `mf-us-1-interval.test.js` |
-| T06 | I=8,HOLD → 8 | `TODO` | PR-02（HOLD 事件语义） |
-| T07 | I=8,SOON → 2 | `TODO` | PR-02 |
-| T08 | SKIP 全部学习字段不变 | `TODO` | PR-02 |
-| T09 | POSTPONE +7 只延后 Effective Due | `TODO` | PR-02 |
-| T10 | P50→P10 只改 Priority | `TODO` | PR-02 |
+| T06 | I=8,HOLD → 8 | `PASS` | `mf-us-1-events.test.js` |
+| T07 | I=8,SOON → 2 | `PASS` | 同上 |
+| T08 | SKIP 全部学习字段不变 | `PASS` | 同上（含 revision/last_event_id 不变） |
+| T09 | POSTPONE +7 只延后 Effective Due | `PASS` | 同上 + `mf-us-1-due.test.js` |
+| T10 | P50→P10 只改 Priority | `PASS` | 同上 |
 | T11 | 旧 I=8,A=1.5,ADVANCED → 12，不重算首次值 | `PASS` | PR-01 同时覆盖“不重新初始化”保护 |
-| T12 | COMPLETE 退出队列且不删子节点 | `TODO` | PR-02 |
-| T13 | `eventId` 重复不重复计数 | `TODO` | PR-02 |
+| T12 | COMPLETE 退出队列且不删子节点 | `PASS` | 核心无级联；父/根关联与全部调度字段保留 |
+| T13 | `eventId` 重复不重复计数 | `PASS` | `mf-us-1-idempotency.test.js`（含 E1→E2→E1） |
 | T14 | 相同优先级与日期稳定排序 | `TODO` | PR-03 |
 | T15 | 跨夏令时 +1 天 | `PASS` | `mf-us-1-dates.test.js`（美/欧 DST 日） |
 | T16 | Mercy 撤销恢复原 `mf_not_before` | `TODO` | PR-04 |
@@ -101,12 +101,12 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 1 | P 增加时同类型 I0 单调不减 | `PASS` | 01 |
 | 2 | I、A 始终在合法边界内 | `PASS` | 01 |
 | 3 | 完全相同输入产生完全相同输出 | `PASS` | 01 |
-| 4 | Skip/Postpone/Mercy 不引入有效评阅 | `TODO` | 02/04 |
+| 4 | Skip/Postpone/Mercy 不引入有效评阅 | `PARTIAL` | 02 已覆盖 Skip/Postpone；Mercy 待 04 |
 | 5 | 后续评阅不重新调用首次间隔函数 | `PASS`（核心层） | 01 |
-| 6 | 完成或移出后不自动复活 | `TODO` | 02 |
+| 6 | 完成或移出后不自动复活 | `PASS` | 02（只有显式 REACTIVATE 可复活） |
 | 7 | 合法旧数据迁移前后 Effective Due 相同 | `TODO` | 08 |
 | 8 | 普通每日队列不自动选择未到期项 | `TODO` | 03 |
-| 9 | 跨失败/重试事件保持幂等 | `TODO` | 02 |
+| 9 | 跨失败/重试事件保持幂等 | `PASS`（纯模型） | 02；持久化重试待 09 |
 
 ## 4. 离线模拟（A13.2）规模核对
 

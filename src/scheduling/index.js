@@ -11,6 +11,9 @@ const schema = require('./schema.js');
 const dates = require('./dates.js');
 const initial = require('./initial.js');
 const interval = require('./interval.js');
+const events = require('./events.js');
+const due = require('./due.js');
+const eventLedger = require('./event-ledger.js');
 
 module.exports = {
   ...errors,
@@ -19,9 +22,15 @@ module.exports = {
   ...dates,
   ...initial,
   ...interval,
+  ...events,
+  ...due,
+  ...eventLedger,
   // Namespaced access for callers that prefer explicit module grouping.
   schema,
   dates,
   initial,
   interval,
+  events,
+  due,
+  eventLedger,
 };
