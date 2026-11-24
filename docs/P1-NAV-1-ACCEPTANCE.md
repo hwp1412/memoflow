@@ -9,30 +9,32 @@
 
 ```text
 node --test test/memoflow-parent-nav.test.js
-# tests 15
-# pass 15
+# tests 17
+# pass 17
 # fail 0
 
 node --test test/*.test.js
-# tests 249
-# pass 249
+# tests 251
+# pass 251
 # fail 0
 
 npm run check
-通过（validate-release + 249 tests）
+通过（validate-release + 251 tests）
 
 npm run verify:memoflow
-通过（构建 + node --check + 249 tests + validate-memoflow）
+通过（构建 + node --check + 251 tests + validate-memoflow）
 ```
 
 - M03 24 项、P1-SAFETY-1 安全断言未修改。
+- 本次只新增测试/文档，没有新增生产代码修改。
 - Phase1 的旧 `openParent` 断言从“跳 source”更新为“跳直接父”，这是本任务的预期行为变更，不是弱化。
 
 ## 2. 覆盖
 
 - E2→E1、E3→E2；
 - 第一层 Extract 无 parent 时 source 回退；
-- parent 空/null/非链接：不回退；
+- parent 空/null/不可解析：不回退；
+- 普通文本 parent 与旧 YAML 单元素列表：合法兼容，且目标必须唯一；
 - parent 已删除：不回退；
 - parent 同名歧义：不误跳；
 - 路径链接、alias、大小写；
@@ -42,6 +44,32 @@ npm run verify:memoflow
 - 自引用拒绝；
 - 失败不打开错误文件；
 - 全部导航零写入。
+
+## 3. 普通文本 parent 兼容性结论
+
+**结论：普通文本 parent（如 `parent: E1`）是既有兼容格式，不是无效格式。**
+
+依据：
+
+1. `tree-core.js` 的 `linkTargetName()` 注释明确写明：
+   > 若值不是 wikilink，则原样返回；frontmatter 可能存普通 basename。
+2. `test/tree-core.test.js` 的既有契约测试明确断言：
+   - `linkTargetName('Plain Name') === 'Plain Name'`；
+   - 非 wikilink 字符串必须保留。
+3. `docs/MF-US-1-SPEC.md` A2.1 要求旧字段 `parent`/`source` 读取并维护兼容，未限定只能是 wikilink。
+4. 对现有 `MemoFlow-Test` 的只读格式审计：
+   - 16 个含 parent 的文件；
+   - 6 个 wikilink；
+   - 10 个普通/旧 YAML 单元素列表形式；
+   - 13 个普通 source；
+   - 未做任何改写。
+5. `treeCore.linkTargetName()` 在运行时把普通字符串及旧 YAML 单元素列表归一为 basename；现有导航代码已验证可解析。
+
+因此采用**情况 A**：保留现有导航兼容行为，不新增“非链接即拒绝”的生产代码校验。普通文本仍要求：
+- 目标存在且唯一；
+- 同名歧义、缺失目标 → 停止，不回退 source。
+
+新增测试覆盖 `parent: E1` 与旧 YAML 单元素列表父节点。
 
 ## 3. 实机验收
 

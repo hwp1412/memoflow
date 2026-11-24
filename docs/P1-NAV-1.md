@@ -16,6 +16,10 @@
 5. 仅完全不存在 `parent` 字段：旧数据允许 `source` 回退。
 6. 目标为当前文件：拒绝。
 7. 路径链接按路径解析；裸链接要求唯一 basename；大小写不敏感；支持 alias/heading 去除。
+8. **普通文本 parent 是旧数据兼容格式**，不是无效值：
+   - `parent: E1` 在没有歧义且目标存在时可导航；
+   - `parent` 的单元素 YAML 列表形式（旧数据可能产生）由既有 `linkTargetName()`/String 归一化兼容；
+   - 普通文本仍必须满足目标唯一；缺失/歧义时停止，不回退 source。
 
 ### Card / Source
 
@@ -46,11 +50,11 @@
 
 ## 3. 测试
 
-`test/memoflow-parent-nav.test.js` 15 项：
+`test/memoflow-parent-nav.test.js` 17 项：
 
 - E2→E1、E3→E2；
 - 无 parent 的旧 source 回退；
-- 空/null/non-link parent 不回退；
+- 空/null/不可解析 parent 不回退；
 - 删除父、同名歧义、路径、大小写、alias；
 - tree_root、Card、Source；
 - 自引用；

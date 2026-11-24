@@ -182,3 +182,21 @@ test('explicit non-link parent value does not fall back to source', async (t) =>
   assert.deepEqual(result.opened, []);
   assert.ok(result.notices.some(message => message.includes('not falling back')));
 });
+
+test('plain basename parent remains a legacy-compatible format', async (t) => {
+  const { plugin, app } = setup(t);
+  await add(app, 'Sources/Source.md', { type: 'source', status: 'active' });
+  const parent = extract(app, 'Extracts/Plain Parent.md', { source: '[[Source]]' });
+  const child = extract(app, 'Extracts/Plain Child.md', { parent: 'Plain Parent', source: '[[Source]]' });
+  const result = await open(plugin, app, child);
+  assert.deepEqual(result.opened, [parent.path]);
+});
+
+test('legacy one-element YAML list parent is normalized by the existing parser', async (t) => {
+  const { plugin, app } = setup(t);
+  await add(app, 'Sources/Source.md', { type: 'source', status: 'active' });
+  const parent = extract(app, 'Extracts/List Parent.md', { source: '[[Source]]' });
+  const child = extract(app, 'Extracts/List Child.md', { parent: [['List Parent']], source: '[[Source]]' });
+  const result = await open(plugin, app, child);
+  assert.deepEqual(result.opened, [parent.path]);
+});
