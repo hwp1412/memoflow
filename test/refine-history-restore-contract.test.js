@@ -378,3 +378,24 @@ test('planVersionRestore can plan again after a restore event', async () => {
   assert.equal(plan.operation.after.body, 'Alpha beta\n');
   assert.equal(adapter.writes.length, writesBefore);
 });
+
+test('internally self-consistent v2 record pointing at the wrong history snapshot is rejected', async () => {
+  const op1 = await refine(A, 'Hi');
+  const op2 = await refine(B, 'X');
+  const v2 = await createVersionRestoreOperation({
+    operationId: crypto.randomUUID(),
+    currentContent: B,
+    currentNotePath: NOTE,
+    targetOperation: op1,
+    targetSide: 'after',
+  });
+  // Keep every internal hash/byte field self-consistent, but point at op2.
+  // `restoreOf` and restoreTarget still agree; only the real target snapshot differs.
+  v2.restoreOf = op2.operationId;
+  v2.restoreTarget.operationId = op2.operationId;
+  await validateOperationIntegrity(v2);
+  await assert.rejects(
+    () => validateRestoreRelationship(v2, op2),
+    error => error.code === 'RESTORE_RELATION_MISMATCH',
+  );
+});

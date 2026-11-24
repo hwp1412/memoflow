@@ -1,7 +1,7 @@
 # P1-REFINE-HISTORY-RESTORE-1 验收报告
 
 - 基线：`8f79e70`
-- 测试：**355/355**
+- 测试：**356/356**
 - 范围：v2 数据契约、latestTrustedState、planVersionRestore
 - 未执行正文写入、未创建持久化恢复事件、未增加 UI
 
@@ -9,8 +9,8 @@
 
 ```text
 node --test test/*.test.js
-# tests 355
-# pass 355
+# tests 356
+# pass 356
 # fail 0
 
 npm run check
