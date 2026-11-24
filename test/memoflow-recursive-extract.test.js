@@ -231,7 +231,7 @@ test('clipboardExtract uses the active Extract as direct parent', async (t) => {
   assert.match(content(app, created), /clipboard body/);
 });
 
-test('legacy openParent from a child Extract still opens source, not direct parent', async (t) => {
+test('openParent from a child Extract opens its direct parent', async (t) => {
   const { plugin, app } = setup(t);
   const source = addSource(app);
   const e1 = await createChild(plugin, app, source, 'E1');
@@ -239,8 +239,8 @@ test('legacy openParent from a child Extract still opens source, not direct pare
   app.activeFile = e2;
   app.openedFiles.length = 0;
   await plugin.openParent();
-  assert.deepEqual(app.openedFiles, [source.path]);
-  assert.equal(app.openedFiles.includes(e1.path), false);
+  assert.deepEqual(app.openedFiles, [e1.path]);
+  assert.equal(app.openedFiles.includes(source.path), false);
 });
 
 test('subtree boost from an Extract does not touch a sibling', async (t) => {

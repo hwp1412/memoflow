@@ -5171,6 +5171,31 @@ ${body}
     }
   }
 
+  // Resolve an Extract parent/source link without allowing ambiguity to
+  // silently pick a file. Path links are matched by path; bare links require
+  // a unique basename. This helper is read-only.
+  _resolveExtractNavigationTarget(active, link) {
+    const raw = treeCore.linkTargetName(link);
+    if (!raw) return { error: 'INVALID' };
+    const pages = this.getIRRows().map(row => ({ tfile: row.tfile, fm: row.fm }));
+    if (!pages.some(page => page.tfile.path === active.path)) {
+      pages.push({ tfile: active, fm: getFm(this.app, active) });
+    }
+    const normalize = value => {
+      let name = String(value || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').toLowerCase();
+      if (name.endsWith('.md')) name = name.slice(0, -3);
+      return name;
+    };
+    const normalized = normalize(raw);
+    const matches = normalized.includes('/')
+      ? pages.filter(page => normalize(page.tfile.path) === normalized)
+      : pages.filter(page => page.tfile.basename.toLowerCase() === normalized);
+    if (matches.length === 0) return { error: 'MISSING' };
+    if (matches.length > 1) return { error: 'AMBIGUOUS' };
+    if (matches[0].tfile.path === active.path) return { error: 'SELF' };
+    return { target: matches[0].tfile };
+  }
+
   async openParent() {
     const active = this.app.workspace.getActiveFile();
     if (!active) { new Notice('No active file.'); return; }
@@ -5179,11 +5204,38 @@ ${body}
     if (fm.type !== 'source' && fm.type !== 'extract' && fm.type !== 'card') {
       new Notice('Not an incremental reading element.'); return;
     }
-    const parentName = (fm.type === 'card' || fm.type === 'extract')
-      ? linkTarget(fm.source) : linkTarget(fm.parent);
-    if (!parentName) { new Notice('No parent link.'); return; }
-    const parent = this.app.metadataCache.getFirstLinkpathDest(parentName, active.path);
-    if (!parent) { new Notice(`Parent "${parentName}" not found.`); return; }
+
+    let parent = null;
+    if (fm.type === 'extract') {
+      if (fm.tree_root === true) {
+        new Notice('Tree root: no parent navigation.');
+        return;
+      }
+      const hasParent = Object.prototype.hasOwnProperty.call(fm, 'parent');
+      const link = hasParent ? fm.parent : fm.source;
+      if (!hasParent && !link) { new Notice('No parent link.'); return; }
+      const resolved = this._resolveExtractNavigationTarget(active, link);
+      if (resolved.error) {
+        const label = hasParent ? 'Parent' : 'Source';
+        const message = resolved.error === 'AMBIGUOUS'
+          ? `${label} link is ambiguous; refusing to guess.`
+          : resolved.error === 'SELF'
+            ? `${label} points to the current note; refusing to navigate.`
+            : hasParent
+              ? 'Parent field is invalid, empty, or missing its target; not falling back to source.'
+              : 'Source link is invalid or missing its target.';
+        new Notice(message);
+        return;
+      }
+      parent = resolved.target;
+    } else {
+      const parentName = fm.type === 'card' ? linkTarget(fm.source) : linkTarget(fm.parent);
+      if (!parentName) { new Notice('No parent link.'); return; }
+      parent = this.app.metadataCache.getFirstLinkpathDest(parentName, active.path);
+      if (!parent) { new Notice(`Parent "${parentName}" not found.`); return; }
+      if (parent.path === active.path) { new Notice('Parent points to the current note; refusing to navigate.'); return; }
+    }
+
     await this.app.workspace.getLeaf(false).openFile(parent);
     new Notice(`↑ ${parent.basename}`);
   }
