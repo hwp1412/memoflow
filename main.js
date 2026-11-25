@@ -3780,11 +3780,32 @@ class IncrementalReadingPlugin extends Plugin {
   _mfUs1HostService() {
     if (!this._mfUs1HostInstance) {
       const { createHostSchedulerService } = require('./src/integration/host-scheduler-service.js');
+      // The unified transport is injected only by an isolated harness; the
+      // service itself still refuses unified when it is absent, and the
+      // runtime it points at re-checks its own authorization.
+      const transport = this.__mfUs1UnifiedTransport || null;
       this._mfUs1HostInstance = createHostSchedulerService({
         getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
+        unified: typeof transport === 'function' ? descriptor => transport(this._mfUs1UnifiedRequest(descriptor)) : null,
       });
     }
     return this._mfUs1HostInstance;
+  }
+
+  _mfUs1UnifiedRequest(descriptor) {
+    const { ALGORITHM_VERSION } = require('./src/scheduling/constants.js');
+    const dateFormat = (this.settings && this.settings.misc && this.settings.misc.date_format) || 'DD-MM-YYYY';
+    return {
+      eventId: descriptor.eventId,
+      topicId: descriptor.topicId,
+      type: descriptor.action,
+      payload: descriptor.payload ?? null,
+      expectedRevision: descriptor.expectedRevision,
+      today: descriptor.today,
+      calendarDate: descriptor.calendarDate ?? descriptor.today,
+      algorithmVersion: ALGORITHM_VERSION,
+      dateFormat,
+    };
   }
 
   async _mfUs1Run(descriptor, legacy) {
@@ -3795,6 +3816,88 @@ class IncrementalReadingPlugin extends Plugin {
     const outcome = await this._mfUs1Run(descriptor, legacy);
     if (outcome && outcome.error) throw outcome.error;
     return outcome.result;
+  }
+
+  // ---- MF-US-1 topic creation host wiring -------------------------------
+  // Creation is an initialization (SPEC A3.3/A3.4), not an event, so it does
+  // not pass through the event WAL. The write path below is reachable only with
+  // a synthetic creation authorization injected by an isolated test harness:
+  // the setting has no key for it and the production runtime never issues one.
+  // Without it, every entry keeps its 0.1 legacy write byte-for-byte.
+  _mfUs1CreationAuthorization() {
+    return this.__mfUs1CreationAuthorization || null;
+  }
+
+  _mfUs1CreationDateFormatter() {
+    const format = (this.settings && this.settings.misc && this.settings.misc.date_format) || 'DD-MM-YYYY';
+    return (isoDate) => {
+      const [year, month, day] = String(isoDate).split('-').map(Number);
+      return dateCore.formatDate(new Date(year, month - 1, day), format);
+    };
+  }
+
+  _mfUs1ReportCreationOutcome(outcome, { kind, path }) {
+    const label = kind === 'source' ? 'Source' : 'Extract';
+    if (outcome.status === 'applied') {
+      new Notice(`MF-US-1 ${label} created: ${path}`, 5000);
+      return;
+    }
+    if (outcome.status === 'duplicate') {
+      new Notice(`MF-US-1 ${label} already created for this request: ${path}`, 5000);
+      return;
+    }
+    const codes = (outcome.diagnostics || []).map(item => item.code).join(', ') || outcome.reason || outcome.status;
+    console.error('[MemoFlow] MF-US-1 creation did not complete', outcome.status, codes, outcome);
+    new Notice(`MF-US-1 创建未完成（${outcome.status}）：${codes}。请核对 ${path} 后手动恢复。`, 9000);
+  }
+
+  async _mfUs1CreateTopicFromHost({ requestId, kind, priority, parentFile = null, path, content }) {
+    const authorization = this._mfUs1CreationAuthorization();
+    if (!authorization) return { handled: false };
+    const { planTopicCreation, composeCreationContent, executeTopicCreation } = require('./src/integration/topic-creation-host.js');
+    const today = typeof this._todayKey === 'function' ? this._todayKey() : todayDateString(this.settings);
+
+    let parentId = null;
+    let rootId = null;
+    if (kind === 'extract') {
+      const parentFm = parentFile ? getFm(this.app, parentFile) : null;
+      parentId = parentFm && typeof parentFm.mf_id === 'string' ? parentFm.mf_id : null;
+      rootId = parentFm && typeof parentFm.mf_root_id === 'string' ? parentFm.mf_root_id : parentId;
+      if (!parentId) {
+        // No persistent parent identity => no trustworthy mf_parent_id. Refuse
+        // instead of silently writing an extract that Unified cannot schedule.
+        new Notice('MF-US-1：父级缺少持久 mf_id，已阻止 Unified 创建（未回退 Legacy）。', 9000);
+        return { handled: true, outcome: { status: 'blocked', reason: 'E_PARENT_REQUIRED_FOR_UNIFIED' } };
+      }
+    }
+
+    let outcome;
+    try {
+      const plan = planTopicCreation({ requestId, kind, priority, parentId, rootId, today });
+      const composed = composeCreationContent({
+        content,
+        topic: plan.topic,
+        nextReview: this._mfUs1CreationDateFormatter(),
+      });
+      outcome = await executeTopicCreation({
+        plan,
+        vault: this.app.vault,
+        path,
+        content: composed,
+        authorization,
+      });
+    } catch (error) {
+      outcome = {
+        status: 'failed',
+        route: 'unified',
+        path,
+        writesPerformed: false,
+        requiresManualRecovery: false,
+        diagnostics: [{ code: (error && error.code) || 'E_CREATION_FAILED', message: error && error.message }],
+      };
+    }
+    this._mfUs1ReportCreationOutcome(outcome, { kind, path });
+    return { handled: true, outcome };
   }
 
   schedulerDashboardModel({ topics, today, dateFormat }) {
@@ -4748,6 +4851,17 @@ ${body}
     if (this.app.vault.getAbstractFileByPath(path)) {
       new Notice(`Extract already exists at ${path}`); return false;
     }
+    const mfCreation = await this._mfUs1CreateTopicFromHost({
+      requestId: `extract:${path}`,
+      kind: 'extract',
+      priority,
+      parentFile: sourceFile,
+      path,
+      content,
+    });
+    if (mfCreation.handled) {
+      return mfCreation.outcome.status === 'applied' || mfCreation.outcome.status === 'duplicate';
+    }
     await this.app.vault.create(path, content);
     const decayCap = Math.min(100, priority + 30);
     const newPri = Math.min(decayCap, priority + 1);
@@ -5216,7 +5330,22 @@ ${body}
     if (this.app.vault.getAbstractFileByPath(path)) {
       new Notice(`Already exists: ${path}`); return;
     }
-    const f = await this.app.vault.create(path, fmLines.join('\n') + body);
+    const sourceContent = fmLines.join('\n') + body;
+    const mfCreation = await this._mfUs1CreateTopicFromHost({
+      requestId: `source:${path}`,
+      kind: 'source',
+      priority: pNum,
+      path,
+      content: sourceContent,
+    });
+    if (mfCreation.handled) {
+      if (mfCreation.outcome.status === 'applied' || mfCreation.outcome.status === 'duplicate') {
+        const created = this.app.vault.getAbstractFileByPath(path);
+        if (created) await this.app.workspace.getLeaf(false).openFile(created);
+      }
+      return;
+    }
+    const f = await this.app.vault.create(path, sourceContent);
     await this.app.workspace.getLeaf(false).openFile(f);
     new Notice(`Created ${title} (${status}) a=${aFactorInit}`);
   }

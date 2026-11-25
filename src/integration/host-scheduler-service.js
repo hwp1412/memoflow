@@ -29,7 +29,7 @@ function fingerprintOf(descriptor) {
   });
 }
 
-function createHostSchedulerService({ mode = 'legacy', getMode = null, conditions = {}, shadowObserver = null } = {}) {
+function createHostSchedulerService({ mode = 'legacy', getMode = null, conditions = {}, shadowObserver = null, unified = null } = {}) {
   const inflight = new Map();
 
   function currentEvaluation() {
@@ -59,6 +59,10 @@ function createHostSchedulerService({ mode = 'legacy', getMode = null, condition
           // not silently remap it to MANUAL_SCHEDULE.
           fail('E_RESET_CURRENT_UNDECIDED', 'resetCurrent has no accepted Unified event semantics yet');
         }
+        // Only an isolated harness injects a unified transport. The runtime it
+        // points at still enforces its own authorization gate, so this hook is
+        // not a production enable switch.
+        if (typeof unified === 'function') return { route: evaluation.mode, result: await unified(descriptor, evaluation) };
         fail('E_UNIFIED_NOT_AUTHORIZED', 'real Unified writes are not authorized for the host runtime', {
           blockers: evaluation.blockers.map(blocker => blocker.code),
         });

@@ -27,7 +27,7 @@ const WRITABLE_FIELDS = new Set([
 ]);
 const FORBIDDEN_FIELDS = new Set(['mf_id', 'mf_parent_id', 'mf_root_id', 'type']);
 
-function parseBlock(text) {
+function parseBlock(text, { allowNestedBlocks = false } = {}) {
   let bom = '';
   let data = text;
   if (data.charCodeAt(0) === 0xfeff) {
@@ -44,18 +44,28 @@ function parseBlock(text) {
   if (end < 0) fail('E_FRONTMATTER_UNCLOSED', 'frontmatter is not closed');
 
   const keys = new Map();
+  let lastKey = null;
   for (let index = 1; index < end; index += 1) {
     const line = lines[index];
     if (!line.trim()) continue;
     if (line.trim().startsWith('#')) continue;
-    if (/^\s/.test(line)) fail('E_FRONTMATTER_UNSUPPORTED_STRUCTURE', 'indented/nested YAML is not editable');
+    if (/^\s/.test(line)) {
+      if (!allowNestedBlocks) fail('E_FRONTMATTER_UNSUPPORTED_STRUCTURE', 'indented/nested YAML is not editable');
+      // Tolerant mode: a continuation line belongs to the previous key. It is
+      // never interpreted and its key becomes non-editable, so unknown nested
+      // values (tags lists, nested maps) are preserved byte-for-byte.
+      if (lastKey == null) fail('E_FRONTMATTER_UNSUPPORTED_STRUCTURE', 'indented YAML without a parent key');
+      keys.get(lastKey).structured = true;
+      continue;
+    }
     const match = line.match(KEY_RE);
     if (!match) fail('E_FRONTMATTER_UNSUPPORTED_STRUCTURE', `unsupported frontmatter line: ${line.slice(0, 40)}`);
     const key = match[2] || match[3];
     if (keys.has(key)) fail('E_FRONTMATTER_DUPLICATE_KEY', `duplicate frontmatter key: ${key}`);
     const prefix = match[0];
     const rawValue = line.slice(prefix.length);
-    keys.set(key, { index, prefix, rawValue, line });
+    keys.set(key, { index, prefix, rawValue, line, structured: false });
+    lastKey = key;
   }
   return { bom, newline, lines, end, keys };
 }
@@ -63,6 +73,7 @@ function parseBlock(text) {
 function readScalar(parsed, key) {
   const info = parsed.keys.get(key);
   if (!info) return undefined;
+  if (info.structured) return undefined;
   const value = info.rawValue.trim();
   if (value === 'null') return null;
   if (value.startsWith("'") && value.endsWith("'") && value.length >= 2) return value.slice(1, -1);
@@ -75,14 +86,15 @@ function serialize(value) {
   return String(value);
 }
 
-function applyEdits(text, updates) {
-  const parsed = parseBlock(text);
+function applyEdits(text, updates, { allowNestedBlocks = false } = {}) {
+  const parsed = parseBlock(text, { allowNestedBlocks });
   const touched = new Map();
   for (const [key, value] of Object.entries(updates)) {
     if (FORBIDDEN_FIELDS.has(key)) fail('E_FIELD_FORBIDDEN', `field ${key} is not editable`);
     if (!WRITABLE_FIELDS.has(key)) fail('E_FIELD_NOT_WRITABLE', `field ${key} is not a scheduling field`);
     const info = parsed.keys.get(key);
     if (!info) fail('E_FIELD_MISSING', `field ${key} is not present; this adapter updates only existing fields`);
+    if (info.structured) fail('E_FIELD_STRUCTURED', `field ${key} has a nested value and is not editable`);
     if (/\s#/.test(info.rawValue)) fail('E_FRONTMATTER_UNSUPPORTED_STRUCTURE', 'inline comments on edited fields are refused');
     touched.set(info.index, `${info.prefix} ${serialize(value)}`);
   }
@@ -90,7 +102,7 @@ function applyEdits(text, updates) {
   return parsed.bom + lines.join(parsed.newline);
 }
 
-function createObsidianProcessAdapter({ vault, resolveFile, dateFormat, verifyAfter = true }) {
+function createObsidianProcessAdapter({ vault, resolveFile, dateFormat, verifyAfter = true, allowNestedBlocks = false }) {
   if (!vault || typeof vault.process !== 'function' || typeof vault.read !== 'function') {
     fail('E_STORAGE_INVALID', 'Vault.process/read are required');
   }
@@ -125,7 +137,7 @@ function createObsidianProcessAdapter({ vault, resolveFile, dateFormat, verifyAf
         await vault.process(file, data => {
           // Everything below runs inside the atomic callback on latest bytes.
           if (sha256Hex(data) !== expectedHash) throw Object.assign(new Error('snapshot mismatch'), { code: 'E_SNAPSHOT_MISMATCH' });
-          const parsed = parseBlock(data);
+          const parsed = parseBlock(data, { allowNestedBlocks });
           const mfId = readScalar(parsed, 'mf_id');
           if (!isPersistentUuid(mfId)) throw Object.assign(new Error('missing id'), { code: 'E_ID_NOT_PERSISTED' });
           if (String(mfId).toLowerCase() !== topicId.toLowerCase()) throw Object.assign(new Error('wrong id'), { code: 'E_TOPIC_ID_MISMATCH' });
@@ -137,7 +149,7 @@ function createObsidianProcessAdapter({ vault, resolveFile, dateFormat, verifyAf
           if (type !== 'source' && type !== 'extract') throw Object.assign(new Error('type'), { code: 'E_TOPIC_TYPE' });
           if (readScalar(parsed, 'status') !== 'active') throw Object.assign(new Error('status'), { code: 'E_TOPIC_NOT_ACTIVE' });
 
-          const next = applyEdits(data, { ...updates, mf_revision: expectedRevision + 1 });
+          const next = applyEdits(data, { ...updates, mf_revision: expectedRevision + 1 }, { allowNestedBlocks });
           outcome = { beforeHash: sha256Hex(data), afterHash: sha256Hex(next) };
           return next;
         });
@@ -178,5 +190,6 @@ module.exports = {
   createObsidianProcessAdapter,
   assertTrustedProcessAdapter,
   parseBlock,
+  readScalar,
   applyEdits,
 };

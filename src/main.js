@@ -1418,28 +1418,50 @@ class MemoFlowPlugin extends BasePlugin {
       citation,
     });
 
-    let created;
-    try {
-      created = await this.app.vault.create(path, content);
-    } catch (error) {
-      console.error('[MemoFlow] could not create timestamp extract', error);
-      new Notice(`生成摘录失败：${error.message || '未知错误'}。请检查 Vault 写入权限和摘录文件夹。`, 7000);
-      return null;
-    }
+    // MF-US-1 creation gateway: without a synthetic authorization it is a
+    // strict no-op and the 0.1 write below runs byte-for-byte as before.
+    const mfCreation = await this._mfUs1CreateTopicFromHost({
+      requestId: `extract:${path}`,
+      kind: 'extract',
+      priority,
+      parentFile: scheduling.file,
+      path,
+      content,
+    });
 
+    let created = null;
     let bumpFailed = null;
-    try {
-      await this.app.fileManager.processFrontMatter(scheduling.file, fmWriter => {
-        const current = Number(fmWriter.priority) || 50;
-        fmWriter.priority = Math.min(100, current + 1);
-      });
-      if (typeof this._bumpAFactor === 'function') {
-        await this._bumpAFactor(scheduling.file, scheduling.fm, this.settings?.scheduling?.extract_bump || 1.05);
+    if (mfCreation.handled) {
+      if (mfCreation.outcome.status !== 'applied' && mfCreation.outcome.status !== 'duplicate') return null;
+      created = this.app.vault.getAbstractFileByPath(path);
+      if (!created) {
+        new Notice(`摘录创建结果未确认：${path}。请检查 Vault 后手动恢复。`, 9000);
+        return null;
       }
-    } catch (error) {
-      bumpFailed = error;
-      console.error('[MemoFlow] extract created, but parent bump failed', error);
-      new Notice(`摘录已创建：${name}，但父级 priority/A-Factor 更新失败：${error.message || '未知错误'}。笔记已保留。`, 9000);
+      // Unified creation never bumps the parent via the legacy implicit write:
+      // that would change scheduling fields without a revision or an event.
+    } else {
+      try {
+        created = await this.app.vault.create(path, content);
+      } catch (error) {
+        console.error('[MemoFlow] could not create timestamp extract', error);
+        new Notice(`生成摘录失败：${error.message || '未知错误'}。请检查 Vault 写入权限和摘录文件夹。`, 7000);
+        return null;
+      }
+
+      try {
+        await this.app.fileManager.processFrontMatter(scheduling.file, fmWriter => {
+          const current = Number(fmWriter.priority) || 50;
+          fmWriter.priority = Math.min(100, current + 1);
+        });
+        if (typeof this._bumpAFactor === 'function') {
+          await this._bumpAFactor(scheduling.file, scheduling.fm, this.settings?.scheduling?.extract_bump || 1.05);
+        }
+      } catch (error) {
+        bumpFailed = error;
+        console.error('[MemoFlow] extract created, but parent bump failed', error);
+        new Notice(`摘录已创建：${name}，但父级 priority/A-Factor 更新失败：${error.message || '未知错误'}。笔记已保留。`, 9000);
+      }
     }
 
     if (typeof this._invalidateIRCollection === 'function') this._invalidateIRCollection(true);
