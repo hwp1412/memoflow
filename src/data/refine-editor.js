@@ -692,29 +692,36 @@ class RefineEditorController {
       });
       if (!confirmed) return null;
 
-      await this._assertUnchanged(snapshot);
-      await this.store.writeRestorePlan(plan);
-      operation = plan.operation;
+      const fresh = await this._snapshot(false);
+      const freshPlan = await this.store.planRestore(fresh.path, fresh.text);
+      if (freshPlan.latest.operation.operationId !== plan.latest.operation.operationId
+        || freshPlan.operation.after.body !== plan.operation.after.body) {
+        throw new RefineFlowError('RESTORE_TARGET_CHANGED', '确认期间目标历史已变化，请重新查看历史。');
+      }
+      await this._assertUnchanged(fresh);
+      await this.store.writeRestorePlan(freshPlan);
+      operation = freshPlan.operation;
 
       try {
-        await this._assertUnchanged(snapshot);
+        await this.store.assertRestoreTarget(operation, freshPlan.historyCount + 1);
+        await this._assertUnchanged(fresh);
       } catch (error) {
         await this._conflict(operation);
         throw error;
       }
 
-      const expected = snapshot.prefix + operation.after.body;
-      const from = offsetToPos(snapshot.text, snapshot.bodyStart);
-      const to = offsetToPos(snapshot.text, snapshot.text.length);
+      const expected = fresh.prefix + operation.after.body;
+      const from = offsetToPos(fresh.text, fresh.bodyStart);
+      const to = offsetToPos(fresh.text, fresh.text.length);
       try {
-        snapshot.editor.replaceRange(operation.after.body, from, to);
+        fresh.editor.replaceRange(operation.after.body, from, to);
       } catch (error) {
-        const diagnostic = await this._diagnostic(operation, snapshot, expected);
+        const diagnostic = await this._diagnostic(operation, fresh, expected);
         await this._failed(operation);
         throw new RefineFlowError('EDITOR_REPLACE_FAILED', '恢复时编辑器替换失败，正文/磁盘状态需检查。', { diagnostic });
       }
-      if (snapshot.editor.getValue() !== expected) {
-        const diagnostic = await this._diagnostic(operation, snapshot, expected);
+      if (fresh.editor.getValue() !== expected) {
+        const diagnostic = await this._diagnostic(operation, fresh, expected);
         await this._conflict(operation);
         throw new RefineFlowError('EDITOR_CONTENT_MISMATCH', '恢复后的编辑器内容与预期不一致，已停止。', { diagnostic });
       }
@@ -722,16 +729,16 @@ class RefineEditorController {
       try {
         await this.store.setStatus(operation.operationId, 'applied');
       } catch (error) {
-        const diagnostic = await this._diagnostic(operation, snapshot, expected);
+        const diagnostic = await this._diagnostic(operation, fresh, expected);
         throw new RefineFlowError('STATUS_UPDATE_FAILED', '恢复正文已在 Editor 中修改，但状态更新失败；磁盘状态需检查。', { diagnostic });
       }
 
       try {
-        const disk = await this._saveAndVerify(snapshot, expected);
+        const disk = await this._saveAndVerify(fresh, expected);
         await this.store.markVerified(operation.operationId, disk);
         await this.store.markRestored(operation.operationId, disk);
       } catch (error) {
-        const diagnostic = await this._diagnostic(operation, snapshot, expected);
+        const diagnostic = await this._diagnostic(operation, fresh, expected);
         if (error.code === 'DISK_MISMATCH') await this._conflict(operation);
         throw new RefineFlowError(error.code || 'RESTORE_SAVE_OR_VERIFY_FAILED', error.message || '恢复保存或验证失败', { diagnostic });
       }
