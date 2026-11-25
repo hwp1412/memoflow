@@ -3734,7 +3734,42 @@ class IncrementalReadingPlugin extends Plugin {
     return await this._gradeTopic(active, fm, today);
   }
 
+  _mfUs1HostService() {
+    if (!this._mfUs1HostInstance) {
+      const { createHostSchedulerService } = require('./src/integration/host-scheduler-service.js');
+      this._mfUs1HostInstance = createHostSchedulerService({
+        getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
+      });
+    }
+    return this._mfUs1HostInstance;
+  }
+
+  async _mfUs1Run(descriptor, legacy) {
+    return this._mfUs1HostService().execute(descriptor, legacy);
+  }
+
+  async _mfUs1RunLegacy(descriptor, legacy) {
+    const outcome = await this._mfUs1Run(descriptor, legacy);
+    if (outcome && outcome.error) throw outcome.error;
+    return outcome.result;
+  }
+
+  schedulerDashboardModel({ topics, today, dateFormat }) {
+    const { buildDashboardModel } = require('./src/ui/scheduler-dashboard-model.js');
+    return buildDashboardModel({
+      topics,
+      today,
+      queueConfig: this.settings && this.settings.queueConfig ? this.settings.queueConfig : undefined,
+      mode: { mode: this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy' },
+      dateFormat,
+    });
+  }
+
   async _gradeTopic(file, fm, today) {
+    return this._mfUs1RunLegacy({ action: 'ADVANCED' }, () => this._gradeTopicLegacy(file, fm, today));
+  }
+
+  async _gradeTopicLegacy(file, fm, today) {
     let newReadPoint = fm.read_point;
     let newReadPointSeconds = fm.read_point_seconds;
     let previousReadPointLine = Number(fm.read_point_line) || 0;
@@ -4261,6 +4296,10 @@ class IncrementalReadingPlugin extends Plugin {
   // ---- Done / Dismiss / Postpone / Schedule ------------------------------
 
   async markDone() {
+    return this._mfUs1RunLegacy({ action: 'COMPLETE' }, () => this._markDoneLegacy());
+  }
+
+  async _markDoneLegacy() {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: true, allowPdfFallback: true });
     if (!r) return;
     const { tfile, fm } = r;
@@ -4269,12 +4308,20 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async resetCurrent() {
+    return this._mfUs1RunLegacy({ action: 'RESET_CURRENT' }, () => this._resetCurrentLegacy());
+  }
+
+  async _resetCurrentLegacy() {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: true, allowPdfFallback: true });
     if (!r) return;
     await this.resetPaths([r.tfile.path]);
   }
 
   async dismiss() {
+    return this._mfUs1RunLegacy({ action: 'DISMISS' }, () => this._dismissLegacy());
+  }
+
+  async _dismissLegacy() {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const { tfile, fm } = r;
@@ -4287,6 +4334,10 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async postpone() {
+    return this._mfUs1RunLegacy({ action: 'POSTPONE' }, () => this._postponeLegacy());
+  }
+
+  async _postponeLegacy() {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const choice = await pickFromList(
@@ -4305,6 +4356,10 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async schedule() {
+    return this._mfUs1RunLegacy({ action: 'MANUAL_SCHEDULE' }, () => this._scheduleLegacy());
+  }
+
+  async _scheduleLegacy() {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const cur = r.fm.next_review || '(unscheduled)';
@@ -4335,6 +4390,10 @@ class IncrementalReadingPlugin extends Plugin {
   // ---- Set Priority / Boost ---------------------------------------------
 
   async setPriority() {
+    return this._mfUs1RunLegacy({ action: 'SET_PRIORITY' }, () => this._setPriorityLegacy());
+  }
+
+  async _setPriorityLegacy() {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const cur = r.fm.priority ?? 50;
@@ -4494,6 +4553,10 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async postponeSubtree() {
+    return this._mfUs1RunLegacy({ action: 'POSTPONE_SUBTREE' }, () => this._postponeSubtreeLegacy());
+  }
+
+  async _postponeSubtreeLegacy() {
     const r = await resolveSourceFromActive(this.app, this.settings);
     if (!r) return;
     const choice = await pickFromList(
@@ -4569,6 +4632,10 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async _createExtract(fromClipboard) {
+    return this._mfUs1RunLegacy({ action: 'CREATE_EXTRACT' }, () => this._createExtractLegacy(fromClipboard));
+  }
+
+  async _createExtractLegacy(fromClipboard) {
     const r = await resolveSourceOrExtractFromActive(this.app, this.settings);
     if (!r) return;
     let clip = '';
@@ -4968,6 +5035,10 @@ ${body}
   // ---- New source / Import clipping --------------------------------------
 
   async newSource() {
+    return this._mfUs1RunLegacy({ action: 'CREATE_SOURCE' }, () => this._newSourceLegacy());
+  }
+
+  async _newSourceLegacy() {
     const title = await askText(this.app, 'Source title', '');
     if (!title) return;
     const sourceType = await pickFromList(
