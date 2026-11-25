@@ -374,6 +374,16 @@ module.exports = {
   WRITE_FIELDS,
   SUPPORTED_DATE_FORMATS,
   formatLegacyDate,
+  // Shared pieces for the async host transport (HOST-RUNTIME-01). Exported so
+  // the async executor reuses the same validation, identity and projection
+  // logic instead of growing a second event state machine.
+  assertRequest,
+  buildTopic,
+  buildProjection,
+  applyFields,
+  changedFields,
+  verifyPersistedState,
+  auditSnapshot,
   executeUnifiedEvent,
   reconcileUnifiedEvent,
   getUnifiedEventResult,

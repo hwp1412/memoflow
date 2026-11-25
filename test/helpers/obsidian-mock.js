@@ -296,6 +296,9 @@ function createApp() {
       }
       return file;
     },
+    getMarkdownFiles() {
+      return [...this.entries.values()].filter(entry => entry.file.path.endsWith('.md')).map(entry => entry.file);
+    },
     getAbstractFileByPath(filePath) {
       const entry = this.entries.get(filePath);
       if (entry) return entry.file;

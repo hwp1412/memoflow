@@ -3780,11 +3780,32 @@ class IncrementalReadingPlugin extends Plugin {
   _mfUs1HostService() {
     if (!this._mfUs1HostInstance) {
       const { createHostSchedulerService } = require('./src/integration/host-scheduler-service.js');
+      // The unified transport is injected only by an isolated harness; the
+      // service itself still refuses unified when it is absent, and the
+      // runtime it points at re-checks its own authorization.
+      const transport = this.__mfUs1UnifiedTransport || null;
       this._mfUs1HostInstance = createHostSchedulerService({
         getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
+        unified: typeof transport === 'function' ? descriptor => transport(this._mfUs1UnifiedRequest(descriptor)) : null,
       });
     }
     return this._mfUs1HostInstance;
+  }
+
+  _mfUs1UnifiedRequest(descriptor) {
+    const { ALGORITHM_VERSION } = require('./src/scheduling/constants.js');
+    const dateFormat = (this.settings && this.settings.misc && this.settings.misc.date_format) || 'DD-MM-YYYY';
+    return {
+      eventId: descriptor.eventId,
+      topicId: descriptor.topicId,
+      type: descriptor.action,
+      payload: descriptor.payload ?? null,
+      expectedRevision: descriptor.expectedRevision,
+      today: descriptor.today,
+      calendarDate: descriptor.calendarDate ?? descriptor.today,
+      algorithmVersion: ALGORITHM_VERSION,
+      dateFormat,
+    };
   }
 
   async _mfUs1Run(descriptor, legacy) {
