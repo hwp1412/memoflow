@@ -6,8 +6,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { SCENARIOS, scenarioS05, scenarioS07 } = require('./helpers/simulation/scenarios.js');
-const { computeMetrics, percentile, mean } = require('./helpers/simulation/metrics.js');
+const { SCENARIOS, scenarioS02, scenarioS05, scenarioS07 } = require('./helpers/simulation/scenarios.js');
+const { computeMetrics, percentile, mean, round } = require('./helpers/simulation/metrics.js');
 const { legacyFirstInterval, legacyNextInterval, LEGACY_A_FACTOR } = require('./helpers/simulation/legacy-reference.js');
 
 test('the scenario catalogue covers S01-S08 and the comparison run', () => {
@@ -30,43 +30,49 @@ test('completion metrics keep the three definitions apart', () => {
       { waitDays: 2, priority: 10 },
       { waitDays: 5, priority: 90 },
     ],
-    unresolved: [{ priority: 90, ageDays: 40 }],
+    neverProcessed: [],
+    outstandingAtEnd: [{ priority: 90, ageDays: 40 }],
     daily: [{ usedMinutes: 20, budgetMinutes: 30, idealOverdueCount: 2 }],
     completions: 1,
     topicsProcessed: 2,
-    initialCount: 10,
-    errors: { total: 0, byCode: {}, byStage: {}, samples: [] },
+    initialTopics: 10,
+    totalTopics: 12,
+    errors: { uniqueTotal: 0, occurrenceTotal: 0, byCode: {}, occurrencesByCode: {}, byStage: {}, samples: [] },
     eventCounts: { ADVANCED: 3 },
     startDate: '2026-01-05',
     endDate: '2026-01-05',
   });
-  assert.equal(metrics.m01Waiting.processedCount, 3);
-  assert.equal(metrics.m01Waiting.unresolvedCount, 1);
+  assert.equal(metrics.m01Waiting.reviewEvents, 3);
+  assert.equal(metrics.m01Waiting.outstandingAtEndCount, 1);
   assert.equal(metrics.m01Waiting.avgWaitDays, 2.33); // (0 + 2 + 5) / 3 rounded to 2 decimals
   assert.equal(metrics.m06Completion.reviewEvents, 3);
   assert.equal(metrics.m06Completion.topicsProcessedAtLeastOnce, 2);
   assert.equal(metrics.m06Completion.completedTopics, 1);
   assert.equal(metrics.m06Completion.completionRateOfInitial, 0.1);
+  assert.equal(metrics.m06Completion.completionRateOfAllTopics, round(1 / 12, 3));
   assert.equal(metrics.m06Completion.completionRateOfProcessed, 0.5);
   assert.equal(metrics.m05IdealOverdue.max, 2);
-  assert.equal(metrics.m08Anomalies.total, 0);
+  assert.equal(metrics.m08Anomalies.uniqueAnomalies, 0);
+  assert.equal(metrics.m08Anomalies.occurrences, 0);
 });
 
 test('unresolved topics are never removed from the waiting report', () => {
   const metrics = computeMetrics({
     processed: [{ waitDays: 1, priority: 30 }],
-    unresolved: [{ priority: 30, ageDays: 99 }],
+    neverProcessed: [],
+    outstandingAtEnd: [{ priority: 30, ageDays: 99 }],
     daily: [],
     completions: 0,
     topicsProcessed: 1,
-    initialCount: 2,
-    errors: { total: 0, byCode: {}, byStage: {}, samples: [] },
+    initialTopics: 2,
+    totalTopics: 2,
+    errors: { uniqueTotal: 0, occurrenceTotal: 0, byCode: {}, occurrencesByCode: {}, byStage: {}, samples: [] },
     eventCounts: {},
     startDate: '2026-01-05',
     endDate: '2026-01-05',
   });
-  assert.equal(metrics.m01Waiting.unresolvedCount, 1);
-  assert.equal(metrics.m01Waiting.unresolvedOldestAgeDays, 99);
+  assert.equal(metrics.m01Waiting.outstandingAtEndCount, 1);
+  assert.equal(metrics.m01Waiting.outstandingOldestAgeDays, 99);
   assert.equal(metrics.m01Waiting.avgWaitDays, 1, 'unresolved topics do not silently join the processed average');
 });
 
@@ -97,4 +103,53 @@ test('S07 keeps its structural promises for the fixed seed', () => {
   assert.equal(run.resumed.batch.status, 'undone');
   assert.equal(run.staleError, 'E_MERCY_PLAN_STALE');
   assert.deepEqual(run.windows[7].length, 7);
+});
+
+// ---- metric range and denominator regressions (review fix 2) -------------
+
+test('the oldest low-priority backlog ignores higher-priority topics', () => {
+  const metrics = computeMetrics({
+    processed: [],
+    neverProcessed: [],
+    outstandingAtEnd: [
+      { priority: 10, ageDays: 100 }, // high priority, very old
+      { priority: 90, ageDays: 5 }, // low priority, recent
+    ],
+    daily: [],
+    completions: 0,
+    topicsProcessed: 0,
+    initialTopics: 2,
+    totalTopics: 2,
+    errors: { uniqueTotal: 0, occurrenceTotal: 0, byCode: {}, occurrencesByCode: {}, byStage: {}, samples: [] },
+    eventCounts: {},
+    startDate: '2026-01-05',
+    endDate: '2026-01-05',
+  });
+  assert.equal(metrics.m03LowPriority.outstandingOldestAgeDays, 5);
+  assert.equal(metrics.m03LowPriority.outstandingAtEndLowCount, 1);
+  assert.equal(metrics.m01Waiting.outstandingOldestAgeDays, 100, 'M01 still reports the global oldest backlog');
+});
+
+test('completion rates use the correct denominator for growing populations', () => {
+  const run = scenarioS02({ days: 10 });
+  const metrics = run.result.metrics.m06Completion;
+  assert.equal(metrics.initialTopics, 101); // 100 mixed + 1 parent
+  assert.equal(metrics.totalTopics, 101 + 10 * 20);
+  assert.equal(metrics.completionRateOfInitial, round(metrics.completedTopics / metrics.initialTopics, 3));
+  assert.equal(metrics.completionRateOfAllTopics, round(metrics.completedTopics / metrics.totalTopics, 3));
+  assert.notEqual(metrics.completionRateOfInitial, metrics.completionRateOfAllTopics);
+});
+
+test('M08 separates unique anomaly identities from occurrence counts', () => {
+  const { createErrorCollector } = require('./helpers/simulation/runner.js');
+  const collector = createErrorCollector();
+  collector.add('queue', 'E_PRIORITY_RANGE', { stableId: 'A' });
+  collector.add('queue', 'E_PRIORITY_RANGE', { stableId: 'A' }); // same note, next day
+  collector.add('queue', 'E_PRIORITY_RANGE', { stableId: 'B' });
+  collector.add('event', 'E_REVISION_CONFLICT', { stableId: 'A' });
+  const result = collector.result();
+  assert.equal(result.uniqueTotal, 3);
+  assert.equal(result.occurrenceTotal, 4);
+  assert.equal(result.byCode.E_PRIORITY_RANGE, 2);
+  assert.equal(result.occurrencesByCode.E_PRIORITY_RANGE, 3);
 });

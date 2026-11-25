@@ -99,21 +99,26 @@ function simulateLegacy({ topics, days, startDate, dailyBudgetMinutes = 30, comp
   }
 
   const endDate = addCalendarDays(startDate, days - 1);
-  const unresolved = [];
+  const neverProcessed = state
+    .filter(topic => !processedIds.has(topic.stableId))
+    .map(topic => ({ stableId: topic.stableId, priority: topic.priority, status: topic.status }));
+  const outstandingAtEnd = [];
   for (const topic of state) {
-    if (topic.status !== 'active' || processedIds.has(topic.stableId)) continue;
+    if (topic.status !== 'active') continue;
     if (compareDate(topic.nextReview, endDate) > 0) continue;
-    unresolved.push({ stableId: topic.stableId, priority: topic.priority, ageDays: Math.max(0, calendarDayDifference(endDate, topic.nextReview)) });
+    outstandingAtEnd.push({ stableId: topic.stableId, priority: topic.priority, ageDays: Math.max(0, calendarDayDifference(endDate, topic.nextReview)), reviewCount: topic.reviewCount });
   }
 
-  const errors = { total: 0, byCode: {}, byStage: {}, samples: [] };
+  const errors = { uniqueTotal: 0, occurrenceTotal: 0, byCode: {}, occurrencesByCode: {}, byStage: {}, samples: [] };
   const metrics = computeMetrics({
     processed,
-    unresolved,
+    neverProcessed,
+    outstandingAtEnd,
     daily,
     completions,
     topicsProcessed: processedIds.size,
-    initialCount: topics.length,
+    initialTopics: topics.length,
+    totalTopics: state.length,
     errors,
     eventCounts: { ADVANCED: processed.length, COMPLETE: completions },
     startDate,
@@ -134,7 +139,9 @@ function simulateLegacy({ topics, days, startDate, dailyBudgetMinutes = 30, comp
     topics: state,
     processed,
     daily,
-    unresolved,
+    neverProcessed,
+    outstandingAtEnd,
+    unresolved: outstandingAtEnd,
     metrics,
   };
 }

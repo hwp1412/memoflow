@@ -19,11 +19,15 @@ const { computeMetrics } = require('./metrics.js');
 
 function createErrorCollector() {
   const byCode = {};
+  const occurrencesByCode = {};
   const byStage = {};
   const samples = [];
   const seen = new Set();
+  let occurrences = 0;
   return {
     add(stage, code, sample = {}) {
+      occurrences += 1;
+      occurrencesByCode[code] = (occurrencesByCode[code] || 0) + 1;
       const key = `${stage}:${code}:${sample.stableId || ''}`;
       if (seen.has(key)) return;
       seen.add(key);
@@ -32,7 +36,14 @@ function createErrorCollector() {
       if (samples.length < 20) samples.push({ stage, code, ...sample });
     },
     result() {
-      return { total: Object.values(byCode).reduce((total, value) => total + value, 0), byCode, byStage, samples };
+      return {
+        uniqueTotal: Object.values(byCode).reduce((total, value) => total + value, 0),
+        occurrenceTotal: occurrences,
+        byCode,
+        occurrencesByCode,
+        byStage,
+        samples,
+      };
     },
   };
 }
@@ -146,27 +157,43 @@ function simulate(options) {
   }
 
   const endDate = addCalendarDays(startDate, days - 1);
-  const unresolved = [];
+
+  // Two distinct end-of-window sets:
+  //   neverProcessed   zero review events in the whole window (any status)
+  //   outstandingAtEnd active, effective due <= endDate, still awaiting a next
+  //                    review. A topic reviewed earlier and due again belongs
+  //                    here even though it was processed once.
+  const neverProcessed = state
+    .filter(topic => !processedIds.has(topic.mf_id))
+    .map(topic => ({
+      stableId: topic.mf_id,
+      priority: topic.priority,
+      status: topic.status,
+    }));
+
+  const outstandingAtEnd = [];
   for (const topic of state) {
     if (topic.status !== 'active') continue;
-    if (processedIds.has(topic.mf_id)) continue;
     const due = effectiveDue(topic);
     if (compareDate(due, endDate) > 0) continue;
-    unresolved.push({
+    outstandingAtEnd.push({
       stableId: topic.mf_id,
       priority: topic.priority,
       ageDays: Math.max(0, calendarDayDifference(endDate, due)),
+      reviewCount: topic.review_count,
     });
   }
 
   const errorResult = errors.result();
   const metrics = computeMetrics({
     processed,
-    unresolved,
+    neverProcessed,
+    outstandingAtEnd,
     daily,
     completions,
     topicsProcessed: processedIds.size,
-    initialCount,
+    initialTopics: initialCount,
+    totalTopics: state.length,
     errors: errorResult,
     eventCounts,
     startDate,
@@ -181,7 +208,11 @@ function simulate(options) {
     topics: state,
     processed,
     daily,
-    unresolved,
+    neverProcessed,
+    outstandingAtEnd,
+    // Compatibility alias: same content as outstandingAtEnd. New callers must
+    // use outstandingAtEnd; `unresolved` is kept only for older consumers.
+    unresolved: outstandingAtEnd,
     errors: errorResult,
     eventCounts,
     completions,

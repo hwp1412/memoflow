@@ -185,6 +185,6 @@ test('the Legacy proxy is deterministic and never asserts Unified equivalence', 
 // Keep an explicit seed reference in the file so failures can be reproduced.
 test('documented seeds remain runnable', () => {
   const run = scenarioS01({ seed: 11, scale: 50, days: 30 });
-  assert.ok(run.result.metrics.m01Waiting.processedCount > 0);
+  assert.ok(run.result.metrics.m01Waiting.reviewEvents > 0);
   assert.deepEqual(scenarioS01({ seed: 11, scale: 50, days: 30 }).result.metrics, run.result.metrics);
 });

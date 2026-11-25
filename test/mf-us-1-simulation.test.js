@@ -43,26 +43,26 @@ test('S01: 100 / 1,000 / 10,000 topics produce complete metrics', () => {
   ].map(({ scale, days }) => {
     const run = scenarioS01({ scale, days });
     const { metrics } = run.result;
-    assert.ok(metrics.m01Waiting.processedCount > 0, `scale ${scale}`);
+    assert.ok(metrics.m01Waiting.reviewEvents > 0, `scale ${scale}`);
     assert.ok(metrics.m01Waiting.avgWaitDays >= 0);
     assert.ok(metrics.m01Waiting.p95WaitDays >= metrics.m01Waiting.avgWaitDays - 1e-9);
     assert.ok(metrics.m04DailyBudget.utilization <= 1, `scale ${scale} budget`);
     assert.ok(metrics.m05IdealOverdue.max >= 0);
     assert.ok(metrics.m06Completion.topicsProcessedAtLeastOnce > 0);
-    assert.ok(Number.isFinite(metrics.m08Anomalies.total));
+    assert.ok(Number.isFinite(metrics.m08Anomalies.uniqueAnomalies));
     assert.equal(run.result.topics.length >= scale, true);
     return { scale, days, metrics, errors: run.result.errors.total };
   });
   const elapsed = performance.now() - started;
   assert.ok(elapsed < 60000, `scale suite took ${elapsed.toFixed(0)}ms`);
-  console.log('[sim] S01', runs.map(run => `${run.scale}@${run.days}d avg=${run.metrics.m01Waiting.avgWaitDays} unresolved=${run.metrics.m01Waiting.unresolvedCount} errors=${run.errors}`).join(' | '));
+  console.log('[sim] S01', runs.map(run => `${run.scale}@${run.days}d avg=${run.metrics.m01Waiting.avgWaitDays} outstanding=${run.metrics.m01Waiting.outstandingAtEndCount} errors=${run.errors}`).join(' | '));
 });
 
 test('S02: twenty new extracts per day never touch the parent topic', () => {
   const run = scenarioS02({ days: 60 });
   assert.equal(run.created.length, 60 * 20);
   assert.deepEqual(run.parentAfter, run.parentBefore, 'creating children must not change the parent');
-  assert.ok(run.result.unresolved.length > 0, 'the backlog should grow');
+  assert.ok(run.result.outstandingAtEnd.length > 0, 'the backlog should grow');
   const overdue = run.result.daily.map(day => day.idealOverdueCount);
   assert.ok(overdue[overdue.length - 1] > overdue[0], 'ideal backlog grows under sustained intake');
   assert.ok(run.result.metrics.m04DailyBudget.utilization > 0);
@@ -110,23 +110,23 @@ test('S05: the daily budget is respected and oversized work is deferred, not los
 test('S06: age bonus stays capped and low-priority starvation is reported', () => {
   const run = scenarioS06({ days: 60 });
   const { metrics } = run.result;
-  assert.ok(metrics.m02HighPriority.processedCount > 0);
+  assert.ok(metrics.m02HighPriority.reviewEvents > 0);
   // The scenario deliberately over-subscribes high-priority intake, so low
   // priority work may never be reached. That is a REPORTED finding, not a
   // reason to change the algorithm: the backlog must stay visible.
-  assert.ok(metrics.m03LowPriority.unresolvedLowCount > 0, 'low priority backlog is reported');
+  assert.ok(metrics.m03LowPriority.outstandingAtEndLowCount > 0, 'low priority backlog is reported');
   assert.ok(metrics.m03LowPriority.maxWaitDays >= 0);
-  assert.ok(metrics.m03LowPriority.unresolvedOldestAgeDays >= 0);
+  assert.ok(metrics.m03LowPriority.outstandingOldestAgeDays >= 0);
   console.log('[sim] S06 starvation', JSON.stringify({
-    lowProcessed: metrics.m03LowPriority.processedCount,
-    lowUnresolved: metrics.m03LowPriority.unresolvedLowCount,
-    lowOldestAge: metrics.m03LowPriority.unresolvedOldestAgeDays,
-    highProcessed: metrics.m02HighPriority.processedCount,
+    lowProcessed: metrics.m03LowPriority.reviewEvents,
+    lowOutstanding: metrics.m03LowPriority.outstandingAtEndLowCount,
+    lowOldestAge: metrics.m03LowPriority.outstandingOldestAgeDays,
+    highProcessed: metrics.m02HighPriority.reviewEvents,
   }));
 
   // With spare capacity the same queue does serve low priority work.
   const light = simulateLight();
-  assert.ok(light.m03LowPriority.processedCount > 0, 'low priority is served when capacity allows');
+  assert.ok(light.m03LowPriority.reviewEvents > 0, 'low priority is served when capacity allows');
 
   // Bonus cap: a very overdue topic cannot gain more than 20 levels.
   const ancient = {
@@ -203,8 +203,8 @@ test('Legacy proxy vs Unified comparison is reproducible and clearly labelled', 
   const run = scenarioComparison({ count: 300, days: 90 });
   assert.equal(run.legacy.proxy, true);
   assert.ok(run.legacy.proxyLimitations.length >= 3);
-  assert.ok(run.unified.metrics.m01Waiting.processedCount > 0);
-  assert.ok(run.legacy.metrics.m01Waiting.processedCount > 0);
+  assert.ok(run.unified.metrics.m01Waiting.reviewEvents > 0);
+  assert.ok(run.legacy.metrics.m01Waiting.reviewEvents > 0);
   for (const metrics of [run.unified.metrics, run.legacy.metrics]) {
     assert.ok(metrics.m04DailyBudget.totalUsedMinutes >= 0);
     assert.ok(metrics.m06Completion.completionRateOfInitial >= 0);
@@ -224,4 +224,57 @@ test('the daily-loop simulator never violates the reading budget', () => {
   }
   const gapReviewCount = run.result.processed.length;
   assert.ok(gapReviewCount > 0);
+});
+
+// ---- end-of-window backlog vs never processed (review fix 1) --------------
+
+test('a topic reviewed earlier and due again belongs to outstandingAtEnd, not neverProcessed', () => {
+  const active = makeTopic({
+    seq: 970001,
+    type: 'extract',
+    priority: 50,
+    today: '2026-01-05',
+    idealDue: '2026-01-05',
+    intervalDays: 1,
+    aFactor: 1.5,
+  });
+  const done = makeTopic({ seq: 970002, type: 'extract', priority: 50, today: '2026-01-05', idealDue: '2026-01-05', status: 'done' });
+  const future = makeTopic({ seq: 970003, type: 'extract', priority: 50, today: '2026-01-05', idealDue: offsetDate('2026-01-05', 10) });
+
+  // Review once on the first day, then stop processing so the topic is due
+  // again before the window ends without being handled a second time.
+  const run = simulate({
+    seed: 1,
+    topics: [active, done, future],
+    days: 5,
+    startDate: '2026-01-05',
+    skipWhen: ({ offset }) => offset >= 1,
+  });
+
+  assert.deepEqual(run.processed.map(record => record.stableId), [active.mf_id]);
+  assert.equal(run.processed.length, 1);
+  assert.equal(run.neverProcessed.some(record => record.stableId === active.mf_id), false);
+  const outstanding = run.outstandingAtEnd.find(record => record.stableId === active.mf_id);
+  assert.ok(outstanding, 'the re-due topic is part of the end-of-window backlog');
+  assert.equal(outstanding.ageDays, 2);
+  assert.equal(outstanding.reviewCount, 1, 'its history is still accurate');
+  assert.equal(run.topics.find(topic => topic.mf_id === active.mf_id).review_count, 1);
+  assert.equal(run.outstandingAtEnd.some(record => record.stableId === done.mf_id), false);
+  assert.equal(run.outstandingAtEnd.some(record => record.stableId === future.mf_id), false);
+  assert.equal(run.metrics.m01Waiting.outstandingAtEndCount, 1);
+  assert.equal(run.metrics.m06Completion.neverProcessedCount, 2);
+  assert.equal(run.metrics.m06Completion.reviewEvents, 1);
+  assert.equal(run.metrics.m06Completion.topicsProcessedAtLeastOnce, 1);
+});
+
+test('S08 rename keeps identity, links and scheduling untouched', () => {
+  const run = scenarioS08();
+  const rename = run.rename;
+  assert.notEqual(rename.before.path, rename.after.path);
+  assert.notEqual(rename.before.basename, rename.after.basename);
+  assert.equal(rename.after.mfId, rename.before.mfId);
+  for (const field of ['parentId', 'rootId', 'priority', 'idealDue', 'interval', 'aFactor', 'reviewCount', 'revision']) {
+    assert.equal(rename.after[field], rename.before[field], field);
+  }
+  assert.deepEqual(rename.orderAfter, rename.orderBefore, 'stable order does not depend on path or title');
 });

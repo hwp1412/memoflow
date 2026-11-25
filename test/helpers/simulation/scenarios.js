@@ -250,6 +250,46 @@ function scenarioS08({ seed = 88 } = {}) {
   const renamed = makeTopic({ seq: 940008, type: 'extract', priority: 45, today: START, idealDue: START });
   renamed.date_added = START;
 
+  // Pure-object rename: path and title change, identity and scheduling do not.
+  const renameBefore = {
+    ...makeTopic({ seq: 940009, type: 'extract', priority: 45, today: START, idealDue: START }),
+    path: 'Sources/Incremental Reading/Extracts/A.md',
+    basename: 'A',
+  };
+  const renameAfter = { ...renameBefore, path: 'Sources/Incremental Reading/Extracts/B.md', basename: 'B' };
+  const orderBefore = selectDailyQueue([renameBefore, valid1], undefined, START).selected.map(entry => entry.stableId);
+  const orderAfter = selectDailyQueue([renameAfter, valid1], undefined, START).selected.map(entry => entry.stableId);
+  const rename = {
+    before: {
+      path: renameBefore.path,
+      basename: renameBefore.basename,
+      mfId: renameBefore.mf_id,
+      parentId: renameBefore.mf_parent_id,
+      rootId: renameBefore.mf_root_id,
+      priority: renameBefore.priority,
+      idealDue: renameBefore.mf_ideal_due,
+      interval: renameBefore.mf_interval_days,
+      aFactor: renameBefore.a_factor,
+      reviewCount: renameBefore.review_count,
+      revision: renameBefore.mf_revision,
+    },
+    after: {
+      path: renameAfter.path,
+      basename: renameAfter.basename,
+      mfId: renameAfter.mf_id,
+      parentId: renameAfter.mf_parent_id,
+      rootId: renameAfter.mf_root_id,
+      priority: renameAfter.priority,
+      idealDue: renameAfter.mf_ideal_due,
+      interval: renameAfter.mf_interval_days,
+      aFactor: renameAfter.a_factor,
+      reviewCount: renameAfter.review_count,
+      revision: renameAfter.mf_revision,
+    },
+    orderBefore,
+    orderAfter,
+  };
+
   const topics = [valid1, valid2, card, badPriority, badDate, missingId, duplicateA, duplicateB, renamed];
   const queue = selectDailyQueue(topics, undefined, START);
 
@@ -286,6 +326,7 @@ function scenarioS08({ seed = 88 } = {}) {
     id: 'S08',
     topics,
     queue,
+    rename,
     events: {
       firstApplied: first.result.applied,
       secondApplied: second.result.applied,

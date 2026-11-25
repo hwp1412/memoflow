@@ -2,24 +2,23 @@
 
 // Metric computation for the MF-US-1 offline simulation (SPEC A13.2 M01-M08).
 //
-// Definitions are deliberately explicit so no metric can quietly change its
-// denominator:
-//   M01 waiting      Effective Due -> processing date, in calendar days. Topics
-//                    still unresolved at the end are reported separately (never
-//                    dropped from the report) with their backlog age.
-//   M02 high priority P1-P20 waiting distribution.
-//   M03 low priority P80-P100 waiting: max wait plus oldest unresolved backlog.
-//   M04 daily budget  used minutes vs budget, over-budget minutes. Mercy planned
-//                    overload is reported separately by the scenario, never mixed
-//                    into reading-budget usage.
-//   M05 ideal overdue active topics whose ideal due already passed and are not
-//                    yet processed. POSTPONE/Mercy never remove them from this
-//                    ideal backlog.
-//   M06 completion    three distinct numbers: processed events, topics processed
-//                    at least once, topics completed (COMPLETE).
-//   M07 interventions simulated strategy actions by event type (explicitly
-//                    labelled simulated, not real user behaviour).
-//   M08 anomalies     errors by code and by stage, each with a sample.
+// Definitions are explicit so no metric can quietly change its denominator:
+//
+//   reviewEvents                 one entry per processed review event
+//   topicsProcessedAtLeastOnce   unique topics that were reviewed at least once
+//   completedTopics              topics that received COMPLETE
+//   neverProcessed               topics with ZERO review events in the window
+//   outstandingAtEnd             active topics whose effective due is on/before
+//                                the last simulated day and that still need a
+//                                next review (includes topics processed earlier
+//                                and due again)
+//
+// M01 waiting uses review events only. Work that is still outstanding at the
+// end is a CENSORED observation and is reported as its own backlog
+// distribution; it is never folded into the processed average.
+//
+// M08 reports both unique anomaly identities and raw occurrences, because a
+// broken topic can be re-reported on several simulated days.
 
 function percentile(values, ratio) {
   if (!values.length) return 0;
@@ -38,12 +37,27 @@ function round(value, digits = 3) {
   return Math.round(value * factor) / factor;
 }
 
-function computeMetrics({ processed, unresolved, daily, completions, topicsProcessed, initialCount, errors, eventCounts, startDate, endDate }) {
+function computeMetrics({
+  processed,
+  neverProcessed = [],
+  outstandingAtEnd = [],
+  daily,
+  completions,
+  topicsProcessed,
+  initialTopics,
+  totalTopics,
+  errors,
+  eventCounts,
+  startDate,
+  endDate,
+}) {
   const waits = processed.map(record => record.waitDays);
   const highWaits = processed.filter(record => record.priority <= 20).map(record => record.waitDays);
   const lowProcessed = processed.filter(record => record.priority >= 80);
   const lowWaits = lowProcessed.map(record => record.waitDays);
-  const unresolvedAges = unresolved.map(record => record.ageDays);
+
+  const outstandingAges = outstandingAtEnd.map(record => record.ageDays);
+  const lowOutstanding = outstandingAtEnd.filter(record => record.priority >= 80);
 
   const totalUsed = daily.reduce((total, day) => total + day.usedMinutes, 0);
   const totalBudget = daily.reduce((total, day) => total + day.budgetMinutes, 0);
@@ -53,30 +67,34 @@ function computeMetrics({ processed, unresolved, daily, completions, topicsProce
 
   return {
     m01Waiting: {
-      unit: 'calendar days from effective due to processing',
-      processedCount: processed.length,
+      unit: 'calendar days from effective due to the review that processed it',
+      reviewEvents: processed.length,
+      topicsProcessedAtLeastOnce: topicsProcessed,
       avgWaitDays: round(mean(waits), 2),
       p95WaitDays: percentile(waits, 0.95),
       maxWaitDays: waits.length ? Math.max(...waits) : 0,
-      unresolvedCount: unresolved.length,
-      unresolvedOldestAgeDays: unresolvedAges.length ? Math.max(...unresolvedAges) : 0,
-      unresolvedAvgAgeDays: round(mean(unresolvedAges), 2),
-      note: 'unresolved topics are reported separately, never removed from the denominator',
+      neverProcessedCount: neverProcessed.length,
+      outstandingAtEndCount: outstandingAtEnd.length,
+      outstandingOldestAgeDays: outstandingAges.length ? Math.max(...outstandingAges) : 0,
+      outstandingAvgAgeDays: round(mean(outstandingAges), 2),
+      note: 'waiting statistics come from review events only; outstanding work is a censored backlog reported separately and never added to the processed average',
     },
     m02HighPriority: {
       band: 'P1-P20',
-      processedCount: highWaits.length,
+      reviewEvents: highWaits.length,
       avgWaitDays: round(mean(highWaits), 2),
       p95WaitDays: percentile(highWaits, 0.95),
       maxWaitDays: highWaits.length ? Math.max(...highWaits) : 0,
     },
     m03LowPriority: {
       band: 'P80-P100',
-      processedCount: lowWaits.length,
+      reviewEvents: lowWaits.length,
       maxWaitDays: lowWaits.length ? Math.max(...lowWaits) : 0,
       avgWaitDays: round(mean(lowWaits), 2),
-      unresolvedLowCount: unresolved.filter(record => record.priority >= 80).length,
-      unresolvedOldestAgeDays: unresolved.length ? Math.max(...unresolvedAges) : 0,
+      neverProcessedLowCount: neverProcessed.filter(record => record.priority >= 80).length,
+      outstandingAtEndLowCount: lowOutstanding.length,
+      outstandingOldestAgeDays: lowOutstanding.length ? Math.max(...lowOutstanding.map(record => record.ageDays)) : 0,
+      note: 'the oldest backlog is computed from P80-P100 outstanding topics only, not from all priorities',
     },
     m04DailyBudget: {
       days: daily.length,
@@ -97,20 +115,27 @@ function computeMetrics({ processed, unresolved, daily, completions, topicsProce
       reviewEvents: processed.length,
       topicsProcessedAtLeastOnce: topicsProcessed,
       completedTopics: completions,
-      initialTopics: initialCount,
-      completionRateOfInitial: initialCount ? round(completions / initialCount, 3) : 0,
+      neverProcessedCount: neverProcessed.length,
+      outstandingAtEndCount: outstandingAtEnd.length,
+      initialTopics,
+      totalTopics,
+      completionRateOfInitial: initialTopics ? round(completions / initialTopics, 3) : 0,
+      completionRateOfAllTopics: totalTopics ? round(completions / totalTopics, 3) : 0,
       completionRateOfProcessed: topicsProcessed ? round(completions / topicsProcessed, 3) : 0,
-      note: 'processed events, processed topics and COMPLETE are three different numbers',
+      note: 'initialTopics excludes topics added during the run; totalTopics includes them. The three counts and rates are never merged',
     },
     m07Interventions: {
       source: 'simulated strategy actions (not real user behaviour)',
       byType: { ...eventCounts },
     },
     m08Anomalies: {
-      total: errors.total,
+      uniqueAnomalies: errors.uniqueTotal,
+      occurrences: errors.occurrenceTotal,
       byCode: { ...errors.byCode },
+      occurrencesByCode: { ...errors.occurrencesByCode },
       byStage: { ...errors.byStage },
       samples: errors.samples.slice(0, 10),
+      note: 'byCode counts unique (stage, code, topic) identities; occurrencesByCode counts every re-report, e.g. the same broken note over several days',
     },
     window: { startDate, endDate, days: daily.length },
   };
