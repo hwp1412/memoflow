@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-MERCY-01（Mercy 分配、预览、批次与安全撤销）
+> 最后更新：P2-US1-SIM-01（离线模拟、性质回归、A14 性能基准）
 
 ## 0. 状态定义
 
@@ -59,10 +59,10 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `NOT_STARTED` | 09 | |
 | 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |
 | 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
-| 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→05 | 见 §2 |
-| 38 | TEST-02 | 性质测试（9 条） | A13.1 | `IN_PROGRESS` | 01→05 | 见 §3 |
-| 39 | TEST-03 | 离线模拟（8 场景、8 指标） | A13.2 | `NOT_STARTED` | 05 | |
-| 40 | TEST-04 | 性能基准（10k Topic 队列 < 500ms） | A14 | `NOT_STARTED` | 05 | PR-03 初步实测 10k ≈ 47–62ms；正式模拟与基准在 05 | |
+| 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→05 | T01–T16 PASS；T17 仅纯对象层；T18/T19/T20 待 11/07/06（见 §2） |
+| 38 | TEST-02 | 性质测试（9 条） | A13.1 | `TESTED` | 01→05 | 8/9 在纯算法层通过；迁移前后 Effective Due 待 08（见 §3） |
+| 39 | TEST-03 | 离线模拟（8 场景、8 指标） | A13.2 | `TESTED` | 05 | S01–S08 + M01–M08 + 对照；M06 按初始/新增群体拆分；对照为 **Legacy proxy**（见 docs/P2-US1-SIM-01.md） |
+| 40 | TEST-04 | 性能基准（10k Topic 队列 < 500ms） | A14 | `TESTED` | 05 | 本机 Apple M4：10k 中位 53.15ms（P95 65.88ms）；见 docs/MF-US-1-BENCHMARK.md |
 | 41 | ACC-01 | 隔离 Vault 实机验收与发布门槛 | A14 | `NOT_STARTED` | 12 | 禁碰 `MemoFlow-Test` |
 
 ## 2. 规范测试 T01–T20 覆盖
@@ -87,10 +87,10 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | T14 | 相同优先级与日期稳定排序 | `PASS` | `mf-us-1-queue.test.js`（含乱序与 code-unit 决胜） |
 | T15 | 跨夏令时 +1 天 | `PASS` | `mf-us-1-dates.test.js`（美/欧 DST 日） |
 | T16 | Mercy 撤销恢复原 `mf_not_before` | `PASS` | `mf-us-1-mercy-undo.test.js`（含 null 与具体日期混合） |
-| T17 | 新建 Extract→Extract 不改父调度 | `PARTIAL` | PR-01 保证 `initializeTopic` 不触碰父对象；父节点语义在 PR-06 |
-| T18 | SR 卡片评分不触碰 SR 数据 | `TODO` | PR-11（核心层已拒绝 `type: card`） |
-| T19 | Shadow 模式不写回 Topic | `TODO` | PR-07 |
-| T20 | 同名/重命名后稳定 ID 关系正确 | `TODO` | PR-06 |
+| T17 | 新建 Extract→Extract 不改父调度 | `PARTIAL` | PR-01 + PR-05 S04 证明纯对象层父调度不变；真实父子创建/稳定 ID 属 PR-06 |
+| T18 | SR 卡片评分不触碰 SR 数据 | `TODO` | PR-11；本 PR 仅证明 Card 不进入阅读队列（S08/性质测试） |
+| T19 | Shadow 模式不写回 Topic | `TODO` | PR-07（尚未实现 Shadow，无证据） |
+| T20 | 同名/重命名后稳定 ID 关系正确 | `TODO` | PR-06（模拟仅用合成 ID，不代表真实重命名） |
 
 ## 3. 性质测试（A13.1，共 9 条）
 
