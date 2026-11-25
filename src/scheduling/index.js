@@ -34,6 +34,10 @@ const unifiedStoreContract = require('./unified-store-contract.js');
 const persistentEventLedger = require('./persistent-event-ledger.js');
 const unifiedWriter = require('./unified-writer.js');
 const unifiedMercyWriter = require('./unified-mercy-writer.js');
+const runtimeModeGuard = require('./runtime-mode-guard.js');
+const runtimeRouter = require('./runtime-router.js');
+const readingIntegration = require('./reading-integration.js');
+const explain = require('./explain.js');
 
 module.exports = {
   ...errors,
@@ -65,6 +69,10 @@ module.exports = {
   ...persistentEventLedger,
   ...unifiedWriter,
   ...unifiedMercyWriter,
+  ...runtimeModeGuard,
+  ...runtimeRouter,
+  ...readingIntegration,
+  ...explain,
   // Namespaced access for callers that prefer explicit module grouping.
   schema,
   dates,
@@ -93,4 +101,8 @@ module.exports = {
   persistentEventLedger,
   unifiedWriter,
   unifiedMercyWriter,
+  runtimeModeGuard,
+  runtimeRouter,
+  readingIntegration,
+  explain,
 };
