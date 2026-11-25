@@ -437,3 +437,28 @@ test('a failed recovery keeps blocking while other Topics stay usable', async ()
   assert.equal(free.status, 'applied');
   assert.equal(fmOf(context.app, otherFile).review_count, 1);
 });
+
+test('a throwing recovery leaves the startup gate closed until a retry succeeds', async () => {
+  const context = await preparedState();
+  const { runtime } = await reopenRuntime(context);
+  const originalRead = context.app.vault.read.bind(context.app.vault);
+
+  // A storage read that returns garbage makes readTopic throw, which propagates
+  // out of recover() before any record could be classified.
+  context.app.vault.read = async () => null;
+  await assert.rejects(() => runtime.recover());
+  assert.equal(runtime.view().writeEnabled, true, 'mode is authorized, only recovery is pending');
+
+  const blocked = await runtime.execute(advance(context.topicId, uuid(206), { expectedRevision: 1 }));
+  assert.equal(blocked.status, 'requires-manual-recovery');
+  assert.equal(blocked.reason, 'E_RECOVERY_PENDING');
+
+  context.app.vault.read = originalRead;
+  const retry = await runtime.recover();
+  assert.equal(retry.recovered.length, 1);
+  assert.equal(retry.recovered[0].status, 'applied');
+
+  const resumed = await runtime.execute(advance(context.topicId, uuid(207), { expectedRevision: 1 }));
+  assert.equal(resumed.status, 'applied');
+  assert.equal(fmOf(context.app, context.file).review_count, 2);
+});

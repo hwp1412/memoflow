@@ -237,8 +237,12 @@ function createAsyncHostRuntime({
     try {
       return await recoveryPromise;
     } finally {
+      // Cleanup only. Declaring recovery complete here would let a throwing
+      // reconcile (storage read error, corrupt ledger, ...) silently reopen the
+      // startup gate and admit new Unified writes before anything was verified.
+      // `recoveryComplete` is set by the successful traversal above; a failed
+      // attempt leaves it false and can be retried explicitly.
       recoveryPromise = null;
-      recoveryComplete = true;
     }
   }
 

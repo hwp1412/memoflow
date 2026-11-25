@@ -181,8 +181,11 @@ test/*.test.js                        1190 pass
 | 不同 Topic 独立 | 恢复完成后，其他 Topic 的 execute 不受该 Topic 锁影响（有测试） |
 
 时序：`execute` 先过启动门 → 取 Topic 链 → 再取 `unresolved()` 判定 → 执行 → 按结果加/解锁。
-`recover()` 先占 `recoveryPromise`（并发调用复用同一次恢复），逐条走 Topic 链，结束后置
-`recoveryComplete=true` 并释放 `recoveryPromise`。
+`recover()` 先占 `recoveryPromise`（并发调用复用同一次恢复），逐条走 Topic 链。
+
+**异常路径**：只有遍历完整结束才置 `recoveryComplete=true`；`finally` 仅释放
+`recoveryPromise`。若 `reconcileUnifiedEventAsync()` 抛错（例如存储读取返回非法内容），
+启动门保持关闭，`execute` 继续返回 `E_RECOVERY_PENDING`，可显式重试 `recover()`。
 
 ### B. Plugin Data 持久化边界（审计结论）
 
@@ -219,8 +222,8 @@ Unified Ledger 的保存经 `createObsidianPluginDataStore` → **串行化队�
 先前文档写 1190，为补入 “注释/引号保留”测试之前的数字。当前实际：
 
 ```
-test/mf-us-1-host-concurrency.test.js   19 pass
+test/mf-us-1-host-concurrency.test.js   20 pass
 test/mf-us-1-host-runtime.test.js       15 pass
 test/mf-us-1-creation-host.test.js      19 pass
-test/*.test.js                        1194 pass
+test/*.test.js                        1195 pass
 ```
