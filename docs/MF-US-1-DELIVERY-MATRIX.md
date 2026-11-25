@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-MIG-01（迁移预览、备份、恢复与稳定 UUID 初始化）
+> 最后更新：P2-US1-WRITE-01（持久事件账本、并发控制、单一可信写入核心）
 
 ## 0. 状态定义
 
@@ -41,7 +41,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 16 | EVT-05 | POSTPONE（只写 `mf_not_before`） | A5.2 | `TESTED` | 02 | T09；不可提前；无可见变化返回 no-op（见 §7.1） |
 | 17 | EVT-06 | MANUAL_SCHEDULE（写 `mf_ideal_due`、保留间隔） | A5.3 | `TESTED` | 02 | 强制记录 reason；清旧 not_before |
 | 18 | EVT-07 | SET_PRIORITY（不重排理想日期） | A5.4, A13 T10 | `TESTED` | 02 | T10；不改间隔/日期/A-Factor/子节点 |
-| 19 | EVT-08 | 事件对象契约、`eventId` 幂等、`mf_revision` 乐观并发 | A8, A13 T13 | `TESTED` | 02 | T13；内存账本；持久化未实现（见 WRITE-01/Q14） |
+| 19 | EVT-08 | 事件对象契约、`eventId` 幂等、`mf_revision` 乐观并发 | A8, A13 T13 | `TESTED` | 02/09 | T13；跨重启合成账本幂等；真实磁盘耐久性待 10/12 |
 | 20 | DUE-01 | Ideal Due / Not Before / Effective Due 三日期语义与分别统计 | A2.4 | `TESTED` | 02 | 三类统计分离，不用改日期掩盖积压 |
 | 21 | QUEUE-01 | 到期候选筛选（仅 Source/Extract、可调度状态） | A6.1 | `TESTED` | 03 | active 才入队；Card/历史状态/未到期分别报告；身份解析先于字段校验 |
 | 22 | QUEUE-02 | Priority 排序、逾期补偿、五级稳定键 | A6.2, A13 T14 | `TESTED` | 03 | T14；effectivePriority 不写回；缺创建日期排最后（Q16）；重复身份跨状态且覆盖非法字段记录 |
@@ -50,13 +50,13 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 25 | QUEUE-05 | 排期解释（算法日期 vs 行政日期分离） | A12 | `TESTED` | 01→03 | 队列逐条解释：到期、补偿、排序、预算、延期原因 |
 | 26 | MERCY-01 | Mercy 分配（明天起 W 槽、预算、超载标记） | A7.2 | `TESTED` | 04 | 原始 Priority 排序；无槽可容纳时取最少负载槽并标超载；不提前既有延期 |
 | 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `TESTED` | 04 | 只读、确定性；含 batchId、类型与有效成本快照；预览按日绑定，过期需重生成 |
-| 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `TESTED` | 04 | T16；可续撤销（already-undone/pendingCount）；重复身份与过期预览拒绝；持久化批次记录待 09（Q10） |
-| 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→07 | 已交付初始化/事件/队列/Mercy + mode/shadow 只读接口；`explainSchedule` 待后续 |
-| 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09 | 纯模式策略 + Shadow 只读；能力字段不可伪造、观察值唯一性校验、门禁复用；真实入口未接线 |
+| 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `TESTED` | 04/09 | T16；digest 确认 + intent 冻结 + next_review 同步投影 + 可信 undo；真实 UI 待 10 |
+| 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→09 | 增加 Unified 写入/恢复接口；`explainSchedule` 待后续 |
+| 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09 | 纯模式 + Shadow + Unified 单写入门禁；真实入口未接线 |
 | 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；现代/旧关系与事件字段冲突检测；writesPerformed=false |
 | 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `TESTED` | 08 | 私有存储 + 意图重算 + 计划/备份双向对应 + 引号键 add-only；真实 Vault 待 09/12 |
 | 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `TESTED` | 06/08 | 固定 UUID 批次清单 + 冲突检测 + 重试幂等；真实落盘待 09 |
-| 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `NOT_STARTED` | 09 | |
+| 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `TESTED` | 09 | Frontmatter 身份/revision 强校验 + 配置绑定账本 + 恢复；真实 Obsidian 待 10 |
 | 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |
 | 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
 | 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→08 | T01–T16 PASS；T17/T20 纯层证据含 5 级链；T19 PASS（PR-07）；T18 仍缺真实验收 |
