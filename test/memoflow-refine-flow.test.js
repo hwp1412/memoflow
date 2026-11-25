@@ -7,7 +7,7 @@ const {
   offsetToPos,
 } = require('../src/data/refine-editor.js');
 const { RefineHistoryStore } = require('../src/data/refine-store.js');
-const { splitContent } = require('../src/data/refine-history.js');
+const { splitContent, createRefineOperation, makeState } = require('../src/data/refine-history.js');
 
 const NOTE_PATH = 'Extracts/Refine.md';
 
@@ -154,6 +154,24 @@ function setup(t, {
 
 async function files(adapter) {
   return [...adapter.files.keys()].filter(path => path.endsWith('.json') && !path.includes('.state'));
+}
+
+function historyPath(store, id, name) {
+  return `${store.root}/${id}${name ? `.${name}` : ''}.json`;
+}
+
+async function seedExternalOperation(store, adapter, status = 'verified') {
+  const op = await createRefineOperation({
+    operationId: crypto.randomUUID(),
+    notePath: NOTE_PATH,
+    fullContent: '---\ntype: extract\npriority: 50\n---\nExternal base\n',
+    selection: { start: 0, end: 5 },
+    replacementText: 'External',
+  });
+  adapter.files.set(historyPath(store, op.operationId), JSON.stringify(op, null, 2));
+  const state = makeState(op.operationId, status);
+  adapter.files.set(historyPath(store, op.operationId, 'state'), JSON.stringify(state, null, 2));
+  return op;
 }
 
 test('normal refine writes history first, replaces only the body, saves and verifies', async (t) => {
@@ -512,4 +530,115 @@ test('ordinary text and Markdown link replacement remains allowed', async (t) =>
   assert.ok(result);
   assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi [link](https://example.com) world\n');
   assert.equal(app.disk.get(NOTE_PATH), editor.text);
+});
+
+test('legacy restore rejects a target changed while the confirmation modal is open', async (t) => {
+  const { app, adapter, editor, store, prompts, controller } = setup(t);
+  const refined = await controller.refineActive();
+  assert.ok(refined);
+  const body = editor.text;
+  prompts.restore = async () => {
+    for (const key of [...adapter.files.keys()]) {
+      if (key.includes(refined.operationId) && key.endsWith('.json') && !key.includes('.state')) adapter.files.delete(key);
+    }
+    return true;
+  };
+  const result = await controller.restoreActive();
+  assert.equal(result, null);
+  assert.equal(editor.text, body);
+  assert.equal(app.disk.get(NOTE_PATH), body);
+  assert.equal((await store.listEntries(NOTE_PATH)).length, 0);
+});
+
+test('legacy restore rejects target disappearing after prepared before body replacement', async (t) => {
+  const { app, adapter, editor, store, controller } = setup(t);
+  const refined = await controller.refineActive();
+  assert.ok(refined);
+  const body = editor.text;
+  const original = store.writeRestorePlan.bind(store);
+  store.writeRestorePlan = async plan => {
+    const result = await original(plan);
+    adapter.files.delete(historyPath(store, refined.operationId));
+    return result;
+  };
+  const result = await controller.restoreActive();
+  assert.equal(result, null);
+  assert.equal(editor.text, body);
+  assert.equal(app.disk.get(NOTE_PATH), body);
+  assert.equal((await store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+});
+
+test('legacy restore rejects target state changes after prepared', async (t) => {
+  const { app, adapter, editor, store, controller } = setup(t);
+  const refined = await controller.refineActive();
+  assert.ok(refined);
+  const body = editor.text;
+  const original = store.writeRestorePlan.bind(store);
+  store.writeRestorePlan = async plan => {
+    const result = await original(plan);
+    await store.writeStateEvent(refined.operationId, makeState(refined.operationId, 'conflict'));
+    return result;
+  };
+  const result = await controller.restoreActive();
+  assert.equal(result, null);
+  assert.equal(editor.text, body);
+  assert.equal(app.disk.get(NOTE_PATH), body);
+  const entries = await store.listEntries(NOTE_PATH);
+  assert.equal(entries.find(entry => entry.operation.restoreOf === refined.operationId).state.status, 'conflict');
+});
+
+test('legacy restore rejects history count growth after prepared', async (t) => {
+  const { app, adapter, editor, store, controller } = setup(t);
+  const refined = await controller.refineActive();
+  assert.ok(refined);
+  const body = editor.text;
+  const original = store.writeRestorePlan.bind(store);
+  store.writeRestorePlan = async plan => {
+    const result = await original(plan);
+    await seedExternalOperation(store, adapter, 'verified');
+    return result;
+  };
+  const result = await controller.restoreActive();
+  assert.equal(result, null);
+  assert.equal(editor.text, body);
+  assert.equal(app.disk.get(NOTE_PATH), body);
+  const entries = await store.listEntries(NOTE_PATH);
+  assert.equal(entries.find(entry => entry.operation.restoreOf === refined.operationId).state.status, 'conflict');
+});
+
+test('legacy restore rejects another unresolved record after prepared', async (t) => {
+  const { app, adapter, editor, store, controller } = setup(t);
+  const refined = await controller.refineActive();
+  assert.ok(refined);
+  const body = editor.text;
+  const original = store.writeRestorePlan.bind(store);
+  store.writeRestorePlan = async plan => {
+    const result = await original(plan);
+    await seedExternalOperation(store, adapter, 'prepared');
+    return result;
+  };
+  const result = await controller.restoreActive();
+  assert.equal(result, null);
+  assert.equal(editor.text, body);
+  assert.equal(app.disk.get(NOTE_PATH), body);
+  const entries = await store.listEntries(NOTE_PATH);
+  assert.equal(entries.find(entry => entry.operation.restoreOf === refined.operationId).state.status, 'conflict');
+});
+
+test('legacy restore rejects current file changes after prepared', async (t) => {
+  const { app, editor, store, controller } = setup(t);
+  const refined = await controller.refineActive();
+  assert.ok(refined);
+  const original = store.writeRestorePlan.bind(store);
+  store.writeRestorePlan = async plan => {
+    const result = await original(plan);
+    editor.text += 'external-after-prepared';
+    app.disk.set(NOTE_PATH, editor.text);
+    return result;
+  };
+  const result = await controller.restoreActive();
+  assert.equal(result, null);
+  assert.match(editor.text, /external-after-prepared$/);
+  assert.equal(app.disk.get(NOTE_PATH), editor.text);
+  assert.equal((await store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
 });

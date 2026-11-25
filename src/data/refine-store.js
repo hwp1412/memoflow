@@ -384,7 +384,7 @@ class RefineHistoryStore {
       currentNotePath: notePath,
       currentNoteType: currentType,
     });
-    return { latest, operation };
+    return { latest, operation, historyCount: (await this.listEntries(notePath)).length };
   }
 
   async planVersionRestore({
@@ -453,10 +453,11 @@ class RefineHistoryStore {
     return { status: 'ok', current: base, target, operation };
   }
 
-  async assertVersionRestoreTarget(operation, expectedHistoryCount = null) {
-    if (!operation || operation.schemaVersion !== 2 || !operation.restoreTarget) {
-      throw new RefineError('INVALID_RESTORE_TARGET', 'version restore operation is invalid');
+  async assertRestoreTarget(operation, expectedHistoryCount = null) {
+    if (!operation || !operation.restoreOf) {
+      throw new RefineError('NOT_RESTORE_OPERATION', 'operation is not a restore event');
     }
+    await validateOperationIntegrity(operation);
     const entries = await this.listEntries(operation.note.path);
     if (expectedHistoryCount != null && entries.length !== expectedHistoryCount) {
       throw new RefineError('HISTORY_CHANGED', 'history changed after prepare', {
@@ -465,6 +466,12 @@ class RefineHistoryStore {
       });
     }
     await validateHistoryRelationships(entries);
+    // The just-prepared operation is the only allowed unresolved entry. Any
+    // other unresolved/pending record is an external history change.
+    for (const entry of entries) {
+      if (entry.operation.operationId === operation.operationId) continue;
+      classifyCompletedEntry(entry);
+    }
     const target = entries.find(entry => entry.operation.operationId === operation.restoreOf);
     if (!target) {
       throw new RefineError('RESTORE_REFERENCE_MISSING', 'restore target disappeared after prepare');
@@ -478,6 +485,13 @@ class RefineHistoryStore {
       });
     }
     return target;
+  }
+
+  async assertVersionRestoreTarget(operation, expectedHistoryCount = null) {
+    if (!operation || operation.schemaVersion !== 2 || !operation.restoreTarget) {
+      throw new RefineError('INVALID_RESTORE_TARGET', 'version restore operation is invalid');
+    }
+    return this.assertRestoreTarget(operation, expectedHistoryCount);
   }
 
   // 1A only prepares the restore history/plan. 1B must revalidate the real
