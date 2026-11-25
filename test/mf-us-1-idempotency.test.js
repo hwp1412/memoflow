@@ -33,10 +33,11 @@ function makeTopic(overrides = {}) {
 function ev(n, type, options = {}) {
   return {
     eventId: eventId(n),
-    topicId: UUID,
+    topicId: options.topicId ?? UUID,
     type,
     expectedRevision: options.revision ?? 0,
     algorithmVersion: 1,
+    calendarDate: options.calendarDate ?? TODAY,
     payload: options.payload ?? null,
   };
 }
@@ -274,4 +275,96 @@ test('property: replaying any prefix twice never doubles a review', () => {
     assert.equal(replayStep.topic.review_count, expected);
     assert.equal(replayStep.topic.mf_revision, expected);
   }
+});
+
+// ---- topic identity on duplicate (owner review fix 2) ---------------------
+
+test('a duplicate event can never be replayed against a different topic', () => {
+  const OTHER_TOPIC = '9b2f4c1e-0000-4000-8000-000000000002';
+  const topicA = makeTopic();
+  const e1 = ev(1, 'ADVANCED');
+  const first = applyEventWithLedger(createEventLedger(), topicA, e1, SPEC_CONFIG, TODAY);
+  assert.equal(first.topic.review_count, 1);
+
+  const topicB = { ...makeTopic(), mf_id: OTHER_TOPIC };
+  assert.throws(
+    () => applyEventWithLedger(first.ledger, topicB, e1, SPEC_CONFIG, TODAY),
+    error => {
+      assert.equal(error.code, 'E_EVENT_TOPIC_CONFLICT');
+      assert.equal(error.details.eventId, e1.eventId);
+      assert.equal(error.details.ledgerTopicId, UUID);
+      assert.equal(error.details.currentTopicId, OTHER_TOPIC);
+      return true;
+    }
+  );
+
+  // Topic B, the ledger and the review count are all untouched.
+  assert.equal(topicB.review_count, 0);
+  assert.equal(topicB.mf_revision, 0);
+  assert.equal(topicB.mf_last_event_id, null);
+  assert.equal(Object.keys(first.ledger.entries).length, 1);
+  assert.equal(lookupEvent(first.ledger, e1.eventId), first.ledger.entries[e1.eventId]);
+});
+
+// ---- fingerprint hardening (owner review fix 3) ---------------------------
+
+test('fingerprints reject values JSON would silently collapse', () => {
+  const topic = makeTopic();
+  const ledger = createEventLedger();
+  const rejected = [
+    ev(11, 'POSTPONE', { payload: { days: NaN } }),
+    ev(12, 'POSTPONE', { payload: { days: undefined } }),
+    ev(13, 'SET_PRIORITY', { payload: { priority: Infinity } }),
+  ];
+  for (const event of rejected) {
+    expectCode(() => applyEventWithLedger(ledger, topic, event, SPEC_CONFIG, TODAY), 'E_EVENT_PAYLOAD_INVALID');
+  }
+  assert.deepEqual(ledger.entries, {}, 'rejected events never enter the ledger');
+
+  // null is legal JSON and must not be confused with undefined: it survives the
+  // fingerprint and is rejected by the POSTPONE value check instead.
+  expectCode(
+    () => applyEventWithLedger(ledger, topic, ev(14, 'POSTPONE', { payload: { days: null } }), SPEC_CONFIG, TODAY),
+    'E_POSTPONE_DAYS_INVALID'
+  );
+});
+
+test('different value types and values never share a fingerprint', () => {
+  assert.notEqual(
+    eventFingerprint(ev(21, 'POSTPONE', { payload: { days: 7 } })),
+    eventFingerprint(ev(21, 'POSTPONE', { payload: { days: '7' } }))
+  );
+  assert.notEqual(
+    eventFingerprint(ev(22, 'SET_PRIORITY', { payload: { priority: 0 } })),
+    eventFingerprint(ev(22, 'SET_PRIORITY', { payload: { priority: '0' } }))
+  );
+  assert.notEqual(
+    eventFingerprint(ev(23, 'POSTPONE', { payload: { days: 7 } })),
+    eventFingerprint(ev(23, 'POSTPONE', { payload: { days: 8 } }))
+  );
+  assert.notEqual(
+    eventFingerprint(ev(24, 'MANUAL_SCHEDULE', { payload: { idealDue: '2026-12-01', reason: 'a' } })),
+    eventFingerprint(ev(24, 'MANUAL_SCHEDULE', { payload: { idealDue: '2026-12-01', reason: 'b' } }))
+  );
+  // createdAt participates in the identity too.
+  const base = ev(25, 'ADVANCED');
+  assert.notEqual(
+    eventFingerprint({ ...base, createdAt: '2026-11-24T09:00:00+08:00' }),
+    eventFingerprint({ ...base, createdAt: '2026-11-24T09:00:01+08:00' })
+  );
+});
+
+test('the same eventId with a different valid payload is a conflict', () => {
+  const first = applyEventWithLedger(
+    createEventLedger(),
+    makeTopic(),
+    ev(31, 'POSTPONE', { payload: { days: 7 } }),
+    SPEC_CONFIG,
+    TODAY
+  );
+  expectCode(
+    () => applyEventWithLedger(first.ledger, first.topic, ev(31, 'POSTPONE', { payload: { days: 8 } }), SPEC_CONFIG, TODAY),
+    'E_EVENT_ID_CONFLICT'
+  );
+  assert.equal(first.topic.mf_not_before, '2026-12-01');
 });

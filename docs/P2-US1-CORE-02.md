@@ -30,9 +30,9 @@
 | `src/scheduling/event-ledger.js` | 内存账本、幂等协调、内容指纹 | 新增 |
 | `src/scheduling/schema.js` | 新增 `validateStatus/validateRevision/validateCount/validateTopic` | 修改 |
 | `src/scheduling/index.js` | 导出新模块 | 修改 |
-| `test/mf-us-1-events.test.js` | 32 项事件与状态机测试 | 新增 |
+| `test/mf-us-1-events.test.js` | 40 项事件、时间契约与 payload 测试 | 新增 |
 | `test/mf-us-1-due.test.js` | 10 项到期语义测试 | 新增 |
-| `test/mf-us-1-idempotency.test.js` | 15 项幂等/并发/重放测试 | 新增 |
+| `test/mf-us-1-idempotency.test.js` | 19 项幂等/身份/指纹/重放测试 | 新增 |
 | `docs/MF-US-1-DELIVERY-MATRIX.md` | 状态更新 | 修改 |
 | `docs/P2-US1-CORE-02.md` | 本说明 | 新增 |
 
@@ -123,10 +123,17 @@ eventFingerprint(event) -> string                        // 确定性内容指�
 6. **A-Factor 恒定**（Q13）：事件不写 `a_factor`，也不复用 Toolkit 的 progress-aware/quality 公式。
 7. **COMPLETE/DISMISS 保留 `mf_not_before`**（Q7）：规范只要求保留间隔与日期历史；保留行政限制有利于撤销后恢复，且不产生评阅。
 8. **`last_reviewed` 采用 ISO 日期**：与 `mf_*` 一致；旧库的 Vault 日期格式由 PR-06 适配器归一化后再进入核心。
+9. **事件时间契约（A8，审查修复 1）**：事件必须携带 `calendarDate` 或 `createdAt`，否则 `E_EVENT_TIME_REQUIRED`。
+   - `calendarDate`：严格 ISO 本地日期，必须等于显式 `today`；
+   - `createdAt`：必须带显式偏移（`+HH:MM` 或 `Z`），格式与时钟字段严格校验；带数字偏移时其字面日期即本地日期，必须等于 `today`；
+   - `Z`（UTC）时间戳**不能**单独确定本地日期：必须另附 `calendarDate`（两者一致），否则 `E_EVENT_TIME_INVALID`；核心从不做时区换算；
+   - 事件是**当日事件**：跨日未应用的事件必须以新 `eventId` 重建；已应用事件的跨日重试仍由账本按重复处理（不重新校验日期）。
+10. **Payload 白名单（审查修复 3）**：每类事件只允许固定键（`POSTPONE.days`、`MANUAL_SCHEDULE.idealDue/reason`、`SET_PRIORITY.priority`、`REACTIVATE.idealDue`，其余为空）。未知键、`NaN`/`Infinity`/`undefined` 一律 `E_EVENT_PAYLOAD_INVALID`，不依赖 JSON 隐式转换。
+11. **重复事件必须校验 Topic 身份（审查修复 2）**：账本命中时同时要求 `topic.mf_id === 账本.topicId === event.topicId`，否则 `E_EVENT_TOPIC_CONFLICT`，绝不把 Topic A 的事件当作 Topic B 的重复。
 
 ## 8. 幂等模型与已明确的局限
 
-- **判定顺序**：账本命中 → 返回存储结果；未命中 → revision 校验 → 状态机。这保证“已成功处理的重试”不会被误报为 revision 冲突。
+- **判定顺序**：账本命中 → Topic 身份校验 → 内容指纹校验 → 返回存储结果；未命中 → revision 校验 → 状态机。这保证“已成功处理的重试”不会被误报为 revision 冲突，也不会跨 Topic 复用结果。
 - **同 ID 异内容**：`eventFingerprint`（type / topicId / expectedRevision / algorithmVersion / calendarDate / payload 的规范化 JSON）不同 → `E_EVENT_ID_CONFLICT`，绝不复用旧结果。
 - **no-op 也记账**（status `noop`），使重放保持原结果；**失败不记账**，修正后可重试。
 - **账本丢失**：旧事件重试的 `expectedRevision` 必然过期 → `E_REVISION_CONFLICT`，不会静默重复计入评阅。
@@ -149,8 +156,8 @@ eventFingerprint(event) -> string                        // 确定性内容指�
 ## 10. 测试证据
 
 ```
-node --test test/mf-us-1-*.test.js     tests 123  pass 123  fail 0   （PR-01 66 + PR-02 57）
-node --test test/*.test.js             tests 503  pass 503  fail 0
+node --test test/mf-us-1-*.test.js     tests 135  pass 135  fail 0   （PR-01 66 + PR-02 69）
+node --test test/*.test.js             tests 515  pass 515  fail 0
 node --test $(排除 mf-us-1-)            tests 380  pass 380  fail 0   （243b14c 基线未变）
 node scripts/validate-release.mjs      valid
 node scripts/build.mjs --dry-run       no files written

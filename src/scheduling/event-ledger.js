@@ -36,26 +36,44 @@ function assertLedger(ledger, field = 'ledger') {
   return ledger;
 }
 
-function stableStringify(value) {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  const keys = Object.keys(value).sort();
-  return `{${keys.map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+// Canonical, typed encoding for fingerprints. Every value carries its type tag,
+// so `1` and `"1"` never collide, and values JSON.stringify would flatten
+// (NaN/Infinity -> null, undefined -> omitted) are rejected instead of being
+// silently merged into another event's identity.
+function encodeFingerprintValue(value, path = 'value') {
+  if (value === null) return 'null';
+  const type = typeof value;
+  if (type === 'string') return `s${JSON.stringify(value)}`;
+  if (type === 'boolean') return value ? 'true' : 'false';
+  if (type === 'number') {
+    if (!Number.isFinite(value)) {
+      fail('E_EVENT_PAYLOAD_INVALID', `event content contains a non-finite number at ${path}`, { path, value: String(value) });
+    }
+    return `d${String(value)}`;
+  }
+  if (Array.isArray(value)) {
+    return `a[${value.map((item, index) => encodeFingerprintValue(item, `${path}[${index}]`)).join(',')}]`;
+  }
+  if (type === 'object') {
+    const keys = Object.keys(value).sort();
+    return `o{${keys.map(key => `${JSON.stringify(key)}:${encodeFingerprintValue(value[key], `${path}.${key}`)}`).join(',')}}`;
+  }
+  fail('E_EVENT_PAYLOAD_INVALID', `event content contains an unsupported ${type} value at ${path}`, { path, type });
 }
 
 // Identity of an event's content. A retry with the same id must carry the same
 // content; anything else is an id collision, not a retry.
 function eventFingerprint(event) {
-  return stableStringify({
-    eventId: event.eventId,
+  return encodeFingerprintValue({
+    eventId: event.eventId ?? null,
     topicId: event.topicId ?? null,
     type: event.type ?? null,
     expectedRevision: event.expectedRevision ?? null,
     algorithmVersion: event.algorithmVersion ?? null,
     calendarDate: event.calendarDate ?? null,
+    createdAt: event.createdAt ?? null,
     payload: event.payload ?? null,
-  });
+  }, 'event');
 }
 
 function lookupEvent(ledger, eventId) {
@@ -113,6 +131,16 @@ function applyEventWithLedger(ledger, topic, event, config = undefined, today = 
     : null;
 
   if (existing) {
+    // The duplicate shortcut must not bypass Topic identity: an event that was
+    // processed against Topic A can never be replayed against Topic B.
+    if (event.topicId !== existing.topicId || topic.mf_id !== existing.topicId) {
+      fail('E_EVENT_TOPIC_CONFLICT', 'this eventId was processed against a different topic', {
+        eventId: event.eventId,
+        eventTopicId: event.topicId ?? null,
+        ledgerTopicId: existing.topicId,
+        currentTopicId: topic.mf_id ?? null,
+      });
+    }
     if (existing.fingerprint !== fingerprint) {
       fail('E_EVENT_ID_CONFLICT', `eventId ${event.eventId} was already used by a different event payload`, {
         eventId: event.eventId,
@@ -157,6 +185,7 @@ module.exports = {
   createEventLedger,
   assertLedger,
   eventFingerprint,
+  encodeFingerprintValue,
   lookupEvent,
   applyEventWithLedger,
 };

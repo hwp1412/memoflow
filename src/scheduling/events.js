@@ -81,6 +81,127 @@ const AUTHORITATIVE_FIELDS = Object.freeze([
 
 const MANUAL_REASON_MAX = 500;
 
+// Allowed payload keys per event type (owner review fix 3). Anything else is
+// rejected instead of being silently folded into a fingerprint.
+const PAYLOAD_SCHEMA = Object.freeze({
+  ADVANCED: Object.freeze([]),
+  HOLD: Object.freeze([]),
+  SOON: Object.freeze([]),
+  SKIP: Object.freeze([]),
+  POSTPONE: Object.freeze(['days']),
+  MANUAL_SCHEDULE: Object.freeze(['idealDue', 'reason']),
+  SET_PRIORITY: Object.freeze(['priority']),
+  COMPLETE: Object.freeze([]),
+  DISMISS: Object.freeze([]),
+  REACTIVATE: Object.freeze(['idealDue']),
+});
+
+// SPEC A8: an event carries createdAt or a local calendar date. We accept both
+// but never convert time zones: a numeric offset means the literal date part is
+// the local date, and a "Z" timestamp cannot define a local date on its own.
+const TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+function parseCreatedAt(value) {
+  if (typeof value !== 'string') {
+    fail('E_EVENT_TIME_INVALID', 'event.createdAt must be an ISO-8601 string with an explicit offset', {
+      field: 'createdAt',
+      value,
+    });
+  }
+  const match = TIMESTAMP_RE.exec(value);
+  if (!match) {
+    fail('E_EVENT_TIME_INVALID', 'event.createdAt must look like 2026-11-24T09:30:00+08:00 or ...Z', {
+      field: 'createdAt',
+      value,
+    });
+  }
+  const [, year, month, day, hours, minutes, seconds, offset] = match;
+  const datePart = `${year}-${month}-${day}`;
+  assertDateString(datePart, 'createdAt');
+  const hh = Number(hours);
+  const mm = Number(minutes);
+  const ss = seconds == null ? 0 : Number(seconds);
+  if (hh > 23 || mm > 59 || ss > 59) {
+    fail('E_EVENT_TIME_INVALID', 'event.createdAt has an out-of-range clock time', { field: 'createdAt', value });
+  }
+  if (offset !== 'Z') {
+    const offsetHours = Number(offset.slice(1, 3));
+    const offsetMinutes = Number(offset.slice(4, 6));
+    if (offsetHours > 23 || offsetMinutes > 59) {
+      fail('E_EVENT_TIME_INVALID', 'event.createdAt has an out-of-range UTC offset', { field: 'createdAt', value });
+    }
+  }
+  return { date: datePart, offset };
+}
+
+function validateEventTime(event, today) {
+  const hasCalendarDate = event.calendarDate != null;
+  const hasCreatedAt = event.createdAt != null;
+  if (!hasCalendarDate && !hasCreatedAt) {
+    fail('E_EVENT_TIME_REQUIRED', 'event must carry calendarDate or createdAt (SPEC A8)', { field: 'calendarDate' });
+  }
+
+  let calendarDate = null;
+  if (hasCalendarDate) {
+    calendarDate = assertDateString(event.calendarDate, 'calendarDate');
+    if (calendarDate !== today) {
+      fail('E_EVENT_DATE_MISMATCH', 'event.calendarDate does not match the supplied today', {
+        field: 'calendarDate',
+        value: event.calendarDate,
+        today,
+      });
+    }
+  }
+
+  if (hasCreatedAt) {
+    const parsed = parseCreatedAt(event.createdAt);
+    if (parsed.offset === 'Z') {
+      // Refuse to infer a local date from UTC; the caller must say which day it is.
+      if (!hasCalendarDate) {
+        fail('E_EVENT_TIME_INVALID', 'a UTC createdAt cannot determine the local calendar date; also supply calendarDate', {
+          field: 'createdAt',
+          value: event.createdAt,
+        });
+      }
+      return;
+    }
+    if (parsed.date !== today) {
+      fail('E_EVENT_DATE_MISMATCH', 'event.createdAt does not fall on the supplied today', {
+        field: 'createdAt',
+        value: event.createdAt,
+        today,
+      });
+    }
+    if (hasCalendarDate && parsed.date !== calendarDate) {
+      fail('E_EVENT_DATE_MISMATCH', 'event.createdAt and event.calendarDate disagree', {
+        field: 'createdAt',
+        value: event.createdAt,
+        calendarDate,
+      });
+    }
+  }
+}
+
+function validatePayloadSchema(type, payload) {
+  const allowed = PAYLOAD_SCHEMA[type] || [];
+  if (payload == null) {
+    if (allowed.length > 0) {
+      fail('E_EVENT_PAYLOAD_INVALID', `payload for ${type} is required and must contain ${allowed.join(', ')}`, {
+        type,
+        payload,
+        allowed,
+      });
+    }
+    return;
+  }
+  assertPlainObject(payload, 'payload');
+  for (const key of Object.keys(payload)) {
+    if (!allowed.includes(key)) {
+      fail('E_EVENT_PAYLOAD_INVALID', `payload.${key} is not allowed for ${type}`, { type, key, allowed });
+    }
+  }
+}
+
 function isReviewEvent(type) {
   return REVIEW_EVENTS.includes(type);
 }
@@ -108,17 +229,8 @@ function validateEvent(event, topic, today, field = 'event') {
     });
   }
   validateRevision(event.expectedRevision, 'expectedRevision');
-  if (event.calendarDate != null) {
-    assertDateString(event.calendarDate, 'calendarDate');
-    if (event.calendarDate !== today) {
-      fail('E_EVENT_DATE_MISMATCH', 'event.calendarDate does not match the supplied today', {
-        field: 'calendarDate',
-        value: event.calendarDate,
-        today,
-      });
-    }
-  }
-  if (event.payload != null) assertPlainObject(event.payload, 'payload');
+  validateEventTime(event, today);
+  validatePayloadSchema(event.type, event.payload);
   return event;
 }
 
@@ -485,7 +597,11 @@ module.exports = {
   ALLOWED_SOURCE_STATUS,
   AUTHORITATIVE_FIELDS,
   MANUAL_REASON_MAX,
+  PAYLOAD_SCHEMA,
   isReviewEvent,
+  parseCreatedAt,
+  validateEventTime,
+  validatePayloadSchema,
   validateEvent,
   applyEvent,
 };

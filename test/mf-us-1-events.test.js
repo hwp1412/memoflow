@@ -34,7 +34,7 @@ function makeTopic(overrides = {}) {
 }
 
 let seq = 0;
-function ev(type, { payload = null, revision = 0, id = null, topicId = UUID, today = null, algorithmVersion = 1 } = {}) {
+function ev(type, { payload = null, revision = 0, id = null, topicId = UUID, today = TODAY, algorithmVersion = 1 } = {}) {
   seq += 1;
   return {
     eventId: id || eventId(seq),
@@ -167,7 +167,7 @@ test('POSTPONE validates its payload', () => {
   for (const days of [0, -1, 1.5, '7', 3651, null]) {
     expectCode(() => applyEvent(topic, ev('POSTPONE', { payload: { days } }), SPEC_CONFIG, TODAY), 'E_POSTPONE_DAYS_INVALID');
   }
-  expectCode(() => applyEvent(topic, ev('POSTPONE'), SPEC_CONFIG, TODAY), 'E_OBJECT_REQUIRED');
+  expectCode(() => applyEvent(topic, ev('POSTPONE'), SPEC_CONFIG, TODAY), 'E_EVENT_PAYLOAD_INVALID');
 });
 
 // ---- MANUAL_SCHEDULE (SPEC A5.3) -------------------------------------------
@@ -311,7 +311,7 @@ test('REACTIVATE requires an explicit restore date and never counts a review', (
 
 test('REACTIVATE without a date is rejected', () => {
   const topic = makeTopic({ status: 'done' });
-  expectCode(() => applyEvent(topic, ev('REACTIVATE'), SPEC_CONFIG, TODAY), 'E_OBJECT_REQUIRED');
+  expectCode(() => applyEvent(topic, ev('REACTIVATE'), SPEC_CONFIG, TODAY), 'E_EVENT_PAYLOAD_INVALID');
   expectCode(() => applyEvent(topic, ev('REACTIVATE', { payload: {} }), SPEC_CONFIG, TODAY), 'E_REACTIVATE_DATE_REQUIRED');
   expectCode(
     () => applyEvent(topic, ev('REACTIVATE', { payload: { idealDue: '2026-13-01' } }), SPEC_CONFIG, TODAY),
@@ -402,7 +402,8 @@ test('applyEvent never mutates its inputs', () => {
     type: 'ADVANCED',
     expectedRevision: 2,
     algorithmVersion: 1,
-    payload: Object.freeze({ note: 'x' }),
+    calendarDate: TODAY,
+    payload: null,
   });
   const snapshot = JSON.parse(JSON.stringify({ topic, event }));
   const result = applyEvent(topic, event, SPEC_CONFIG, TODAY);
@@ -421,20 +422,20 @@ test('applyEvent is deterministic', () => {
 
 test('dates stay correct across month, year and DST boundaries', () => {
   const monthEnd = makeTopic({ mf_interval_days: 2, a_factor: 1.5 });
-  const advanced = applyEvent(monthEnd, ev('ADVANCED'), SPEC_CONFIG, '2026-11-30');
+  const advanced = applyEvent(monthEnd, ev('ADVANCED', { today: '2026-11-30' }), SPEC_CONFIG, '2026-11-30');
   assert.equal(advanced.topic.mf_interval_days, 3);
   assert.equal(advanced.topic.mf_ideal_due, '2026-12-03');
 
   const yearEnd = makeTopic({ mf_interval_days: 1 });
-  const held = applyEvent(yearEnd, ev('HOLD'), SPEC_CONFIG, '2026-12-31');
+  const held = applyEvent(yearEnd, ev('HOLD', { today: '2026-12-31' }), SPEC_CONFIG, '2026-12-31');
   assert.equal(held.topic.mf_ideal_due, '2027-01-01');
 
   const leap = makeTopic({ mf_interval_days: 1 });
-  const leapHeld = applyEvent(leap, ev('HOLD'), SPEC_CONFIG, '2028-02-28');
+  const leapHeld = applyEvent(leap, ev('HOLD', { today: '2028-02-28' }), SPEC_CONFIG, '2028-02-28');
   assert.equal(leapHeld.topic.mf_ideal_due, '2028-02-29');
 
   const dst = makeTopic({ mf_interval_days: 1 });
-  const dstHeld = applyEvent(dst, ev('HOLD'), SPEC_CONFIG, '2026-03-08');
+  const dstHeld = applyEvent(dst, ev('HOLD', { today: '2026-03-08' }), SPEC_CONFIG, '2026-03-08');
   assert.equal(dstHeld.topic.mf_ideal_due, '2026-03-09');
 });
 
@@ -461,4 +462,137 @@ test('no event ever changes the A-Factor (Q13)', () => {
 test('review events are exactly ADVANCED, HOLD and SOON', () => {
   assert.deepEqual([...REVIEW_EVENTS], ['ADVANCED', 'HOLD', 'SOON']);
   assert.equal(EVENT_TYPES.length, 10);
+});
+
+// ---- event time contract (SPEC A8, owner review fix 1) --------------------
+
+test('an event must carry calendarDate or createdAt (A8)', () => {
+  const topic = makeTopic();
+  expectCode(() => applyEvent(topic, ev('ADVANCED', { today: null }), SPEC_CONFIG, TODAY), 'E_EVENT_TIME_REQUIRED');
+  expectCode(() => applyEvent(topic, ev('SKIP', { today: null }), SPEC_CONFIG, TODAY), 'E_EVENT_TIME_REQUIRED');
+});
+
+test('calendarDate is a strict local date and must match today', () => {
+  const topic = makeTopic();
+  expectCode(() => applyEvent(topic, ev('ADVANCED', { today: '2026-02-30' }), SPEC_CONFIG, TODAY), 'E_DATE_INVALID');
+  expectCode(() => applyEvent(topic, ev('ADVANCED', { today: '2026-1-1' }), SPEC_CONFIG, TODAY), 'E_DATE_FORMAT');
+  expectCode(() => applyEvent(topic, ev('ADVANCED', { today: '2026-11-25' }), SPEC_CONFIG, TODAY), 'E_EVENT_DATE_MISMATCH');
+});
+
+test('createdAt with an explicit offset is a valid alternative to calendarDate', () => {
+  const topic = makeTopic();
+  const event = {
+    eventId: eventId(701),
+    topicId: UUID,
+    type: 'ADVANCED',
+    expectedRevision: 0,
+    algorithmVersion: 1,
+    createdAt: '2026-11-24T09:30:00+08:00',
+  };
+  const result = applyEvent(topic, event, SPEC_CONFIG, TODAY);
+  assert.equal(result.applied, true);
+  assert.equal(result.topic.last_reviewed, TODAY);
+  assert.equal(result.topic.mf_ideal_due, '2026-11-29'); // today + 5, not the timestamp's offset
+});
+
+test('createdAt is validated without converting time zones', () => {
+  const topic = makeTopic();
+  const base = {
+    eventId: eventId(702),
+    topicId: UUID,
+    type: 'ADVANCED',
+    expectedRevision: 0,
+    algorithmVersion: 1,
+  };
+  // Not ISO-8601 with an offset.
+  expectCode(
+    () => applyEvent(topic, { ...base, createdAt: '2026-11-24 09:30' }, SPEC_CONFIG, TODAY),
+    'E_EVENT_TIME_INVALID'
+  );
+  expectCode(
+    () => applyEvent(topic, { ...base, createdAt: '2026-11-24T09:30:00' }, SPEC_CONFIG, TODAY),
+    'E_EVENT_TIME_INVALID'
+  );
+  // Impossible clock time / impossible calendar date.
+  expectCode(
+    () => applyEvent(topic, { ...base, createdAt: '2026-11-24T25:00:00+08:00' }, SPEC_CONFIG, TODAY),
+    'E_EVENT_TIME_INVALID'
+  );
+  expectCode(
+    () => applyEvent(topic, { ...base, createdAt: '2026-11-24T09:30:00+24:00' }, SPEC_CONFIG, TODAY),
+    'E_EVENT_TIME_INVALID'
+  );
+  expectCode(
+    () => applyEvent(topic, { ...base, createdAt: '2026-02-30T09:30:00+08:00' }, SPEC_CONFIG, TODAY),
+    'E_DATE_INVALID'
+  );
+  // The literal local date must be today.
+  expectCode(
+    () => applyEvent(topic, { ...base, createdAt: '2026-11-23T23:59:00+08:00' }, SPEC_CONFIG, TODAY),
+    'E_EVENT_DATE_MISMATCH'
+  );
+});
+
+test('a UTC createdAt cannot define the local calendar date on its own', () => {
+  const topic = makeTopic();
+  const base = {
+    eventId: eventId(703),
+    topicId: UUID,
+    type: 'ADVANCED',
+    expectedRevision: 0,
+    algorithmVersion: 1,
+    createdAt: '2026-11-24T01:30:00Z',
+  };
+  expectCode(() => applyEvent(topic, base, SPEC_CONFIG, TODAY), 'E_EVENT_TIME_INVALID');
+  // With an explicit local date the UTC timestamp is audit-only.
+  const withDate = applyEvent(topic, { ...base, calendarDate: TODAY }, SPEC_CONFIG, TODAY);
+  assert.equal(withDate.applied, true);
+  expectCode(
+    () => applyEvent(topic, { ...base, calendarDate: '2026-11-23' }, SPEC_CONFIG, TODAY),
+    'E_EVENT_DATE_MISMATCH'
+  );
+});
+
+test('createdAt and calendarDate must describe the same local day', () => {
+  const topic = makeTopic();
+  const event = {
+    eventId: eventId(704),
+    topicId: UUID,
+    type: 'ADVANCED',
+    expectedRevision: 0,
+    algorithmVersion: 1,
+    calendarDate: TODAY,
+    createdAt: '2026-11-23T12:00:00+08:00',
+  };
+  expectCode(() => applyEvent(topic, event, SPEC_CONFIG, TODAY), 'E_EVENT_DATE_MISMATCH');
+});
+
+// ---- payload schema (owner review fix 3) ----------------------------------
+
+test('payload keys are restricted per event type', () => {
+  const invalid = [
+    ['POSTPONE', { days: 7, note: 'x' }],
+    ['ADVANCED', { note: 'x' }],
+    ['COMPLETE', { status: 'done' }],
+    ['SET_PRIORITY', { priority: 10, extra: true }],
+    ['MANUAL_SCHEDULE', { idealDue: '2026-12-01', reason: 'r', extra: 1 }],
+    ['REACTIVATE', { idealDue: '2026-12-01', reason: 'r' }],
+  ];
+  for (const [type, payload] of invalid) {
+    const topic = makeTopic({ status: type === 'REACTIVATE' ? 'done' : 'active' });
+    expectCode(
+      () => applyEvent(topic, ev(type, { payload, revision: 0 }), SPEC_CONFIG, TODAY),
+      'E_EVENT_PAYLOAD_INVALID'
+    );
+  }
+});
+
+test('payload values must be of the declared primitive type', () => {
+  const topic = makeTopic();
+  expectCode(() => applyEvent(topic, ev('POSTPONE', { payload: { days: '7' } }), SPEC_CONFIG, TODAY), 'E_POSTPONE_DAYS_INVALID');
+  expectCode(() => applyEvent(topic, ev('SET_PRIORITY', { payload: { priority: '10' } }), SPEC_CONFIG, TODAY), 'E_PRIORITY_TYPE');
+  expectCode(
+    () => applyEvent(topic, ev('MANUAL_SCHEDULE', { payload: { idealDue: 20261201, reason: 'r' } }), SPEC_CONFIG, TODAY),
+    'E_DATE_FORMAT'
+  );
 });
