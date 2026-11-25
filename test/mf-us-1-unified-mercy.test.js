@@ -14,6 +14,7 @@ const {
   MemoryBatchStore,
   issueSyntheticUnifiedCapability,
   issueSyntheticMercyConfirmation,
+  mercyBatchDigest,
 } = require('../src/scheduling/index.js');
 const { makeTopic, uuid } = require('./helpers/unified-fixtures.js');
 
@@ -47,7 +48,7 @@ function setupMercy() {
     storage,
     batchStore,
     capability: issueSyntheticUnifiedCapability(),
-    confirmation: issueSyntheticMercyConfirmation('mercy-batch'),
+    confirmation: issueSyntheticMercyConfirmation('mercy-batch', batch.previewDigest),
   };
   return { first, second, storage, batchStore, plan, batch, deps };
 }
@@ -166,16 +167,17 @@ function rawBatch(entries, batchId = 'mercy-batch') {
     writesPerformed: false,
     counts: {},
   };
+  batch.previewDigest = mercyBatchDigest(batch);
   return batch;
 }
 
-function rawDeps(storage, batchStore, batchId = 'mercy-batch') {
+function rawDeps(storage, batchStore, batch) {
   return {
     mode: { mode: 'unified' },
     storage,
     batchStore,
     capability: issueSyntheticUnifiedCapability(),
-    confirmation: issueSyntheticMercyConfirmation(batchId),
+    confirmation: issueSyntheticMercyConfirmation(batch.batchId, batch.previewDigest),
   };
 }
 
@@ -184,7 +186,7 @@ test('a Mercy batch can never target an SR card', () => {
   const storage = new SyntheticUnifiedStorage({ [card.path]: card.entry });
   const batchStore = new MemoryBatchStore();
   const batch = rawBatch([{ topicId: card.mfId }]);
-  const result = applyUnifiedMercyBatch(batch, rawDeps(storage, batchStore));
+  const result = applyUnifiedMercyBatch(batch, rawDeps(storage, batchStore, batch));
   assert.equal(result.batch.entries[0].status, 'failed');
   assert.equal(result.batch.entries[0].error.code, 'E_TOPIC_TYPE');
   assert.equal(storage.read(card.path).frontmatter.mf_not_before, null);
@@ -200,7 +202,7 @@ test('done, dismissed and un-migrated targets are refused', () => {
     const storage = new SyntheticUnifiedStorage({ [topic.path]: topic.entry });
     const batchStore = new MemoryBatchStore();
     const batch = rawBatch([{ topicId: topic.mfId }]);
-    const result = applyUnifiedMercyBatch(batch, rawDeps(storage, batchStore));
+    const result = applyUnifiedMercyBatch(batch, rawDeps(storage, batchStore, batch));
     assert.equal(result.batch.entries[0].status, 'failed', name);
     assert.equal(result.batch.entries[0].error.code, expected, name);
     assert.equal(storage.read(topic.path).frontmatter.mf_not_before, null, name);
@@ -211,7 +213,7 @@ test('a non-UUID mercy target is rejected before any write', () => {
   const storage = new SyntheticUnifiedStorage({});
   const batchStore = new MemoryBatchStore();
   const batch = rawBatch([{ topicId: 'not-a-uuid', operationId: 'mercy-batch:not-a-uuid' }]);
-  assert.throws(() => applyUnifiedMercyBatch(batch, rawDeps(storage, batchStore)),
+  assert.throws(() => applyUnifiedMercyBatch(batch, rawDeps(storage, batchStore, batch)),
     error => error.code === 'E_TOPIC_ID_INVALID');
 });
 
@@ -328,4 +330,142 @@ test('a partial undo can be continued', () => {
   const retried = undoUnifiedMercyBatch(context.batch, context.deps);
   assert.equal(retried.batch.entries.every(item => item.status === 'rolled-back'), true);
   assert.equal(retried.batch.status, 'rolled-back');
+});
+
+// ---- confirmation/preview binding, intent immutability, trusted undo -----
+
+test('a confirmation is bound to the exact preview and cannot be reused after edits', () => {
+  const context = setupMercy();
+  for (const mutate of [
+    batch => { batch.entries[0].notBeforeAfter = '2026-11-26'; },
+    batch => { batch.entries[0].revisionBefore += 1; batch.entries[0].revisionAfter += 1; },
+    batch => { batch.entries[0].topicId = uuid(3); batch.entries[0].operationId = `mercy-batch:${uuid(3)}`; },
+  ]) {
+    const tampered = JSON.parse(JSON.stringify(context.batch));
+    mutate(tampered);
+    assert.throws(() => applyUnifiedMercyBatch(tampered, context.deps), error => error.code === 'E_PREVIEW_INTEGRITY');
+  }
+
+  const recomputed = JSON.parse(JSON.stringify(context.batch));
+  recomputed.entries[0].notBeforeAfter = '2026-11-27';
+  recomputed.previewDigest = mercyBatchDigest(recomputed);
+  assert.throws(() => applyUnifiedMercyBatch(recomputed, context.deps), error => error.code === 'E_MERCY_CONFIRMATION_MISMATCH');
+});
+
+test('a persisted intent is never regenerated on retry', () => {
+  const context = setupMercy();
+  context.storage.failNextReadAfterWrite('Sources/1.md');
+  applyUnifiedMercyBatch(context.batch, context.deps);
+  const persisted = context.batchStore.get('mercy-batch');
+  const first = persisted.entries.find(item => item.topicId === uuid(1));
+  const originalIntent = JSON.parse(JSON.stringify(first.intent));
+  assert.equal(first.status, 'uncertain');
+
+  const retried = applyUnifiedMercyBatch(context.batch, context.deps);
+  const retriedEntry = retried.batch.entries.find(item => item.topicId === uuid(1));
+  assert.equal(retriedEntry.status, 'applied');
+  assert.deepEqual(retriedEntry.intent, originalIntent);
+});
+
+test('a user edit after an uncertain write is a conflict, never absorbed', () => {
+  const context = setupMercy();
+  context.storage.failNextReadAfterWrite('Sources/1.md');
+  applyUnifiedMercyBatch(context.batch, context.deps);
+  const edited = context.storage.read('Sources/1.md');
+  context.storage.setFile('Sources/1.md', { ...edited, body: `${edited.body}\nuser body edit` });
+
+  const retried = applyUnifiedMercyBatch(context.batch, context.deps);
+  const entry = retried.batch.entries.find(item => item.topicId === uuid(1));
+  assert.equal(entry.status, 'conflict');
+  assert.equal(entry.error.code, 'E_EXTERNAL_EDIT');
+  assert.equal(context.storage.read('Sources/1.md').body.includes('user body edit'), true);
+});
+
+test('a frontmatter edit with the same revision is still a conflict', () => {
+  const context = setupMercy();
+  context.storage.failNextReadAfterWrite('Sources/1.md');
+  applyUnifiedMercyBatch(context.batch, context.deps);
+  const edited = context.storage.read('Sources/1.md');
+  context.storage.setFile('Sources/1.md', {
+    ...edited,
+    frontmatter: { ...edited.frontmatter, custom_field: 'user-value' },
+  });
+
+  const retried = applyUnifiedMercyBatch(context.batch, context.deps);
+  const entry = retried.batch.entries.find(item => item.topicId === uuid(1));
+  assert.equal(entry.status, 'conflict');
+  assert.equal(context.storage.read('Sources/1.md').frontmatter.custom_field, 'user-value');
+});
+
+test('undo requires a trusted persisted applied batch', () => {
+  const context = setupMercy();
+  assert.throws(() => undoUnifiedMercyBatch(context.batch, context.deps), error => error.code === 'E_BATCH_NOT_PERSISTED');
+
+  const forged = { ...context.batch, status: 'applied' };
+  forged.entries = forged.entries.map(entry => ({ ...entry, status: 'applied' }));
+  assert.throws(() => undoUnifiedMercyBatch(forged, context.deps), error => error.code === 'E_BATCH_NOT_PERSISTED');
+
+  context.batchStore.put('mercy-batch', { ...context.batch, status: 'planned' });
+  assert.throws(() => undoUnifiedMercyBatch(context.batch, context.deps), error => error.code === 'E_BATCH_NOT_APPLIED');
+});
+
+test('undo refuses body, unknown-field and revision changes after apply', () => {
+  const cases = [
+    storage => {
+      const entry = storage.read('Sources/1.md');
+      storage.setFile('Sources/1.md', { ...entry, body: `${entry.body}\nedited` });
+    },
+    storage => {
+      const entry = storage.read('Sources/1.md');
+      storage.setFile('Sources/1.md', { ...entry, frontmatter: { ...entry.frontmatter, custom: 'x' } });
+    },
+    storage => {
+      const entry = storage.read('Sources/1.md');
+      storage.setFile('Sources/1.md', {
+        ...entry,
+        revision: 99,
+        frontmatter: { ...entry.frontmatter, mf_revision: 99 },
+      });
+    },
+  ];
+  for (const mutate of cases) {
+    const context = setupMercy();
+    applyUnifiedMercyBatch(context.batch, context.deps);
+    mutate(context.storage);
+    const undone = undoUnifiedMercyBatch(context.batch, context.deps);
+    const first = undone.batch.entries.find(item => item.topicId === uuid(1));
+    assert.equal(first.status, 'conflict');
+  }
+});
+
+test('undo write success with failed confirmation is recovered from the undo intent', () => {
+  const context = setupMercy();
+  applyUnifiedMercyBatch(context.batch, context.deps);
+  context.storage.failNextReadAfterWrite('Sources/1.md');
+  const first = undoUnifiedMercyBatch(context.batch, context.deps);
+  assert.equal(first.batch.entries.find(item => item.topicId === uuid(1)).status, 'uncertain');
+  assert.equal(context.storage.read('Sources/1.md').frontmatter.mf_not_before, null);
+
+  const retried = undoUnifiedMercyBatch(context.batch, context.deps);
+  assert.equal(retried.batch.entries.find(item => item.topicId === uuid(1)).status, 'rolled-back');
+  assert.equal(context.storage.read('Sources/1.md').frontmatter.mf_revision, 3);
+});
+
+test('a not_before that already equals the original value is not trusted without undo evidence', () => {
+  const context = setupMercy();
+  applyUnifiedMercyBatch(context.batch, context.deps);
+  const entry = context.storage.read('Sources/1.md');
+  context.storage.setFile('Sources/1.md', {
+    ...entry,
+    frontmatter: {
+      ...entry.frontmatter,
+      mf_not_before: null,
+      mf_revision: entry.frontmatter.mf_revision + 1,
+    },
+  });
+
+  const undone = undoUnifiedMercyBatch(context.batch, context.deps);
+  const first = undone.batch.entries.find(item => item.topicId === uuid(1));
+  assert.equal(first.status, 'conflict');
+  assert.equal(first.error.code, 'E_UNDO_EVIDENCE_MISSING');
 });

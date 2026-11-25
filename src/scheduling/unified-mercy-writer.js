@@ -1,9 +1,11 @@
 'use strict';
 
 // Persistent Mercy batch coordination for the Unified writer (PR-09).
-// Allocation stays in the accepted PR-04 Mercy core; this module validates the
-// confirmed preview, persists write intents before CAS, and supports partial
-// retry/undo. Every write targets a persisted Source/Extract UUID only.
+//
+// Allocation stays in the accepted PR-04 Mercy core. This module binds a
+// confirmation to the exact immutable preview, persists every write intent
+// BEFORE a CAS, never redefines a persisted intent on retry, and refuses undo
+// unless a trusted applied batch (with intents) exists in the batch store.
 
 const { fail } = require('./errors.js');
 const { ALGORITHM_VERSION } = require('./constants.js');
@@ -37,6 +39,12 @@ function digestOf(batch) {
   }));
 }
 
+function assertPreviewIntegrity(batch) {
+  if (typeof batch.previewDigest !== 'string' || batch.previewDigest !== digestOf(batch)) {
+    fail('E_PREVIEW_INTEGRITY', 'the batch does not match its confirmed preview digest', { batchId: batch.batchId });
+  }
+}
+
 function validateBatch(batch) {
   if (!batch || batch.kind !== MERCY_BATCH_KIND) fail('E_BATCH_INVALID', 'a Mercy batch is required');
   if (typeof batch.batchId !== 'string' || !batch.batchId) fail('E_BATCH_ID_REQUIRED', 'a batch id is required');
@@ -61,6 +69,7 @@ function validateBatch(batch) {
     if (entry.notBeforeAfter != null && !isValidDateString(entry.notBeforeAfter)) fail('E_DATE_INVALID', 'invalid not_before');
     if (entry.notBeforeBefore != null && !isValidDateString(entry.notBeforeBefore)) fail('E_DATE_INVALID', 'invalid preview not_before');
   }
+  assertPreviewIntegrity(batch);
   return batch;
 }
 
@@ -73,7 +82,7 @@ function resolveDeps(dependencies) {
   return resolved;
 }
 
-function assertTopic(entry) {
+function topicError(entry) {
   const frontmatter = entry.frontmatter || {};
   if (frontmatter.mf_id !== entry.mfId) return 'E_INDEX_ID_MISMATCH';
   if (frontmatter.type !== 'source' && frontmatter.type !== 'extract') return 'E_TOPIC_TYPE';
@@ -81,6 +90,48 @@ function assertTopic(entry) {
   if (frontmatter.mf_scheduler_version !== ALGORITHM_VERSION) return 'E_VERSION_NOT_PERSISTED';
   if (!Number.isInteger(frontmatter.mf_revision)) return 'E_REVISION_NOT_PERSISTED';
   return null;
+}
+
+function locate(storage, topicId) {
+  const located = storage.findByTopicId(topicId);
+  if (located.duplicates.length > 0) return { error: 'E_DUPLICATE_TOPIC_ID' };
+  if (!located.entry) return { error: 'E_TOPIC_NOT_FOUND' };
+  const error = topicError(located.entry);
+  if (error) return { error };
+  return { current: located.entry };
+}
+
+function intentIsValid(entry) {
+  const intent = entry.intent;
+  return Boolean(
+    intent
+    && intent.topicId === entry.topicId
+    && intent.beforeNotBefore === entry.notBeforeBefore
+    && intent.afterNotBefore === entry.notBeforeAfter
+    && intent.beforeRevision === entry.revisionBefore
+    && intent.afterRevision === entry.revisionAfter
+    && typeof intent.beforeHash === 'string'
+    && typeof intent.expectedAfterHash === 'string'
+  );
+}
+
+function buildIntent(entry, current) {
+  const frontmatter = current.frontmatter;
+  return {
+    topicId: entry.topicId,
+    path: current.path,
+    beforeHash: sha256Hex(current.content),
+    expectedAfterHash: sha256Hex(renderContent({
+      ...frontmatter,
+      mf_not_before: entry.notBeforeAfter,
+      mf_revision: entry.revisionAfter,
+      mf_scheduler_version: ALGORITHM_VERSION,
+    }, current.body)),
+    beforeNotBefore: entry.notBeforeBefore,
+    afterNotBefore: entry.notBeforeAfter,
+    beforeRevision: entry.revisionBefore,
+    afterRevision: entry.revisionAfter,
+  };
 }
 
 function prepareUnifiedMercyBatch(plan, options = {}) {
@@ -114,61 +165,53 @@ function prepareUnifiedMercyBatch(plan, options = {}) {
   return batch;
 }
 
-function loadPersistedBatch(batch, batchStore) {
-  const persisted = batchStore.get(batch.batchId);
-  if (!persisted) return { working: batch, persisted: false };
-  if (persisted.previewDigest !== digestOf(batch) || digestOf(persisted) !== digestOf(batch)) {
-    fail('E_BATCH_ID_CONFLICT', 'the batch id is already used by a different confirmed batch', { batchId: batch.batchId });
-  }
-  return { working: persisted, persisted: true };
-}
-
-function targetEntry(batch, entry, storage) {
-  const located = storage.findByTopicId(entry.topicId);
-  if (located.duplicates.length > 0) return { error: 'E_DUPLICATE_TOPIC_ID' };
-  if (!located.entry) return { error: 'E_TOPIC_NOT_FOUND' };
-  const topicError = assertTopic(located.entry);
-  if (topicError) return { error: topicError };
-  return { current: located.entry };
-}
-
 function applyUnifiedMercyBatch(batch, dependencies = {}) {
   resolveDeps(dependencies);
   validateBatch(batch);
-  assertSyntheticMercyConfirmation(dependencies.confirmation, batch.batchId);
-  const { working } = loadPersistedBatch(batch, dependencies.batchStore);
+  const persisted = dependencies.batchStore.get(batch.batchId);
+  if (persisted && persisted.previewDigest !== batch.previewDigest) {
+    fail('E_BATCH_ID_CONFLICT', 'the batch id is already used by a different confirmed batch', { batchId: batch.batchId });
+  }
+  const working = persisted || batch;
+  validateBatch(working);
+  assertSyntheticMercyConfirmation(dependencies.confirmation, working.batchId, working.previewDigest);
   if (working.status === 'rolled-back' || working.status === 'partially-rolled-back') {
     fail('E_BATCH_ALREADY_ROLLED_BACK', 'a rolled-back batch cannot be applied again');
   }
 
-  // Persist the confirmed batch and per-entry intents BEFORE any write.
+  // Prepare intents only once. A persisted intent is never regenerated.
   for (const entry of working.entries) {
     if (entry.status === 'applied' || entry.status === 'already-applied') continue;
-    if (entry.status === 'conflict' && entry.intent) continue;
-    const target = targetEntry(working, entry, dependencies.storage);
+    if (entry.intent) {
+      if (!intentIsValid(entry)) {
+        entry.status = 'requires-manual-recovery';
+        entry.error = { code: 'E_INTENT_INVALID' };
+      } else if (entry.status === 'failed') {
+        // A transient write failure is retryable, but only with the original intent.
+        entry.status = 'pending';
+      }
+      continue;
+    }
+    if (entry.status === 'conflict') continue;
+    const target = locate(dependencies.storage, entry.topicId);
     if (target.error) {
       entry.status = 'failed';
       entry.error = { code: target.error };
-      entry.intent = null;
       continue;
     }
-    const current = target.current;
-    const frontmatter = current.frontmatter;
-    entry.intent = {
-      topicId: entry.topicId,
-      path: current.path,
-      beforeHash: sha256Hex(current.content),
-      expectedAfterHash: sha256Hex(renderContent({
-        ...frontmatter,
-        mf_not_before: entry.notBeforeAfter,
-        mf_revision: entry.revisionAfter,
-        mf_scheduler_version: ALGORITHM_VERSION,
-      }, current.body)),
-      beforeNotBefore: entry.notBeforeBefore,
-      afterNotBefore: entry.notBeforeAfter,
-      beforeRevision: entry.revisionBefore,
-      afterRevision: entry.revisionAfter,
-    };
+    const frontmatter = target.current.frontmatter;
+    if (frontmatter.mf_not_before === entry.notBeforeAfter && frontmatter.mf_revision === entry.revisionAfter) {
+      // A file already at After without a persisted intent is not trusted.
+      entry.status = 'requires-manual-recovery';
+      entry.error = { code: 'E_INTENT_MISSING' };
+      continue;
+    }
+    if (frontmatter.mf_not_before !== entry.notBeforeBefore || frontmatter.mf_revision !== entry.revisionBefore) {
+      entry.status = 'conflict';
+      entry.error = { code: 'E_PREVIEW_STALE' };
+      continue;
+    }
+    entry.intent = buildIntent(entry, target.current);
     entry.status = 'pending';
     entry.error = null;
   }
@@ -177,64 +220,58 @@ function applyUnifiedMercyBatch(batch, dependencies = {}) {
 
   const counts = { attempted: 0, succeeded: 0, failed: 0, conflicts: 0, alreadyApplied: 0, uncertain: 0 };
   for (const entry of working.entries) {
-    if (entry.status === 'applied' || entry.status === 'already-applied') {
-      const located = dependencies.storage.findByTopicId(entry.topicId);
-      if (located.duplicates.length > 0 || !located.entry) {
-        entry.status = 'failed';
-        entry.error = { code: 'E_TOPIC_NOT_FOUND' };
-        counts.failed += 1;
-        dependencies.batchStore.put(working.batchId, working);
-        continue;
-      }
-      if (located.entry.frontmatter.mf_not_before !== entry.notBeforeAfter
-        || located.entry.frontmatter.mf_revision !== entry.revisionAfter) {
-        entry.status = 'conflict';
-        entry.error = { code: 'E_EXTERNAL_EDIT' };
-        counts.conflicts += 1;
-        dependencies.batchStore.put(working.batchId, working);
-        continue;
-      }
-      counts.alreadyApplied += 1;
-      continue;
-    }
+    if (entry.status === 'requires-manual-recovery') continue;
     if (entry.status === 'failed' || entry.status === 'conflict') {
       if (entry.status === 'conflict') counts.conflicts += 1;
       else counts.failed += 1;
       continue;
     }
-    if (!entry.intent) {
-      entry.status = 'failed';
-      entry.error = { code: 'E_INTENT_MISSING' };
-      counts.failed += 1;
+    if (!entry.intent || !intentIsValid(entry)) {
+      entry.status = 'requires-manual-recovery';
+      entry.error = { code: 'E_INTENT_INVALID' };
+      dependencies.batchStore.put(working.batchId, working);
       continue;
     }
 
-    const located = dependencies.storage.findByTopicId(entry.topicId);
-    if (located.duplicates.length > 0 || !located.entry) {
+    const target = locate(dependencies.storage, entry.topicId);
+    if (target.error) {
       entry.status = 'failed';
-      entry.error = { code: located.duplicates.length ? 'E_DUPLICATE_TOPIC_ID' : 'E_TOPIC_NOT_FOUND' };
+      entry.error = { code: target.error };
       counts.failed += 1;
       dependencies.batchStore.put(working.batchId, working);
       continue;
     }
-    const current = located.entry;
+    const current = target.current;
     const hash = sha256Hex(current.content);
     const frontmatter = current.frontmatter;
-
-    if (hash === entry.intent.expectedAfterHash
+    const isAfter = hash === entry.intent.expectedAfterHash
       && frontmatter.mf_not_before === entry.notBeforeAfter
-      && frontmatter.mf_revision === entry.revisionAfter) {
+      && frontmatter.mf_revision === entry.revisionAfter;
+    const isBefore = hash === entry.intent.beforeHash
+      && frontmatter.mf_not_before === entry.notBeforeBefore
+      && frontmatter.mf_revision === entry.revisionBefore;
+
+    if (entry.status === 'applied' || entry.status === 'already-applied') {
+      if (isAfter) {
+        counts.alreadyApplied += 1;
+      } else {
+        entry.status = 'conflict';
+        entry.error = { code: 'E_EXTERNAL_EDIT' };
+        counts.conflicts += 1;
+      }
+      dependencies.batchStore.put(working.batchId, working);
+      continue;
+    }
+    if (isAfter) {
       entry.status = 'applied';
       entry.error = null;
       counts.alreadyApplied += 1;
       dependencies.batchStore.put(working.batchId, working);
       continue;
     }
-    if (hash !== entry.intent.beforeHash
-      || frontmatter.mf_not_before !== entry.notBeforeBefore
-      || frontmatter.mf_revision !== entry.revisionBefore) {
+    if (!isBefore) {
       entry.status = 'conflict';
-      entry.error = { code: 'E_PREVIEW_STALE' };
+      entry.error = { code: 'E_EXTERNAL_EDIT' };
       counts.conflicts += 1;
       dependencies.batchStore.put(working.batchId, working);
       continue;
@@ -242,7 +279,7 @@ function applyUnifiedMercyBatch(batch, dependencies = {}) {
 
     counts.attempted += 1;
     const cas = dependencies.storage.compareAndSwap(current.path, {
-      expectedHash: hash,
+      expectedHash: entry.intent.beforeHash,
       expectedRevision: entry.revisionBefore,
       nextFrontmatter: {
         ...frontmatter,
@@ -273,6 +310,7 @@ function applyUnifiedMercyBatch(batch, dependencies = {}) {
       continue;
     }
     if (!readback
+      || sha256Hex(readback.content) !== entry.intent.expectedAfterHash
       || readback.frontmatter.mf_not_before !== entry.notBeforeAfter
       || readback.frontmatter.mf_revision !== entry.revisionAfter) {
       entry.status = 'uncertain';
@@ -308,8 +346,17 @@ function applyUnifiedMercyBatch(batch, dependencies = {}) {
 function undoUnifiedMercyBatch(batch, dependencies = {}) {
   resolveDeps(dependencies);
   validateBatch(batch);
-  assertSyntheticMercyConfirmation(dependencies.confirmation, batch.batchId);
-  const { working } = loadPersistedBatch(batch, dependencies.batchStore);
+  const persisted = dependencies.batchStore.get(batch.batchId);
+  if (!persisted) fail('E_BATCH_NOT_PERSISTED', 'undo requires a trusted applied batch in the batch store');
+  if (persisted.previewDigest !== batch.previewDigest) {
+    fail('E_BATCH_ID_CONFLICT', 'the batch id is already used by a different confirmed batch', { batchId: batch.batchId });
+  }
+  if (!['applied', 'partially-applied', 'partially-rolled-back', 'requires-manual-recovery', 'rolled-back'].includes(persisted.status)) {
+    fail('E_BATCH_NOT_APPLIED', 'only an applied batch can be undone', { status: persisted.status });
+  }
+  assertSyntheticMercyConfirmation(dependencies.confirmation, persisted.batchId, persisted.previewDigest);
+  const working = persisted;
+
   if (working.status === 'rolled-back') {
     return {
       batch: working,
@@ -317,38 +364,52 @@ function undoUnifiedMercyBatch(batch, dependencies = {}) {
       writesPerformed: false,
     };
   }
-  if (!['applied', 'partially-applied', 'partially-rolled-back', 'requires-manual-recovery'].includes(working.status)) {
-    fail('E_BATCH_NOT_APPLIED', 'only an applied batch can be undone');
-  }
 
   const counts = { rolledBack: 0, alreadyRolledBack: 0, conflicts: 0, failed: 0, uncertain: 0 };
   for (const entry of working.entries) {
-    if (!['applied', 'already-applied', 'rolled-back', 'conflict', 'uncertain', 'failed'].includes(entry.status)) continue;
-    if (entry.status === 'rolled-back') {
-      counts.alreadyRolledBack += 1;
-      continue;
-    }
     if (entry.status === 'conflict') {
       counts.conflicts += 1;
       continue;
     }
-    const located = dependencies.storage.findByTopicId(entry.topicId);
-    if (located.duplicates.length > 0 || !located.entry) {
+    if (entry.status === 'pending') continue;
+    if (!entry.intent || !intentIsValid(entry)) {
       entry.status = 'requires-manual-recovery';
-      entry.error = { code: 'E_TOPIC_NOT_FOUND' };
+      entry.error = { code: 'E_INTENT_INVALID' };
       counts.failed += 1;
-      continue;
-    }
-    const current = located.entry;
-    const frontmatter = current.frontmatter;
-    if (frontmatter.mf_not_before === entry.notBeforeBefore) {
-      entry.status = 'rolled-back';
-      entry.error = null;
-      counts.alreadyRolledBack += 1;
       dependencies.batchStore.put(working.batchId, working);
       continue;
     }
-    if (frontmatter.mf_not_before !== entry.notBeforeAfter || frontmatter.mf_revision !== entry.revisionAfter) {
+    const target = locate(dependencies.storage, entry.topicId);
+    if (target.error) {
+      entry.status = 'requires-manual-recovery';
+      entry.error = { code: target.error };
+      counts.failed += 1;
+      dependencies.batchStore.put(working.batchId, working);
+      continue;
+    }
+    const current = target.current;
+    const hash = sha256Hex(current.content);
+    const frontmatter = current.frontmatter;
+
+    if (frontmatter.mf_not_before === entry.notBeforeBefore) {
+      // Only a persisted undo intent can prove this was our restore.
+      if (entry.undoIntent
+        && hash === entry.undoIntent.expectedRestoredHash
+        && frontmatter.mf_revision === entry.revisionAfter + 1) {
+        entry.status = 'rolled-back';
+        entry.error = null;
+        counts.alreadyRolledBack += 1;
+      } else {
+        entry.status = 'conflict';
+        entry.error = { code: 'E_UNDO_EVIDENCE_MISSING' };
+        counts.conflicts += 1;
+      }
+      dependencies.batchStore.put(working.batchId, working);
+      continue;
+    }
+    if (hash !== entry.intent.expectedAfterHash
+      || frontmatter.mf_not_before !== entry.notBeforeAfter
+      || frontmatter.mf_revision !== entry.revisionAfter) {
       entry.status = 'conflict';
       entry.error = { code: 'E_EXTERNAL_EDIT' };
       counts.conflicts += 1;
@@ -356,17 +417,19 @@ function undoUnifiedMercyBatch(batch, dependencies = {}) {
       continue;
     }
 
-    entry.undoIntent = {
-      beforeHash: sha256Hex(current.content),
-      expectedRestoredHash: sha256Hex(renderContent({
-        ...frontmatter,
-        mf_not_before: entry.notBeforeBefore,
-        mf_revision: entry.revisionAfter + 1,
-      }, current.body)),
-    };
+    if (!entry.undoIntent) {
+      entry.undoIntent = {
+        beforeHash: hash,
+        expectedRestoredHash: sha256Hex(renderContent({
+          ...frontmatter,
+          mf_not_before: entry.notBeforeBefore,
+          mf_revision: entry.revisionAfter + 1,
+        }, current.body)),
+      };
+    }
     dependencies.batchStore.put(working.batchId, working);
     const cas = dependencies.storage.compareAndSwap(current.path, {
-      expectedHash: entry.undoIntent.beforeHash,
+      expectedHash: hash,
       expectedRevision: entry.revisionAfter,
       nextFrontmatter: {
         ...frontmatter,
@@ -395,7 +458,9 @@ function undoUnifiedMercyBatch(batch, dependencies = {}) {
       dependencies.batchStore.put(working.batchId, working);
       continue;
     }
-    if (!readback || readback.frontmatter.mf_not_before !== entry.notBeforeBefore) {
+    if (!readback
+      || sha256Hex(readback.content) !== entry.undoIntent.expectedRestoredHash
+      || readback.frontmatter.mf_not_before !== entry.notBeforeBefore) {
       entry.status = 'uncertain';
       entry.error = { code: 'E_WRITE_UNVERIFIED' };
       counts.uncertain += 1;
@@ -410,7 +475,7 @@ function undoUnifiedMercyBatch(batch, dependencies = {}) {
 
   const statuses = working.entries.map(entry => entry.status);
   if (counts.conflicts > 0 || counts.uncertain > 0) working.status = 'requires-manual-recovery';
-  else if (statuses.every(status => status === 'rolled-back')) working.status = 'rolled-back';
+  else if (statuses.every(status => status === 'rolled-back' || status === 'pending')) working.status = 'rolled-back';
   else if (statuses.some(status => status === 'rolled-back')) working.status = 'partially-rolled-back';
   else working.status = 'requires-manual-recovery';
   working.counts = counts;
@@ -421,6 +486,7 @@ function undoUnifiedMercyBatch(batch, dependencies = {}) {
 
 module.exports = {
   MERCY_BATCH_KIND,
+  mercyBatchDigest: digestOf,
   prepareUnifiedMercyBatch,
   applyUnifiedMercyBatch,
   undoUnifiedMercyBatch,

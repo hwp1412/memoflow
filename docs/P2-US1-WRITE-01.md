@@ -82,9 +82,11 @@
 ## 7. Mercy 持久批次
 
 - `prepareUnifiedMercyBatch(plan)`：从 PR-04 预览生成固定批次（topicId、before/after notBefore、before/after revision、`previewDigest`）。
-- 应用/撤销必须提供不可伪造的合成确认（`issueSyntheticMercyConfirmation`），普通 `confirmed:true` 无效。
+- 应用/撤销必须提供不可伪造的合成确认，确认绑定 `batchId + previewDigest`；首次 Apply 即校验 `previewDigest` 与不可变操作集合一致（`E_PREVIEW_INTEGRITY`），修改任一 topic/notBefore/revision 后旧确认失效（`E_MERCY_CONFIRMATION_MISMATCH`）。
 - 同 batchId 不同内容 → `E_BATCH_ID_CONFLICT`；重复 topicId/operationId、非 UUID 目标、Card、done/dismissed、未迁移目标均拒绝。
 - 首次 CAS 前持久化批次与每条 intent（before/expectedAfter hash、notBefore、revision）；每步更新批次，回读失败记 `uncertain` 并保留批次。
+- **Intents 不可重定义**：已持久化的 intent 在重试时不再按当前内容重算；只有 before 状态可受控重试，after 状态恢复为 applied，第三种状态 conflict/manual；已 applied 条目也校验完整 After hash。
+- **Undo 需要可信证据**：批次必须存在于 batchStore 且有可核实的 Apply 结果与 intent；当前完整内容 hash 必须等于 intent.expectedAfterHash；Undo 前持久化 undo intent；仅当未 before 值且 hash 等于 `expectedRestoredHash` 时才认定已回滚，无证据时 `E_UNDO_EVIDENCE_MISSING`。
 - `applyUnifiedMercyBatch`：逐 Topic CAS；已有 notBefore 且 revision 匹配 → `already-applied`；revision 不符 → conflict；部分失败保留。
 - `undoUnifiedMercyBatch`：只回滚仍为 after 状态的 Topic；重复撤销幂等；用户编辑 → conflict。
 - 批次存储在注入式 `MemoryBatchStore`，可 dump/reload。
@@ -97,7 +99,7 @@
 
 ```
 node --test test/mf-us-1-unified*.test.js test/mf-us-1-persistent-ledger.test.js
-  tests 82  pass 82  fail 0
+  tests 90  pass 90  fail 0
 ```
 
 - 合成性能：1,000 Topic / 1,000 Event ≈ 48ms；10,000 Topic / 1,000 Event ≈ 39ms（Apple M4 / Node v24.21.0）。仅持久写入观测，不是 A14 队列基准。

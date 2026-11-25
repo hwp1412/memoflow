@@ -226,16 +226,22 @@ function issueSyntheticUnifiedCapability(label = 'synthetic-test') {
   return capability;
 }
 
-function issueSyntheticMercyConfirmation(batchId) {
+function issueSyntheticMercyConfirmation(batchId, previewDigest) {
   if (typeof batchId !== 'string' || !batchId) fail('E_BATCH_ID_REQUIRED', 'a mercy confirmation needs a batch id');
-  const confirmation = Object.freeze({ kind: 'synthetic-mercy-confirmation', batchId });
+  if (typeof previewDigest !== 'string' || !previewDigest) {
+    fail('E_PREVIEW_DIGEST_REQUIRED', 'a mercy confirmation must bind the preview digest');
+  }
+  const confirmation = Object.freeze({ kind: 'synthetic-mercy-confirmation', batchId, previewDigest });
   MERCY_CONFIRMATIONS.add(confirmation);
   return confirmation;
 }
 
-function assertSyntheticMercyConfirmation(confirmation, batchId) {
+function assertSyntheticMercyConfirmation(confirmation, batchId, previewDigest) {
   if (!confirmation || !MERCY_CONFIRMATIONS.has(confirmation) || confirmation.batchId !== batchId) {
     fail('E_MERCY_CONFIRMATION_REQUIRED', 'mercy writes require an explicit trusted preview confirmation', { batchId });
+  }
+  if (confirmation.previewDigest !== previewDigest) {
+    fail('E_MERCY_CONFIRMATION_MISMATCH', 'the confirmation does not belong to this exact preview', { batchId });
   }
   return confirmation;
 }
