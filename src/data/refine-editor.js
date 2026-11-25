@@ -52,6 +52,14 @@ function intersects(range, start, end) {
   return range.start < end && range.end > start;
 }
 
+function statChanged(before, after) {
+  if (!before || !after) return false;
+  for (const key of ['mtime', 'ctime', 'size']) {
+    if (before[key] != null && after[key] != null && String(before[key]) !== String(after[key])) return true;
+  }
+  return false;
+}
+
 function fencedRanges(text) {
   const lines = lineRanges(text);
   const ranges = [];
@@ -324,6 +332,10 @@ class RefineEditorController {
     this._assertSingleWindow(view.file.path);
     const text = view.editor.getValue();
     const disk = await this.app.vault.read(view.file);
+    let diskStat = null;
+    try {
+      if (typeof this.app.vault.adapter?.stat === 'function') diskStat = await this.app.vault.adapter.stat(view.file.path);
+    } catch (error) { diskStat = null; }
     if (text !== disk) {
       throw new RefineFlowError('EDITOR_NOT_SAVED', '编辑器内容尚未保存到磁盘，请先保存并重新执行');
     }
@@ -337,6 +349,7 @@ class RefineEditorController {
       path: view.file.path,
       text,
       disk,
+      diskStat,
       split,
       prefix: split.prefix,
       body: split.body,
@@ -363,6 +376,16 @@ class RefineEditorController {
     if (disk !== snapshot.text) {
       throw new RefineFlowError('DISK_CHANGED', '磁盘内容已变化，请重新执行');
     }
+    try {
+      if (snapshot.diskStat && typeof this.app.vault.adapter?.stat === 'function') {
+        const currentStat = await this.app.vault.adapter.stat(snapshot.path);
+        if (statChanged(snapshot.diskStat, currentStat)) {
+          throw new RefineFlowError('DISK_CHANGED', '磁盘状态在操作期间发生变化，请重新执行');
+        }
+      }
+    } catch (error) {
+      if (error instanceof RefineFlowError) throw error;
+    }
     requireCurrentExtractType(text);
     const split = splitContent(text);
     if (split.bodyStart !== snapshot.bodyStart || split.body !== snapshot.body) {
@@ -375,6 +398,24 @@ class RefineEditorController {
       }
     }
     return { text, disk, split };
+  }
+
+  async _assertDiskUnchanged(snapshot, expectedContent = null) {
+    const disk = await this.app.vault.read(snapshot.file);
+    if (disk !== snapshot.text && disk !== expectedContent) {
+      throw new RefineFlowError('DISK_CHANGED', '磁盘正文在保存前发生变化，已安全停止');
+    }
+    if (disk === expectedContent) return;
+    try {
+      if (snapshot.diskStat && typeof this.app.vault.adapter?.stat === 'function') {
+        const currentStat = await this.app.vault.adapter.stat(snapshot.path);
+        if (statChanged(snapshot.diskStat, currentStat)) {
+          throw new RefineFlowError('DISK_CHANGED', '磁盘状态在保存前发生变化，已安全停止');
+        }
+      }
+    } catch (error) {
+      if (error instanceof RefineFlowError) throw error;
+    }
   }
 
   _assertSafe(snapshot, replacement) {
@@ -548,11 +589,12 @@ class RefineEditorController {
       }
 
       try {
+        await this._assertDiskUnchanged(snapshot, expected);
         const disk = await this._saveAndVerify(snapshot, expected);
         await this.store.markVerified(operation.operationId, disk);
       } catch (error) {
         const diagnostic = await this._diagnostic(operation, snapshot, expected);
-        if (error.code === 'DISK_MISMATCH') await this._conflict(operation);
+        if (error.code === 'DISK_MISMATCH' || error.code === 'DISK_CHANGED') await this._conflict(operation);
         throw new RefineFlowError(error.code || 'SAVE_OR_VERIFY_FAILED', `${error.message || '保存或验证失败'}`, { diagnostic });
       }
 
@@ -655,12 +697,13 @@ class RefineEditorController {
       }
 
       try {
+        await this._assertDiskUnchanged(fresh, expected);
         const disk = await this._saveAndVerify(fresh, expected);
         await this.store.markVerified(operation.operationId, disk);
         await this.store.markRestored(operation.operationId, disk);
       } catch (error) {
         const diagnostic = await this._diagnostic(operation, fresh, expected);
-        if (error.code === 'DISK_MISMATCH') await this._conflict(operation);
+        if (error.code === 'DISK_MISMATCH' || error.code === 'DISK_CHANGED') await this._conflict(operation);
         throw new RefineFlowError(error.code || 'RESTORE_SAVE_OR_VERIFY_FAILED', error.message || '恢复保存或验证失败', { diagnostic });
       }
 
@@ -734,12 +777,13 @@ class RefineEditorController {
       }
 
       try {
+        await this._assertDiskUnchanged(fresh, expected);
         const disk = await this._saveAndVerify(fresh, expected);
         await this.store.markVerified(operation.operationId, disk);
         await this.store.markRestored(operation.operationId, disk);
       } catch (error) {
         const diagnostic = await this._diagnostic(operation, fresh, expected);
-        if (error.code === 'DISK_MISMATCH') await this._conflict(operation);
+        if (error.code === 'DISK_MISMATCH' || error.code === 'DISK_CHANGED') await this._conflict(operation);
         throw new RefineFlowError(error.code || 'RESTORE_SAVE_OR_VERIFY_FAILED', error.message || '恢复保存或验证失败', { diagnostic });
       }
 
