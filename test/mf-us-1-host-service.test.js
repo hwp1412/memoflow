@@ -58,12 +58,14 @@ test('unified is always refused and never runs legacy in this branch', async () 
   }
 });
 
-test('resetCurrent is blocked in unified instead of being remapped', async () => {
+test('resetCurrent is blocked with its own undecided-semantics error', async () => {
+  let calls = 0;
   const service = createHostSchedulerService({ mode: 'unified' });
   await assert.rejects(
-    service.execute({ action: 'RESET_CURRENT' }, async () => ({ writesPerformed: true })),
-    error => error.code === 'E_UNIFIED_NOT_AUTHORIZED'
+    service.execute({ action: 'RESET_CURRENT' }, async () => { calls += 1; return { writesPerformed: true }; }),
+    error => error.code === 'E_RESET_CURRENT_UNDECIDED'
   );
+  assert.equal(calls, 0);
 });
 
 test('one event id with different host requests conflicts before writing', async () => {

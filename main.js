@@ -3734,6 +3734,35 @@ class IncrementalReadingPlugin extends Plugin {
     return await this._gradeTopic(active, fm, today);
   }
 
+  _mfUs1EventDescriptor(action, file, fm, today, payload = null) {
+    const topicId = fm && fm.mf_id ? fm.mf_id : null;
+    const expectedRevision = fm && Number.isInteger(fm.mf_revision) ? fm.mf_revision : null;
+    let digest = '0000000000000000';
+    try {
+      const { sha256Hex } = require('./src/scheduling/migration-hash.js');
+      digest = sha256Hex(JSON.stringify({ action, topicId, expectedRevision, today, payload }));
+    } catch (error) { /* keep deterministic fallback */ }
+    return {
+      action,
+      eventId: `00000000-0000-4000-8000-${digest.slice(0, 12)}`,
+      topicId,
+      expectedRevision,
+      today,
+      calendarDate: today,
+      payload,
+    };
+  }
+
+  _mfUs1ActiveDescriptor(action, payload = null) {
+    let file = null;
+    let fm = null;
+    try {
+      file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
+      fm = file && this.app.metadataCache ? (this.app.metadataCache.getFileCache(file) || {}).frontmatter : null;
+    } catch (error) { file = null; fm = null; }
+    return this._mfUs1EventDescriptor(action, file, fm, this._todayKey ? this._todayKey() : null, payload);
+  }
+
   _mfUs1HostService() {
     if (!this._mfUs1HostInstance) {
       const { createHostSchedulerService } = require('./src/integration/host-scheduler-service.js');
@@ -3766,7 +3795,10 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async _gradeTopic(file, fm, today) {
-    return this._mfUs1RunLegacy({ action: 'ADVANCED' }, () => this._gradeTopicLegacy(file, fm, today));
+    return this._mfUs1RunLegacy(
+      this._mfUs1EventDescriptor('ADVANCED', file, fm, today),
+      () => this._gradeTopicLegacy(file, fm, today)
+    );
   }
 
   async _gradeTopicLegacy(file, fm, today) {
@@ -4296,7 +4328,7 @@ class IncrementalReadingPlugin extends Plugin {
   // ---- Done / Dismiss / Postpone / Schedule ------------------------------
 
   async markDone() {
-    return this._mfUs1RunLegacy({ action: 'COMPLETE' }, () => this._markDoneLegacy());
+    return this._mfUs1RunLegacy(this._mfUs1ActiveDescriptor('COMPLETE'), () => this._markDoneLegacy());
   }
 
   async _markDoneLegacy() {
@@ -4318,7 +4350,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async dismiss() {
-    return this._mfUs1RunLegacy({ action: 'DISMISS' }, () => this._dismissLegacy());
+    return this._mfUs1RunLegacy(this._mfUs1ActiveDescriptor('DISMISS'), () => this._dismissLegacy());
   }
 
   async _dismissLegacy() {

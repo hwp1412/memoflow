@@ -26,8 +26,16 @@ test('every audited root entry delegates through the host scheduler service', ()
     ['_createExtract', 'CREATE_EXTRACT'],
     ['newSource', 'CREATE_SOURCE'],
   ]) {
-    const pattern = new RegExp(`async ${method.replace('_', '\\_')}\\([^)]*\\) \\{[\\s\\S]{0,220}?_mfUs1RunLegacy\\(\\{ action: '${action}' \\}`);
-    assert.match(mainSource, pattern, method);
+    const start = mainSource.indexOf(`  async ${method}(`);
+    assert.ok(start >= 0, method);
+    const end = mainSource.indexOf('\n  async ', start + 10);
+    const body = mainSource.slice(start, end < 0 ? undefined : end);
+    assert.match(body, /_mfUs1RunLegacy\(/, method);
+    if (['_gradeTopic', 'markDone', 'dismiss'].includes(method)) {
+      assert.match(body, /_mfUs1(Event|Active)Descriptor\(/, `${method} must build an explicit event descriptor`);
+    } else {
+      assert.match(body, new RegExp(`action: '${action}'`), method);
+    }
   }
   assert.match(mainSource, /createHostSchedulerService/);
   assert.match(mainSource, /schedulerDashboardModel\(/);
