@@ -13,17 +13,20 @@ const { assertDateString, compareDate, calendarDayDifference, maxDate } = requir
 
 // SPEC A2.4: effective_due = mf_ideal_due when mf_not_before is null,
 // otherwise max(mf_ideal_due, mf_not_before).
-function effectiveDue(topic) {
-  validateTopic(topic);
-  if (topic.mf_not_before == null) return topic.mf_ideal_due;
-  return maxDate(topic.mf_ideal_due, topic.mf_not_before);
+//
+// The *FromDates variants are the same calculation over already-resolved
+// dates, for callers (the queue) that validate their own minimal topic shape.
+// effectiveDue/dueState keep their PR-02 contract unchanged.
+function effectiveDueFromDates(idealDue, notBefore) {
+  assertDateString(idealDue, 'mf_ideal_due');
+  if (notBefore == null) return idealDue;
+  return maxDate(idealDue, assertDateString(notBefore, 'mf_not_before'));
 }
 
-function dueState(topic, today) {
-  validateTopic(topic);
+function dueStateFromDates(idealDue, notBefore, today) {
+  assertDateString(idealDue, 'mf_ideal_due');
+  if (notBefore != null) assertDateString(notBefore, 'mf_not_before');
   assertDateString(today, 'today');
-  const idealDue = topic.mf_ideal_due;
-  const notBefore = topic.mf_not_before ?? null;
   const effective = notBefore == null ? idealDue : maxDate(idealDue, notBefore);
   const idealOverdue = compareDate(idealDue, today) < 0;
   const available = compareDate(effective, today) <= 0;
@@ -31,7 +34,7 @@ function dueState(topic, today) {
   const postponedOnly = !available && compareDate(idealDue, today) <= 0;
   return {
     idealDue,
-    notBefore,
+    notBefore: notBefore ?? null,
     effectiveDue: effective,
     overdueDays: Math.max(0, calendarDayDifference(today, effective)),
     idealOverdue,
@@ -67,8 +70,18 @@ function summarizeDue(topics, today) {
   return counts;
 }
 
+function effectiveDue(topic) {
+  validateTopic(topic);
+  return effectiveDueFromDates(topic.mf_ideal_due, topic.mf_not_before);
+}
+
+function dueState(topic, today) {
+  validateTopic(topic);
+  return dueStateFromDates(topic.mf_ideal_due, topic.mf_not_before, today);
+}
+
 function isAvailable(topic, today) {
   return dueState(topic, today).available;
 }
 
-module.exports = { effectiveDue, dueState, summarizeDue, isAvailable };
+module.exports = { effectiveDue, effectiveDueFromDates, dueState, dueStateFromDates, summarizeDue, isAvailable };

@@ -14,6 +14,9 @@ const interval = require('./interval.js');
 const events = require('./events.js');
 const due = require('./due.js');
 const eventLedger = require('./event-ledger.js');
+const queueConfig = require('./queue-config.js');
+const queue = require('./queue.js');
+const workload = require('./workload.js');
 
 module.exports = {
   ...errors,
@@ -25,6 +28,9 @@ module.exports = {
   ...events,
   ...due,
   ...eventLedger,
+  ...queueConfig,
+  ...queue,
+  ...workload,
   // Namespaced access for callers that prefer explicit module grouping.
   schema,
   dates,
@@ -33,4 +39,7 @@ module.exports = {
   events,
   due,
   eventLedger,
+  queueConfig,
+  queue,
+  workload,
 };
