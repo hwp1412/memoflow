@@ -46,7 +46,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 21 | QUEUE-01 | 到期候选筛选（仅 Source/Extract、可调度状态） | A6.1 | `TESTED` | 03 | active 才入队；Card/历史状态/未到期分别报告 |
 | 22 | QUEUE-02 | Priority 排序、逾期补偿、五级稳定键 | A6.2, A13 T14 | `TESTED` | 03 | T14；effectivePriority 不写回；缺创建日期排最后（Q16） |
 | 23 | QUEUE-03 | 每日时间预算与贪心选择 | A6.3 | `TESTED` | 03 | Q4 已落地为 `estimated_minutes`（1–120）；预算 Q15 1–1440 |
-| 24 | QUEUE-04 | 未来 7 天负荷统计 | A6.4 | `TESTED` | 03 | 窗口 [today, today+6]（Q17）；Ideal/Effective 分轴 |
+| 24 | QUEUE-04 | 未来 7 天负荷统计 | A6.4 | `TESTED` | 03 | 窗口 [today, today+6]（Q17）；Ideal/Effective 分轴；逾期积压计入今日实际负荷（available*），原始积压用 idealBacklog*，只计一次不摊未来 |
 | 25 | QUEUE-05 | 排期解释（算法日期 vs 行政日期分离） | A12 | `TESTED` | 01→03 | 队列逐条解释：到期、补偿、排序、预算、延期原因 |
 | 26 | MERCY-01 | Mercy 分配（明天起 W 槽、预算、超载标记） | A7.2 | `NOT_STARTED` | 04 | |
 | 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `NOT_STARTED` | 04 | |

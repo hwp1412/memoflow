@@ -32,8 +32,8 @@ Mercy、离线模拟/正式性能验收、Legacy 适配/迁移、Shadow/Unified�
 | `src/scheduling/due.js` | 兼容扩展：`dueStateFromDates` / `effectiveDueFromDates`（原函数行为不变） | 修改 |
 | `src/scheduling/schema.js` | 新增 `validateEstimatedMinutes` / `validateStableId`（纯新增） | 修改 |
 | `src/scheduling/index.js` | 导出新模块 | 修改 |
-| `test/mf-us-1-queue.test.js` | 32 项候选/优先级/排序/预算/解释测试 | 新增 |
-| `test/mf-us-1-workload.test.js` | 9 项七日负荷测试 | 新增 |
+| `test/mf-us-1-queue.test.js` | 37 项候选/优先级/排序/预算/解释/重复身份测试 | 新增 |
+| `test/mf-us-1-workload.test.js` | 15 项七日负荷（含逾期积压）测试 | 新增 |
 | `test/mf-us-1-queue-properties.test.js` | 8 项性质 + 10k 性能测试 | 新增 |
 | `docs/MF-US-1-DELIVERY-MATRIX.md` | 状态更新 | 修改 |
 | `docs/P2-US1-QUEUE-01.md` | 本说明 | 新增 |
@@ -122,7 +122,7 @@ effectivePriority = max(1, P - ageBonus)
 确定性与边界：
 
 - 输入数组顺序、随机数、系统时间都不参与决胜；
-- 重复 `stableId` → 两条都判 `invalid`（`E_DUPLICATE_ID`），不任选其一；
+- 重复 `stableId` 在 **所有可解析身份的状态之间** 检测（active + done/dismissed + inbox/pending/container 一并参与）→ 每个出现都判 `invalid`（`E_DUPLICATE_ID`），同时从原桶移除，不任选其一；身份不可解析的非法记录不参与该检测，因此不会阻塞其他 Topic；
 - 无 `mf_id` 时接受调用方提供的只读 `stable_id`；两者都没有 → `E_QUEUE_ID_REQUIRED`；
 - **绝不生成 UUID / 持久身份**；不写回任何 Topic。
 
@@ -136,13 +136,31 @@ effectivePriority = max(1, P - ageBonus)
 
 ## 9. 七日负荷（A6.4）
 
-**窗口定义（本 PR 明确）**：`[today, today + 6]`，共 7 个日历日，含今天。
+**窗口定义（本 PR 明确，Q17 已确认）**：`[today, today + 6]`，共 7 个日历日，含今天。
 
-每日输出：`idealDueCount`、`effectiveDueCount`、`plannedMinutes`（按 effective 日汇总成本）、`budgetMinutes`、`overloadMinutes = max(0, planned - budget)`；总计含 `overloadMinutes` 与 `overloadedDays`。
+### 9.1 字段含义
 
-- Ideal 与 Effective 分轴：POSTPONE 只移动 effective 计数，ideal 计数仍显示真实积压；
-- 只统计合法的 active Source/Extract；`done/dismissed/legacy/invalid` 不计入负荷（分别在结果桶中报告）；
-- 预测只读，不反向修改任何 Topic。
+| 字段 | 含义 |
+|---|---|
+| `idealDueCount` | 当天**新到期**的理想到期数量（`ideal_due == day`） |
+| `effectiveDueCount` | 当天**新到期**的实际可处理数量（`effective_due == day`） |
+| `plannedMinutes` | 当天新到期任务的预计分钟数 |
+| `backlogCount` / `backlogMinutes` | **窗口开始前已逾期且今天仍可处理**的积压（`effective_due < today`），只在 today 行统计一次 |
+| `availableCount` / `availableMinutes` | 当天**真实可处理负荷** = 新到期 + 积压（today 行以外仅等于新到期） |
+| `budgetMinutes` | 当天预算（默认 30，可配 1–1440） |
+| `overloadMinutes` | `max(0, availableMinutes - budgetMinutes)` |
+| `totals.idealBacklogCount` / `idealBacklogMinutes` | **窗口无关**的原始积压信号：所有 `ideal_due < today` 的条目（含被 POSTPONE 到窗口外的），只读展示 |
+
+### 9.2 语义（审查修复 1）
+
+- **积压进入今日实际负荷**：`effective_due ≤ today` 的逾期任务计入 today 行的 `backlog*`，因此“今天实际要做多久”不会被漏算。审查反例（10 个逾期 Source × 10 分钟）现在得到 `backlogMinutes=100`、`availableMinutes=100`、`overloadMinutes=70`，而不是 0。
+- **只计一次、不摊到未来**：积压只写入 today 行；把积压分配到未来日期属于 PR-04 Mercy 的职责，预测不做。
+- **行政延期保留原始积压、不计入今日负荷**：`idealBacklogCount/Mininutes` 记录原始积压；若 `effective_due` 在窗口内则落到对应 effective 日，若在窗口外则只保留在 `idealBacklog*` 中，today 行 `backlog*=0`。
+- **Ideal 与 Effective 分轴**：POSTPONE 只移动 effective 计数，不抹掉 ideal 计数。
+- 只统计合法的 active Source/Extract；`done/dismissed/legacy/invalid` 不计入负荷（分别在结果桶中报告）。
+- 预测只读，不反向修改任何 Topic、间隔或日期。
+
+> 字段归属说明：`backlogCount/backlogMinutes/availableCount/availableMinutes` 是 **A6.4“实际可处理数量 / 预计处理分钟数”的实现**（修复漏算）；`idealBacklogCount/idealBacklogMinutes` 是**建议新增的只读信号**，不改变规范语义，也不需要修订 MF-US-1-SPEC。
 
 ## 10. 解释（A12）
 
@@ -152,16 +170,16 @@ effectivePriority = max(1, P - ageBonus)
 
 ```
 node --test test/mf-us-1-queue.test.js test/mf-us-1-workload.test.js test/mf-us-1-queue-properties.test.js
-  tests 49  pass 49  fail 0
+  tests 60  pass 60  fail 0
 [perf] 10,000 topics: 46-62ms, selected 3
 ```
 
-覆盖：P1/P50/P80/P100、逾期 0/6/7/14/140/2000、`ageBonus` 上限、`effectivePriority` 下限与 1–100 性质、原始 Priority 不变、五级键逐级决胜、输入乱序不变、缺创建日期排最后、code-unit 排序、重复 ID 判非法、Card/历史状态拒绝、预算默认与自定义（1/120）、刚好放满、超大任务跳过后续补位、全部放不下、非法成本、预算 1–1440、确定性 100 次、输入不可变、月末/闰年/跨年/DST、七日窗口边界（today+6 计入、+7 不计）、Ideal/Effective 分轴、超载统计。
+覆盖：P1/P50/P80/P100、逾期 0/6/7/14/140/2000、`ageBonus` 上限、`effectivePriority` 下限与 1–100 性质、原始 Priority 不变、五级键逐级决胜、输入乱序不变、缺创建日期排最后、code-unit 排序、重复 ID（active+done/dismissed/inbox/pending/container 跨状态、三重复）判非法且不阻塞其他 Topic、Card/历史状态拒绝、预算默认与自定义（1/120）、刚好放满、超大任务跳过后续补位、全部放不下、非法成本、预算 1–1440、确定性 100 次、输入不可变、月末/闰年/跨年/DST、七日窗口边界（today+6 计入、+7 不计）、Ideal/Effective 分轴、逾期积压进入今日负荷、行政延期保留 ideal 积压不计今日负荷、积压只计一次不摊未来、混合负荷与超载。
 
 完整回归：
 
 ```
-node --test test/*.test.js            tests 567  pass 567  fail 0
+node --test test/*.test.js            tests 578  pass 578  fail 0
 node --test $(排除 mf-us-1-)           tests 380  pass 380  fail 0
 node scripts/validate-release.mjs     valid
 node scripts/build.mjs --dry-run      no files written

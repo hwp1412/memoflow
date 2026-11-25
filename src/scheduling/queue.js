@@ -216,25 +216,6 @@ function publicEntry(entry, { rank = null, reason = null, text = '' } = {}) {
   };
 }
 
-function dedupeById(buckets, invalid) {
-  const counts = new Map();
-  for (const { entry } of buckets) counts.set(entry.stableId, (counts.get(entry.stableId) || 0) + 1);
-  const kept = [];
-  for (const item of buckets) {
-    if (counts.get(item.entry.stableId) > 1) {
-      invalid.push({
-        index: item.entry.index,
-        code: 'E_DUPLICATE_ID',
-        message: `stable id "${item.entry.stableId}" is used by more than one topic`,
-        details: { stableId: item.entry.stableId },
-      });
-    } else {
-      kept.push(item);
-    }
-  }
-  return kept;
-}
-
 function emptyResult(config, today, workload) {
   return {
     algorithmVersion: ALGORITHM_VERSION,
@@ -281,9 +262,37 @@ function selectDailyQueue(topics, config = undefined, today = undefined) {
     else accepted.push(analysis);
   });
 
-  // Duplicate ids are ambiguous regardless of which bucket they would land in,
-  // so they are detected across all accepted topics at once.
-  const dedupedAccepted = dedupeById(accepted, invalid);
+  // Duplicate ids are ambiguous regardless of status: an id used by an active
+  // topic and by a done/legacy topic is still one identity. Detection therefore
+  // spans every topic whose id could be resolved (accepted + excluded +
+  // unsupported), reports each occurrence, and removes all of them. Topics with
+  // an unresolvable id stay ordinary invalid records and never influence others.
+  const identified = [
+    ...accepted.map(item => ({ stableId: item.entry.stableId, index: item.entry.index })),
+    ...excluded.map(item => ({ stableId: item.stableId, index: item.index })),
+    ...unsupported.map(item => ({ stableId: item.stableId, index: item.index })),
+  ];
+  const idCounts = new Map();
+  for (const record of identified) {
+    idCounts.set(record.stableId, (idCounts.get(record.stableId) || 0) + 1);
+  }
+  const duplicatedIds = new Set();
+  for (const [stableId, count] of idCounts) {
+    if (count > 1) duplicatedIds.add(stableId);
+  }
+  for (const record of identified) {
+    if (!duplicatedIds.has(record.stableId)) continue;
+    invalid.push({
+      index: record.index,
+      code: 'E_DUPLICATE_ID',
+      message: `stable id "${record.stableId}" is used by more than one topic`,
+      details: { stableId: record.stableId, occurrences: idCounts.get(record.stableId) },
+    });
+  }
+
+  const dedupedAccepted = accepted.filter(item => !duplicatedIds.has(item.entry.stableId));
+  const keptExcluded = excluded.filter(item => !duplicatedIds.has(item.stableId));
+  const keptUnsupported = unsupported.filter(item => !duplicatedIds.has(item.stableId));
   const dedupedCandidates = dedupedAccepted.filter(item => item.bucket === 'candidate');
   const dedupedPostponed = dedupedAccepted.filter(item => item.bucket === 'postponed');
   const dedupedNotYetDue = dedupedAccepted.filter(item => item.bucket === 'notYetDue');
@@ -314,7 +323,7 @@ function selectDailyQueue(topics, config = undefined, today = undefined) {
     .sort((left, right) => compareDate(left.idealDue, right.idealDue) || compareIds(left.stableId, right.stableId))
     .map(entry => publicEntry(entry, { reason: 'NOT_YET_DUE', text: notYetDueExplanation(entry) }));
 
-  const excludedEntries = excluded
+  const excludedEntries = keptExcluded
     .slice()
     .sort((left, right) => compareIds(left.stableId, right.stableId))
     .map(item => ({
@@ -325,7 +334,7 @@ function selectDailyQueue(topics, config = undefined, today = undefined) {
       explain: { text: `状态 ${item.status}，不参与每日阅读队列（未计评阅）。`, data: { status: item.status } },
     }));
 
-  const unsupportedEntries = unsupported
+  const unsupportedEntries = keptUnsupported
     .slice()
     .sort((left, right) => compareIds(left.stableId, right.stableId))
     .map(item => ({

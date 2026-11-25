@@ -33,8 +33,14 @@ test('the window is seven calendar days starting today', () => {
     idealDueCount: 0,
     effectiveDueCount: 0,
     plannedMinutes: 0,
+    backlogCount: 0,
+    backlogMinutes: 0,
+    availableCount: 0,
+    availableMinutes: 0,
     overloadMinutes: 0,
     overloadedDays: 0,
+    idealBacklogCount: 0,
+    idealBacklogMinutes: 0,
   });
 });
 
@@ -137,4 +143,104 @@ test('forecast cannot change a topic schedule', () => {
   const result = selectDailyQueue([input], undefined, TODAY);
   assert.equal(result.workload.totals.effectiveDueCount, 1);
   assert.deepEqual(input, snapshot);
+});
+
+// ---- overdue backlog in the real load (owner review fix 1) ----------------
+
+test('reviewer counterexample: ten overdue topics count in today\'s real load', () => {
+  const entries = Array.from({ length: 10 }, () => entry('2026-11-20', '2026-11-20', 10));
+  const forecast = forecastFromEntries(entries, DEFAULT_QUEUE_CONFIG, TODAY);
+  const today = forecast.days[0];
+
+  // Nothing is newly due inside the window...
+  assert.equal(today.idealDueCount, 0);
+  assert.equal(today.effectiveDueCount, 0);
+  assert.equal(today.plannedMinutes, 0);
+
+  // ...but the 100 minutes of backlog are today's real available load.
+  assert.equal(today.backlogCount, 10);
+  assert.equal(today.backlogMinutes, 100);
+  assert.equal(today.availableCount, 10);
+  assert.equal(today.availableMinutes, 100);
+  assert.equal(today.overloadMinutes, 70);
+  assert.equal(forecast.totals.availableMinutes, 100);
+  assert.equal(forecast.totals.overloadMinutes, 70);
+  assert.equal(forecast.totals.idealBacklogCount, 10);
+  assert.equal(forecast.totals.idealBacklogMinutes, 100);
+});
+
+test('backlog is counted once and never spread across future days', () => {
+  const entries = Array.from({ length: 3 }, () => entry('2026-11-01', '2026-11-19', 10));
+  const forecast = forecastFromEntries(entries, DEFAULT_QUEUE_CONFIG, TODAY);
+  assert.equal(forecast.days[0].backlogMinutes, 30);
+  for (const day of forecast.days.slice(1)) {
+    assert.equal(day.backlogCount, 0);
+    assert.equal(day.backlogMinutes, 0);
+    assert.equal(day.availableMinutes, day.plannedMinutes);
+  }
+  const summed = forecast.days.reduce((total, day) => total + day.backlogMinutes, 0);
+  assert.equal(summed, forecast.totals.backlogMinutes);
+  assert.equal(summed, 30);
+});
+
+test('a postponed overdue topic keeps ideal backlog but is not today\'s load', () => {
+  const entries = [entry('2026-11-20', '2026-12-05', 10)]; // postponed beyond the window
+  const forecast = forecastFromEntries(entries, DEFAULT_QUEUE_CONFIG, TODAY);
+
+  assert.equal(forecast.totals.idealBacklogCount, 1);
+  assert.equal(forecast.totals.idealBacklogMinutes, 10);
+  assert.equal(forecast.totals.availableMinutes, 0);
+  assert.equal(forecast.totals.overloadMinutes, 0);
+  assert.equal(forecast.days[0].backlogCount, 0);
+  assert.equal(forecast.days[0].availableMinutes, 0);
+  assert.equal(forecast.days.every(day => day.plannedMinutes === 0), true);
+});
+
+test('a postponement into the window lands on its effective day, not today', () => {
+  const forecast = forecastFromEntries([
+    entry('2026-11-20', '2026-11-27', 10),
+  ], DEFAULT_QUEUE_CONFIG, TODAY);
+  assert.equal(forecast.totals.idealBacklogCount, 1);
+  assert.equal(forecast.days[0].backlogMinutes, 0);
+  assert.equal(forecast.days[0].availableMinutes, 0);
+  const postponedDay = forecast.days.find(day => day.date === '2026-11-27');
+  assert.equal(postponedDay.effectiveDueCount, 1);
+  assert.equal(postponedDay.plannedMinutes, 10);
+  assert.equal(postponedDay.availableMinutes, 10);
+});
+
+test('mixed backlog, new due work and future work stay separate', () => {
+  const entries = [
+    // 40 minutes of backlog
+    entry('2026-11-10', '2026-11-18', 10),
+    entry('2026-11-10', '2026-11-18', 10),
+    entry('2026-11-10', '2026-11-18', 10),
+    entry('2026-11-10', '2026-11-18', 10),
+    // 10 minutes new due today
+    entry(TODAY, TODAY, 5),
+    entry(TODAY, TODAY, 5),
+    // 15 minutes due in two days
+    entry('2026-11-26', '2026-11-26', 15),
+  ];
+  const forecast = forecastFromEntries(entries, DEFAULT_QUEUE_CONFIG, TODAY);
+  const today = forecast.days[0];
+  assert.equal(today.backlogMinutes, 40);
+  assert.equal(today.plannedMinutes, 10);
+  assert.equal(today.availableMinutes, 50);
+  assert.equal(today.overloadMinutes, 20);
+  assert.equal(forecast.totals.availableMinutes, 65);
+  assert.equal(forecast.totals.idealBacklogCount, 4);
+  assert.equal(forecast.totals.idealDueCount, 3); // 2 today + 1 on 11-26
+});
+
+test('backlog statistics are order independent and read-only', () => {
+  const entries = Object.freeze([
+    Object.freeze(entry('2026-11-10', '2026-11-18', 10)),
+    Object.freeze(entry(TODAY, TODAY, 5)),
+    Object.freeze(entry('2026-11-20', '2026-11-28', 15)),
+  ]);
+  const forward = forecastFromEntries(entries, DEFAULT_QUEUE_CONFIG, TODAY);
+  const backward = forecastFromEntries([...entries].reverse(), DEFAULT_QUEUE_CONFIG, TODAY);
+  assert.deepEqual(forward, backward);
+  assert.equal(entries[0].estimatedMinutes, 10);
 });

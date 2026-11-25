@@ -461,3 +461,67 @@ test('invalid batch arguments throw instead of being swallowed', () => {
   expectCode(() => selectDailyQueue([], undefined, '2026-13-01'), 'E_DATE_INVALID');
   expectCode(() => selectDailyQueue([], { dailyBudgetMinutes: 0 }, TODAY), 'E_QUEUE_BUDGET_INVALID');
 });
+
+// ---- cross-status duplicate identity (owner review fix 2) ------------------
+
+test('a stable id duplicated across statuses is rejected everywhere', () => {
+  for (const status of ['done', 'dismissed', 'inbox', 'pending', 'container']) {
+    const result = selectDailyQueue([
+      topic({ id: 1, mf_ideal_due: TODAY }), // active
+      topic({ id: 1, status, mf_ideal_due: TODAY }),
+    ], undefined, TODAY);
+    assert.equal(result.selected.length, 0, status);
+    assert.equal(result.excluded.length, 0, status);
+    assert.equal(result.unsupported.length, 0, status);
+    const duplicates = result.invalid.filter(item => item.code === 'E_DUPLICATE_ID');
+    assert.equal(duplicates.length, 2, status);
+    assert.equal(duplicates[0].details.stableId, uuid(1));
+  }
+});
+
+test('a duplicate pair does not block unrelated topics', () => {
+  const result = selectDailyQueue([
+    topic({ id: 1 }),
+    topic({ id: 1, status: 'done' }),
+    topic({ id: 2 }),
+  ], undefined, TODAY);
+  assert.deepEqual(ids(result.selected), [uuid(2)]);
+  assert.equal(result.budget.candidateCount, 1);
+  assert.equal(result.invalid.filter(item => item.code === 'E_DUPLICATE_ID').length, 2);
+});
+
+test('every occurrence of a triplicated id is reported', () => {
+  const result = selectDailyQueue([
+    topic({ id: 5 }),
+    topic({ id: 5, status: 'pending' }),
+    topic({ id: 5, status: 'done' }),
+  ], undefined, TODAY);
+  assert.equal(result.selected.length, 0);
+  const duplicates = result.invalid.filter(item => item.code === 'E_DUPLICATE_ID');
+  assert.equal(duplicates.length, 3);
+  assert.equal(duplicates[0].details.occurrences, 3);
+});
+
+test('an invalid record with an unusable id does not block other topics', () => {
+  const result = selectDailyQueue([
+    topic({ id: 7, priority: 0 }),
+    topic({ id: 8 }),
+  ], undefined, TODAY);
+  assert.deepEqual(ids(result.selected), [uuid(8)]);
+  assert.equal(result.invalid.length, 1);
+  assert.equal(result.invalid[0].code, 'E_PRIORITY_RANGE');
+});
+
+test('the queue workload exposes overdue backlog in today\'s load', () => {
+  const backlog = Array.from({ length: 10 }, (_, index) => topic({
+    id: index + 1,
+    mf_ideal_due: '2026-11-20',
+    estimated_minutes: 10,
+  }));
+  const result = selectDailyQueue(backlog, undefined, TODAY);
+  assert.equal(result.workload.days[0].backlogCount, 10);
+  assert.equal(result.workload.days[0].backlogMinutes, 100);
+  assert.equal(result.workload.days[0].availableMinutes, 100);
+  assert.equal(result.workload.days[0].overloadMinutes, 70);
+  assert.equal(result.workload.totals.idealBacklogCount, 10);
+});
