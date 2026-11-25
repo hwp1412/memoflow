@@ -244,3 +244,40 @@ test('a rejected record leaves the original content untouched', () => {
   previewMigration([before], CONTEXT);
   assert.equal(before.content, snapshot);
 });
+
+// ---- quoted YAML keys must not bypass add-only ---------------------------
+
+test('a single-quoted existing field blocks migration', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  const quoted = withFrontmatterLine(raw, "'mf_ideal_due': 2026-12-01");
+  const plan = previewMigration([quoted], CONTEXT);
+  assert.equal(plan.entries[0].status, 'conflict');
+  assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'E_FIELD_ALREADY_PRESENT'));
+});
+
+test('a double-quoted existing field blocks migration', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  const quoted = withFrontmatterLine(raw, '"mf_revision": 0');
+  const plan = previewMigration([quoted], CONTEXT);
+  assert.equal(plan.entries[0].status, 'conflict');
+  assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'E_FIELD_ALREADY_PRESENT'));
+});
+
+test('quoted and plain duplicates are a duplicate YAML key', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  const duplicate = withFrontmatterLine(raw, "'mf_ideal_due': 2026-12-01\nmf_ideal_due: 2026-12-02");
+  const plan = previewMigration([duplicate], CONTEXT);
+  assert.equal(plan.entries[0].status, 'blocked');
+  assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'E_FRONTMATTER_DUPLICATE_KEY'));
+});
+
+test('unsupported YAML key structures are refused', () => {
+  for (const line of ['? mf_ideal_due', '{mf_ideal_due: 2026-12-01}', '- mf_ideal_due']) {
+    const { raw } = note({ mfId: uuid(1) });
+    const structured = withFrontmatterLine(raw, line);
+    const plan = previewMigration([structured], CONTEXT);
+    assert.equal(plan.entries[0].status, 'blocked', line);
+    assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'E_FRONTMATTER_UNSUPPORTED_STRUCTURE'), line);
+    assert.equal(structured.content, withFrontmatterLine(raw, line).content);
+  }
+});

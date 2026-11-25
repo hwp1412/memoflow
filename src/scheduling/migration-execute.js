@@ -274,7 +274,15 @@ function validateRollbackSource(batch, backup, authorization) {
     if (byOperation.has(entry.operationId)) fail('E_BACKUP_DUPLICATE_OPERATION', 'duplicate operation id in backup');
     byOperation.set(entry.operationId, entry);
   }
+
+  const seenOperations = new Set();
+  const seenPaths = new Set();
   for (const entry of batch.entries) {
+    if (seenOperations.has(entry.operationId)) fail('E_BATCH_DUPLICATE_OPERATION', 'duplicate operation id in batch');
+    seenOperations.add(entry.operationId);
+    if (seenPaths.has(entry.path)) fail('E_BATCH_DUPLICATE_PATH', 'duplicate path in batch');
+    seenPaths.add(entry.path);
+
     const source = byOperation.get(entry.operationId);
     if (!source) fail('E_BACKUP_ENTRY_MISSING', 'batch entry has no backup source');
     if (source.path !== entry.path) fail('E_BACKUP_PATH_MISMATCH', 'batch path does not match the backup');
@@ -283,6 +291,29 @@ function validateRollbackSource(batch, backup, authorization) {
     if (source.content !== entry.originalContent) fail('E_BATCH_TAMPERED', 'batch original content does not match the backup');
     if (stableStringify(source.fields) !== stableStringify(entry.fields)) fail('E_BACKUP_FIELDS_MISMATCH', 'batch fields do not match the backup');
     if (sha256Hex(entry.originalContent) !== entry.beforeHash) fail('E_BATCH_TAMPERED', 'batch original content fails its own hash');
+
+    // The intent must be derivable from the trusted backup, not merely
+    // self-consistent: recompute it from the backup content and fields.
+    let recomputed;
+    try {
+      recomputed = makeIntent(entry.path, source.fields, source.content);
+    } catch (error) {
+      fail('E_INTENT_INVALID', 'the stored intent cannot be recomputed from the backup', { reason: error.code || null });
+    }
+    if (!entry.intent || entry.intent.path !== entry.path) fail('E_INTENT_INVALID', 'intent path is missing or wrong');
+    if (stableStringify(entry.intent.fields) !== stableStringify(source.fields)) {
+      fail('E_INTENT_FIELDS_MISMATCH', 'intent fields do not match the approved backup fields');
+    }
+    if (entry.intent.expectedContent !== recomputed.expectedContent) {
+      fail('E_INTENT_CONTENT_MISMATCH', 'intent content does not match the trusted backup-derived content');
+    }
+    if (entry.intent.expectedAfterHash !== recomputed.expectedAfterHash) {
+      fail('E_INTENT_HASH_MISMATCH', 'intent hash does not match the trusted backup-derived hash');
+    }
+  }
+
+  for (const operationId of byOperation.keys()) {
+    if (!seenOperations.has(operationId)) fail('E_BACKUP_ENTRY_UNUSED', 'a backup entry is not covered by the batch');
   }
   return backup;
 }

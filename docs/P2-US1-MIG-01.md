@@ -84,7 +84,7 @@ reconcileMigrationBatch(batch, storage)
 - 每个条目在写入前固定**写入意图** `{expectedContent, expectedAfterHash, fields}`，即使崩溃后状态仍为 `pending`，也能用当前 hash 与意图判断是否已应用；
 - 逐文件：当前 hash 必须等于备份前 hash；有 revision 时还须匹配；发现外部编辑 → `conflict` 并跳过；
 - 只更新批准字段（`mergeFrontmatter`），支持 LF/CRLF、UTF-8 BOM，保留未知字段、注释、正文与尾部空行；无 Frontmatter/未闭合/替换字符 → 明确错误，不插入新头部；
-- **add-only 保护**：迁移计划只允许新增字段；若计划认为缺失、但原文 Frontmatter 已存在同名字段（即使值相同）→ `conflict / E_FIELD_ALREADY_PRESENT`，绝不覆盖；重复 YAML 键或缩进结构 → 保守拒绝；
+- **add-only 保护**：迁移计划只允许新增字段；若计划认为缺失、但原文 Frontmatter 已存在同名字段（即使值相同）→ `conflict / E_FIELD_ALREADY_PRESENT`，绝不覆盖；单引号/双引号键名与未加引号的同名键按同一语义识别；重复 YAML 键、缩进结构、`?`/flow/序列等无法可靠解析的键结构 → 保守拒绝（`E_FRONTMATTER_UNSUPPORTED_STRUCTURE`）；
 - 单文件写入后回读校验；记录 before/after hash；
 - 不假设跨文件原子性：允许部分完成；
 - `writesPerformed` 仅在有真实成功写入时为 true；全部冲突/仅确认/重复执行为 false；写入后无法回读 → `uncertain` + `writeOutcome:'uncertain'`，批次进入 `requires-manual-recovery`，不谎报成功；
@@ -95,6 +95,8 @@ reconcileMigrationBatch(batch, storage)
 状态：`pending` / `applied` / `failed` / `rolled-back` / `conflict` / `requires-manual-recovery`。
 
 - 回滚必须提供**可信备份库**；先验证 `authorization.batchId === batch.batchId`、备份 `batchId/planId`、备份 hash，以及每条 `operationId/path/beforeHash/fields/originalContent` 与备份一致；被篡改或错配的批次在任何写入前拒绝（`E_BATCH_TAMPERED` / `E_BACKUP_*`）；
+- **写入意图必须可重算**：用备份中的原文与批准字段重新计算 Expected Content/Hash，逐项对照 `entry.intent.path/fields/expectedContent/expectedAfterHash`；意图“自身 Hash 自洽”不足以放行，篡改 intent 会被 `E_INTENT_*` 拒绝；
+- 批次内 `operationId`/`path` 必须唯一，且与备份条目一一覆盖（缺失/多余均拒绝）；
 - `previewRollback`：根据写入意图的 `expectedAfterHash`（无 afterHash 也可）判断 `rollback-ready` / `already-rolled-back` / `conflict` / `requires-manual-recovery`；存在 revision 时还要求当前 revision = 迁移前 + 1，否则拒绝；
 - `rollbackMigration`：写入前再次验证 `originalContent` 的 hash 等于 `beforeHash`；只回滚当前仍等于 after hash 的文件；用户后续编辑或 revision 漂移 → 拒绝覆盖；写入/回读异常 → `uncertain`；`writesPerformed` 同样只在真实恢复成功时为 true；
 - 精确恢复原始内容与原始 revision，不使用“清空新字段”；
@@ -108,7 +110,7 @@ reconcileMigrationBatch(batch, storage)
 ## 10. 测试与性能
 
 ```
-node --test test/mf-us-1-migration*.test.js   tests 80  pass 80  fail 0
+node --test test/mf-us-1-migration*.test.js   tests 89  pass 89  fail 0
 ```
 
 10,000 个合成 Source 的迁移预览：**约 177ms**（Apple M4 / Node v24.21.0）。仅为迁移规划观测，**不是** A14 队列基准。

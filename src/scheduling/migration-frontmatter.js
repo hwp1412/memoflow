@@ -91,13 +91,21 @@ function parseFrontmatter(content) {
   const duplicates = new Set();
   for (let index = 1; index < end; index += 1) {
     const line = lines[index];
-    if (!line.trim()) continue;
-    if (/^\s+\S/.test(line)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('#')) continue;
+    if (/^\s+/.test(line)) {
       fail('E_FRONTMATTER_UNSUPPORTED_STRUCTURE', 'nested or indented frontmatter is not safe to migrate');
     }
-    const match = line.match(/^([A-Za-z0-9_-]+)\s*:/);
-    if (!match) continue; // comments and free-form lines are not keys
-    const key = match[1];
+    // Quoted and plain keys are the same semantic key for add-only checks.
+    const quoted = line.match(/^(['"])([A-Za-z0-9_-]+)\1\s*:/);
+    const plain = line.match(/^([A-Za-z0-9_-]+)\s*:/);
+    let key = null;
+    if (quoted) key = quoted[2];
+    else if (plain) key = plain[1];
+    if (!key) {
+      fail('E_FRONTMATTER_UNSUPPORTED_STRUCTURE', `unsupported frontmatter line: ${trimmed.slice(0, 40)}`);
+    }
     if (keys.has(key)) duplicates.add(key);
     keys.set(key, (keys.get(key) || 0) + 1);
   }

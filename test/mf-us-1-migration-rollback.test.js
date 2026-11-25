@@ -15,6 +15,7 @@ const {
   MemoryStorage,
   MemoryBackupStore,
   mergeFrontmatter,
+  sha256Hex,
 } = require('../src/scheduling/index.js');
 const { uuid, note } = require('./helpers/migration-fixtures.js');
 
@@ -416,4 +417,65 @@ test('an LF+BOM file migrates and restores exactly', () => {
   const rolled = rollbackMigration(result.batch, storage, { environment: 'memory', authorized: true, batchId: 'lf' }, store);
   assert.equal(rolled.batch.status, 'rolled-back');
   assert.equal(storage.read('Sources/LF.md'), lf);
+});
+
+// ---- forged intents and quoted keys (final review fixes) -----------------
+
+test('a self-consistent forged intent is rejected', () => {
+  const { result, storage, store, frozen } = executedSetup();
+  const forged = '---\ntype: source\nstatus: active\n---\nforged';
+  const tampered = JSON.parse(JSON.stringify(result.batch));
+  tampered.entries[0].intent.expectedContent = forged;
+  tampered.entries[0].intent.expectedAfterHash = sha256Hex(forged);
+
+  assert.throws(() => rollbackMigration(tampered, storage, AUTH, store),
+    error => ['E_INTENT_CONTENT_MISMATCH', 'E_INTENT_HASH_MISMATCH'].includes(error.code));
+  assert.deepEqual(storage.snapshot(), frozen);
+});
+
+test('forged intent fields cannot diverge from the approved backup', () => {
+  const { result, storage, store, frozen } = executedSetup();
+  const tampered = JSON.parse(JSON.stringify(result.batch));
+  tampered.entries[0].intent.fields = { ...tampered.entries[0].intent.fields, mf_revision: 99 };
+  assert.throws(() => rollbackMigration(tampered, storage, AUTH, store),
+    error => error.code === 'E_INTENT_FIELDS_MISMATCH');
+  assert.deepEqual(storage.snapshot(), frozen);
+});
+
+test('a user edit disguised as the expected content is still refused', () => {
+  const { result, storage, store } = executedSetup();
+  const edited = `${storage.read('Sources/A.md')}\nuser edit`;
+  storage.setFile('Sources/A.md', edited, 2);
+  const tampered = JSON.parse(JSON.stringify(result.batch));
+  tampered.entries[0].intent.expectedContent = edited;
+  tampered.entries[0].intent.expectedAfterHash = sha256Hex(edited);
+
+  assert.throws(() => rollbackMigration(tampered, storage, AUTH, store),
+    error => error.code === 'E_INTENT_CONTENT_MISMATCH');
+  assert.equal(storage.read('Sources/A.md'), edited, 'the user edit is preserved');
+});
+
+test('duplicate or missing batch operations are rejected', () => {
+  const { result, storage, store, frozen } = executedSetup();
+
+  const duplicate = JSON.parse(JSON.stringify(result.batch));
+  duplicate.entries[1].operationId = duplicate.entries[0].operationId;
+  assert.throws(() => rollbackMigration(duplicate, storage, AUTH, store),
+    error => ['E_BATCH_DUPLICATE_OPERATION', 'E_BACKUP_ENTRY_UNUSED', 'E_BACKUP_MISMATCH'].includes(error.code));
+
+  const missing = JSON.parse(JSON.stringify(result.batch));
+  missing.entries.pop();
+  assert.throws(() => rollbackMigration(missing, storage, AUTH, store), error => error.code === 'E_BACKUP_MISMATCH');
+  assert.deepEqual(storage.snapshot(), frozen);
+});
+
+test('previewRollback rejects forged intents with the same rules', () => {
+  const { result, storage, store } = executedSetup();
+  const tampered = JSON.parse(JSON.stringify(result.batch));
+  tampered.entries[0].intent.expectedContent = 'forged';
+  tampered.entries[0].intent.expectedAfterHash = sha256Hex('forged');
+  assert.throws(
+    () => previewRollback(tampered, { 'Sources/A.md': storage.read('Sources/A.md') }, store),
+    error => ['E_INTENT_CONTENT_MISMATCH', 'E_INTENT_HASH_MISMATCH'].includes(error.code)
+  );
 });
