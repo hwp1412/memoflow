@@ -32,7 +32,10 @@ function buildTopicView(topic, mode, dateFormat) {
 
 function buildDashboardModel({ topics, today, queueConfig, mode, conditions = {}, dateFormat = null, migration = null, recovery = null, mercy = null }) {
   const evaluation = evaluateRuntimeMode(mode, conditions);
-  const queue = selectDailyQueue(topics, queueConfig, today);
+  // Cards are owned by Spaced Repetition; they must not be reported as invalid
+  // or unmigrated MF-US-1 topics in the reading queue.
+  const queueTopics = Array.isArray(topics) ? topics.filter(topic => topic && topic.type !== 'card') : [];
+  const queue = selectDailyQueue(queueTopics, queueConfig, today);
   const details = [];
   let cards = 0;
   for (const topic of topics) {
