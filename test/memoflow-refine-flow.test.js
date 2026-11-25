@@ -642,3 +642,51 @@ test('legacy restore rejects current file changes after prepared', async (t) => 
   assert.equal(app.disk.get(NOTE_PATH), editor.text);
   assert.equal((await store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
 });
+
+test('external disk write after applied blocks refine save and reports conflict', async (t) => {
+  const { app, editor, store, controller } = setup(t);
+  const original = store.setStatus.bind(store);
+  store.setStatus = async (id, status, options) => {
+    const result = await original(id, status, options);
+    if (status === 'applied') app.disk.set(NOTE_PATH, '---\ntype: extract\npriority: 50\n---\nexternal\n');
+    return result;
+  };
+  const result = await controller.refineActive();
+  assert.equal(result, null);
+  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi world\n');
+  assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nexternal\n');
+  assert.equal((await store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+  assert.doesNotMatch(app.notices.at(-1).message, /已完成/);
+});
+
+test('external disk write after applied blocks legacy restore save', async (t) => {
+  const { app, editor, store, controller } = setup(t);
+  await controller.refineActive();
+  const original = store.setStatus.bind(store);
+  store.setStatus = async (id, status, options) => {
+    const result = await original(id, status, options);
+    if (status === 'applied') app.disk.set(NOTE_PATH, '---\ntype: extract\npriority: 50\n---\nexternal-restore\n');
+    return result;
+  };
+  const result = await controller.restoreActive();
+  assert.equal(result, null);
+  assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nexternal-restore\n');
+  assert.equal((await store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+});
+
+test('external stat change with identical content is rejected before save', async (t) => {
+  const { app, editor, store, controller } = setup(t);
+  let mtime = '2026-11-25T00:00:00.000Z';
+  app.vault.adapter = { stat: async () => ({ mtime, size: 100 }) };
+  const original = store.setStatus.bind(store);
+  store.setStatus = async (id, status, options) => {
+    const result = await original(id, status, options);
+    if (status === 'applied') mtime = '2026-11-25T00:00:01.000Z';
+    return result;
+  };
+  const result = await controller.refineActive();
+  assert.equal(result, null);
+  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi world\n');
+  assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nHello world\n');
+  assert.equal((await store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+});
