@@ -2876,6 +2876,20 @@ class IncrementalReadingPlugin extends Plugin {
     this.spacedRepetitionCloseGeneration = 0;
     this.spacedRepetitionCloseAttempt = 0;
     this.sessionSaveTimer = null;
+    this.mfUs1Lifecycle = null;
+    try {
+      const { initializeHostLifecycle } = require('./src/integration/host-lifecycle.js');
+      this.mfUs1Lifecycle = await initializeHostLifecycle({
+        plugin: this,
+        mode: this.settings.mf_us1_mode || 'legacy',
+        conditions: {},
+      });
+    } catch (error) {
+      // The Unified lifecycle never blocks Legacy startup; it stays locked and
+      // reports diagnostics through mfUs1Lifecycle = null.
+      console.error('[IR] MF-US-1 lifecycle unavailable', error);
+      this.mfUs1Lifecycle = null;
+    }
     this.treeIndexCache = null;
     this.duePoolCache = null;
     this.registerEvent(this.app.metadataCache.on('changed', file => {
