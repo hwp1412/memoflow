@@ -346,3 +346,97 @@ test('authoritative fields changed without a revision bump are conflicts', () =>
     assert.equal(applied.summary.appliedCount, 0, reason);
   }
 });
+
+// ---- stale cost / type snapshots (review: effective cost must match) ------
+
+test('a changed custom cost blocks the old plan even without a revision bump', () => {
+  const topics = [topic(1, { type: 'source', estimated_minutes: undefined })];
+  const plan = planFor(topics);
+  assert.equal(plan.items[0].estimatedMinutes, 10); // Source default
+
+  const edited = [{ ...topics[0], estimated_minutes: 120 }];
+  const applied = applyMercyBatch(plan, edited, TODAY);
+  assert.equal(applied.results[0].status, 'conflict');
+  assert.equal(applied.results[0].reason, 'ESTIMATED_MINUTES_CHANGED');
+  assert.equal(applied.results[0].expected, 10);
+  assert.equal(applied.results[0].actual, 120);
+
+  // The conflicted topic is untouched.
+  assert.equal(applied.topics[0].mf_not_before, null);
+  assert.equal(applied.topics[0].mf_revision, 0);
+  assert.equal(applied.topics[0].estimated_minutes, 120);
+});
+
+test('a changed topic type blocks the old plan', () => {
+  const topics = [topic(1, { type: 'source', estimated_minutes: undefined })];
+  const plan = planFor(topics);
+  const applied = applyMercyBatch(plan, [{ ...topics[0], type: 'extract' }], TODAY);
+  assert.equal(applied.results[0].status, 'conflict');
+  assert.equal(applied.results[0].reason, 'TOPIC_TYPE_CHANGED');
+  assert.equal(applied.results[0].expected, 'source');
+  assert.equal(applied.results[0].actual, 'extract');
+  assert.equal(applied.topics[0].mf_not_before, null);
+  assert.equal(applied.topics[0].mf_revision, 0);
+});
+
+test('an invalid current cost is an explicit error, never a default fallback', () => {
+  for (const cost of [0, 121, -1, 1.5]) {
+    const topics = [topic(1, { estimated_minutes: 5 })];
+    const plan = planFor(topics);
+    const applied = applyMercyBatch(plan, [{ ...topics[0], estimated_minutes: cost }], TODAY);
+    assert.equal(applied.results[0].status, 'conflict', String(cost));
+    assert.equal(applied.results[0].reason, 'INVALID_ESTIMATED_MINUTES', String(cost));
+    assert.equal(applied.results[0].code, 'E_ESTIMATED_MINUTES_INVALID', String(cost));
+    assert.equal(applied.topics[0].mf_not_before, null, String(cost));
+  }
+});
+
+test('costs are compared by effective value, not by the presence of the field', () => {
+  // Missing field at preview, explicit default at apply: same effective cost.
+  const source = [topic(1, { type: 'source', estimated_minutes: undefined })];
+  const plan = planFor(source);
+  const explicitDefault = applyMercyBatch(plan, [{ ...source[0], estimated_minutes: 10 }], TODAY);
+  assert.equal(explicitDefault.results[0].status, 'applied');
+  assert.equal(explicitDefault.topics[0].mf_not_before, '2026-11-26');
+
+  // Explicit default at preview, missing field at apply: still the same cost.
+  const explicit = [topic(2, { type: 'source', estimated_minutes: 10 })];
+  const explicitPlan = planFor(explicit);
+  const missingField = applyMercyBatch(explicitPlan, [{ ...explicit[0], estimated_minutes: undefined }], TODAY);
+  assert.equal(missingField.results[0].status, 'applied');
+});
+
+test('a cost conflict never blocks unrelated topics', () => {
+  const topics = [topic(1, { estimated_minutes: 5 }), topic(2, { estimated_minutes: 5 })];
+  const plan = planFor(topics);
+  const applied = applyMercyBatch(plan, [{ ...topics[0], estimated_minutes: 30 }, topics[1]], TODAY);
+
+  assert.equal(applied.results[0].status, 'conflict');
+  assert.equal(applied.results[0].reason, 'ESTIMATED_MINUTES_CHANGED');
+  assert.equal(applied.results[1].status, 'applied');
+  assert.equal(applied.topics[1].mf_not_before, '2026-11-26');
+  assert.equal(applied.batch.status, 'partially-applied');
+});
+
+test('a rejected item keeps its not_before, revision and learning fields', () => {
+  const original = topic(1, {
+    mf_not_before: null,
+    mf_revision: 3,
+    mf_interval_days: 9,
+    a_factor: 2.2,
+    review_count: 7,
+    last_reviewed: '2026-09-09',
+    estimated_minutes: 5,
+  });
+  const plan = planFor([original]);
+  const edited = { ...original, estimated_minutes: 60 };
+  const applied = applyMercyBatch(plan, [edited], TODAY);
+  assert.equal(applied.results[0].status, 'conflict');
+  assert.equal(applied.topics[0].mf_not_before, null);
+  assert.equal(applied.topics[0].mf_revision, 3);
+  assert.equal(applied.topics[0].mf_interval_days, 9);
+  assert.equal(applied.topics[0].a_factor, 2.2);
+  assert.equal(applied.topics[0].review_count, 7);
+  assert.equal(applied.topics[0].last_reviewed, '2026-09-09');
+  assert.deepEqual(applied.topics[0], edited);
+});

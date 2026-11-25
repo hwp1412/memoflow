@@ -176,6 +176,7 @@ function previewMercy(topics, config, today = undefined) {
 
     const item = {
       stableId: entry.stableId,
+      type: entry.type,
       priority: entry.priority,
       idealDue,
       notBeforeBefore: oldNotBefore,
@@ -195,6 +196,7 @@ function previewMercy(topics, config, today = undefined) {
           ? `P${entry.priority} ${entry.stableId}：已有行政延期 ${oldNotBefore} 晚于窗口，Mercy 不会提前它；不计入窗口容量。`
           : `P${entry.priority} ${entry.stableId}：理想到期 ${idealDue}，原 not_before ${oldNotBefore == null ? '无' : oldNotBefore}，分配至 ${newNotBefore}；预计 ${entry.estimatedMinutes} 分钟；有效到期 ${effectiveDueBefore} → ${effectiveDueAfter}；${changed ? `revision ${topic.mf_revision} → ${topic.mf_revision + 1}` : '无调度状态变化'}。`,
         data: {
+          type: entry.type,
           priority: entry.priority,
           idealDue,
           notBeforeBefore: oldNotBefore,

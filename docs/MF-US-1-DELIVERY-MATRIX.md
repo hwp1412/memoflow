@@ -49,7 +49,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 24 | QUEUE-04 | 未来 7 天负荷统计 | A6.4 | `TESTED` | 03 | 窗口 [today, today+6]（Q17）；Ideal/Effective 分轴；逾期积压计入今日实际负荷（available*），原始积压用 idealBacklog*，只计一次不摊未来 |
 | 25 | QUEUE-05 | 排期解释（算法日期 vs 行政日期分离） | A12 | `TESTED` | 01→03 | 队列逐条解释：到期、补偿、排序、预算、延期原因 |
 | 26 | MERCY-01 | Mercy 分配（明天起 W 槽、预算、超载标记） | A7.2 | `TESTED` | 04 | 原始 Priority 排序；无槽可容纳时取最少负载槽并标超载；不提前既有延期 |
-| 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `TESTED` | 04 | 只读、确定性；含 batchId 与逐项解释；预览按日绑定，过期需重生成 |
+| 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `TESTED` | 04 | 只读、确定性；含 batchId、类型与有效成本快照；预览按日绑定，过期需重生成 |
 | 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `TESTED` | 04 | T16；可续撤销（already-undone/pendingCount）；重复身份与过期预览拒绝；持久化批次记录待 09（Q10） |
 | 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→04 | 已交付 `initializeTopic` / `applyEvent` / `selectDailyQueue` / `previewMercy`；`explainSchedule` 待后续 |
 | 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `NOT_STARTED` | 07/09 | |

@@ -21,8 +21,14 @@
 const { fail } = require('./errors.js');
 const { ALGORITHM_VERSION } = require('./constants.js');
 const { assertDateString } = require('./dates.js');
-const { validateRevision, validateTopicType, validateStatus } = require('./schema.js');
+const {
+  validateRevision,
+  validateTopicType,
+  validateStatus,
+  validateEstimatedMinutes,
+} = require('./schema.js');
 const { resolveStableId } = require('./queue.js');
+const { assertQueueConfig } = require('./queue-config.js');
 const { effectiveDueOf: mercyEffectiveDueOf } = require('./mercy.js');
 
 const BATCH_KEYS = Object.freeze([
@@ -65,6 +71,19 @@ function indexTopics(topics) {
   return { byId, duplicates };
 }
 
+// The effective cost of a topic right now: the explicit estimate when present,
+// otherwise the type default. Never falls back when the explicit value is bad.
+function currentEffectiveMinutes(topic, type, queueConfig) {
+  if (topic.estimated_minutes == null) {
+    return { minutes: queueConfig.defaultMinutes[type] };
+  }
+  try {
+    return { minutes: validateEstimatedMinutes(topic.estimated_minutes) };
+  } catch (error) {
+    return { error };
+  }
+}
+
 function isSchedulableTopic(topic) {
   try {
     validateTopicType(topic.type);
@@ -95,6 +114,20 @@ function assertPlan(plan) {
     if (typeof item.stableId !== 'string' || item.stableId.length === 0) {
       fail('E_MERCY_PLAN_INVALID', 'plan items need a stableId', { item });
     }
+    if (item.status === 'assigned') {
+      if (item.type !== 'source' && item.type !== 'extract') {
+        fail('E_MERCY_PLAN_INVALID', `plan item ${item.stableId} needs a source/extract type`, {
+          stableId: item.stableId,
+          type: item.type,
+        });
+      }
+      if (typeof item.estimatedMinutes !== 'number' || !Number.isInteger(item.estimatedMinutes)) {
+        fail('E_MERCY_PLAN_INVALID', `plan item ${item.stableId} needs an integer estimatedMinutes`, {
+          stableId: item.stableId,
+          estimatedMinutes: item.estimatedMinutes,
+        });
+      }
+    }
   }
   return plan;
 }
@@ -117,6 +150,7 @@ function assertFreshPlan(plan, today) {
 function applyMercyBatch(plan, topics, today = undefined) {
   assertPlan(plan);
   assertFreshPlan(plan, today);
+  const queueConfig = assertQueueConfig(plan.queueConfig);
   const { byId, duplicates } = indexTopics(topics);
   const updated = topics.slice();
   const results = [];
@@ -151,6 +185,40 @@ function applyMercyBatch(plan, topics, today = undefined) {
 
     if (!isSchedulableTopic(topic)) {
       results.push({ stableId: item.stableId, status: 'conflict', reason: 'NOT_SCHEDULABLE', changed: false });
+      continue;
+    }
+    if (topic.type !== item.type) {
+      results.push({
+        stableId: item.stableId,
+        status: 'conflict',
+        reason: 'TOPIC_TYPE_CHANGED',
+        expected: item.type,
+        actual: topic.type,
+        changed: false,
+      });
+      continue;
+    }
+    const currentMinutes = currentEffectiveMinutes(topic, topic.type, queueConfig);
+    if (currentMinutes.error) {
+      results.push({
+        stableId: item.stableId,
+        status: 'conflict',
+        reason: 'INVALID_ESTIMATED_MINUTES',
+        code: currentMinutes.error.code,
+        actual: topic.estimated_minutes ?? null,
+        changed: false,
+      });
+      continue;
+    }
+    if (currentMinutes.minutes !== item.estimatedMinutes) {
+      results.push({
+        stableId: item.stableId,
+        status: 'conflict',
+        reason: 'ESTIMATED_MINUTES_CHANGED',
+        expected: item.estimatedMinutes,
+        actual: currentMinutes.minutes,
+        changed: false,
+      });
       continue;
     }
 
