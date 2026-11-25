@@ -7,7 +7,7 @@
 // AND every migration/backup/recovery/storage/single-writer/user condition
 // holds. The synthetic token exists for isolated tests only.
 
-const { executeUnifiedEvent, reconcileUnifiedEvent, PersistentEventLedger, MemoryLedgerStore } = require('../scheduling/index.js');
+const { executeUnifiedEvent, reconcileUnifiedEvent, PersistentEventLedger, MemoryLedgerStore, SyntheticUnifiedStorage } = require('../scheduling/index.js');
 const { evaluateRuntimeMode, issueSyntheticRuntimeAuthorization } = require('../scheduling/runtime-mode-guard.js');
 
 const SYNTHETIC_HOST_AUTHORIZATIONS = new WeakSet();
@@ -52,13 +52,76 @@ function createHostRuntime({ mode = 'legacy', conditions = {}, authorization = n
     ? ledger
     : new PersistentEventLedger(new MemoryLedgerStore(ledger && ledger.records ? ledger.records : {}));
 
+  const confirmed = new Set(Object.keys(persisted.store.dump()));
+  const topicLocks = new Map();
+
   function state() {
     return evaluateHostRuntime({ mode, conditions, authorization });
   }
 
   async function save() {
     if (typeof persist !== 'function') return { ok: true };
-    return persist(persisted.store.dump());
+    try {
+      return await persist(persisted.store.dump());
+    } catch (error) {
+      return { ok: false, code: 'E_LEDGER_SAVE_THREW', message: error && error.message };
+    }
+  }
+
+  function lockTopic(topicId, eventId, reason, unknown = false) {
+    topicLocks.set(topicId, { eventId, reason, unknown });
+  }
+
+  function unresolved(topicId, request) {
+    const lock = topicLocks.get(topicId);
+    if (!lock) return null;
+    if (lock.unknown) {
+      return {
+        status: 'requires-manual-recovery', duplicate: false, writesPerformed: false,
+        reason: 'E_TOPIC_INTENT_STATE_UNKNOWN', lockedEventId: lock.eventId,
+      };
+    }
+    if (lock.eventId !== request.eventId) {
+      return {
+        status: 'failed', duplicate: false, writesPerformed: false,
+        reason: 'E_TOPIC_INTENT_UNRESOLVED', lockedEventId: lock.eventId,
+      };
+    }
+    return null; // same event may retry the durable intent save
+  }
+
+  async function saveIntent(record) {
+    persisted.store.put(record.eventId, record);
+    const saved = await save();
+    if (!saved || !saved.ok) {
+      const unknown = !saved || saved.code === 'E_LEDGER_SAVE_THREW' || saved.code === 'E_LEDGER_SAVE_UNKNOWN';
+      // Keep the unconfirmed record in memory; the topic lock and the missing
+      // durable-confirmation flag prevent any CAS bypass.
+      lockTopic(record.topicId, record.eventId, unknown ? 'E_INTENT_STATE_UNKNOWN' : 'E_INTENT_PERSIST_FAILED', unknown);
+      return { ok: false, code: unknown ? 'E_INTENT_STATE_UNKNOWN' : 'E_INTENT_PERSIST_FAILED' };
+    }
+    confirmed.add(record.eventId);
+    topicLocks.delete(record.topicId);
+    return { ok: true };
+  }
+
+  // Plan the exact write on a detached storage clone + throwaway ledger, so the
+  // prepared record (beforeHash/expectedAfterHash/fields) can be persisted
+  // BEFORE the real topic CAS. Only the synthetic storage can be cloned; any
+  // other backend fails closed because intent planning is unavailable.
+  function planIntent(request) {
+    if (!(storage instanceof SyntheticUnifiedStorage)) return null;
+    const clone = new SyntheticUnifiedStorage(Object.fromEntries(
+      [...storage.files.entries()].map(([filePath, entry]) => [filePath, {
+        mfId: entry.mfId, revision: entry.revision, frontmatter: entry.frontmatter, body: entry.body,
+      }]),
+    ));
+    const tempLedger = new PersistentEventLedger(new MemoryLedgerStore());
+    const planned = executeUnifiedEvent(request, {
+      mode: { mode: 'unified' }, storage: clone, ledger: tempLedger, capability,
+    });
+    if (planned.status !== 'applied' || !planned.writesPerformed) return { planned, record: null };
+    return { planned, record: tempLedger.get(request.eventId) };
   }
 
   async function execute(request, { legacy = null, shadow = null } = {}) {
@@ -70,12 +133,45 @@ function createHostRuntime({ mode = 'legacy', conditions = {}, authorization = n
         error.blockers = evaluation.blockers;
         throw error;
       }
+      if (typeof persist !== 'function') {
+        const error = new Error('a durable ledger sink is required for unified writes');
+        error.code = 'E_LEDGER_PERSIST_REQUIRED';
+        throw error;
+      }
+      const blocked = unresolved(request.topicId, request);
+      if (blocked) return blocked;
+
+      if (!confirmed.has(request.eventId)) {
+        let planned = null;
+        if (!persisted.get(request.eventId)) {
+          const intent = planIntent(request);
+          if (intent === null) {
+            return { status: 'failed', duplicate: false, writesPerformed: false, reason: 'E_INTENT_PLAN_UNAVAILABLE' };
+          }
+          planned = intent.record;
+        }
+        const record = persisted.get(request.eventId) || (planned
+          ? { ...planned, status: 'prepared', afterHash: null, actualRevision: null, result: null }
+          : null);
+        if (record) {
+          const intentSave = await saveIntent(record);
+          if (!intentSave.ok) {
+            return { status: 'failed', duplicate: false, writesPerformed: false, reason: intentSave.code };
+          }
+        }
+      }
+
       const result = executeUnifiedEvent(request, {
         mode: { mode: 'unified' }, storage, ledger: persisted, capability,
       });
-      const flush = await save();
-      if (!flush.ok && (result.status === 'applied' || result.status === 'duplicate')) {
-        return { ...result, status: 'uncertain', writesPerformed: result.writesPerformed !== false, ledgerError: flush.code };
+
+      if (result.status === 'applied' || result.status === 'duplicate' || result.status === 'no-op') {
+        const flush = await save();
+        if (!flush || !flush.ok) {
+          lockTopic(request.topicId, request.eventId, 'E_APPLIED_PERSIST_FAILED', false);
+          return { ...result, status: 'uncertain', writesPerformed: result.writesPerformed !== false, ledgerError: flush && flush.code };
+        }
+        confirmed.add(request.eventId);
       }
       return result;
     }
@@ -103,8 +199,20 @@ function createHostRuntime({ mode = 'legacy', conditions = {}, authorization = n
       const result = reconcileUnifiedEvent(record.eventId, { storage, ledger: persisted });
       recovered.push({ eventId: record.eventId, status: result.status, writesPerformed: result.writesPerformed });
     }
-    if (recovered.length) await save();
-    return { recovered, blockedTopicIds: blockedTopicsFromLedger(persisted) };
+    let persistedOk = true;
+    if (recovered.length) {
+      const saved = await save();
+      if (!saved || !saved.ok) {
+        persistedOk = false;
+        for (const entry of recovered) {
+          const record = persisted.get(entry.eventId);
+          if (record) lockTopic(record.topicId, record.eventId, 'E_RECOVERY_PERSIST_FAILED', false);
+        }
+      } else {
+        for (const entry of recovered) confirmed.add(entry.eventId);
+      }
+    }
+    return { recovered, persisted: persistedOk, blockedTopicIds: blockedTopicsFromLedger(persisted) };
   }
 
   function view() {
