@@ -115,3 +115,52 @@ node scripts/build.mjs --dry-run                 no files written
 
 仅 Mock Obsidian / 内存数据；未访问真实 Vault、`MemoFlow-Test`、`phase2 test`、Obsidian、SR；
 未写真实 `data.json`；未启用 Unified；未执行迁移；未创建 PR；Phase 1 工作区未触碰。
+
+---
+
+## 补充轮次：并发、账本持久化与缓存契约
+
+### A. Topic 级串行化
+
+`host-async-runtime` 增加每 Topic 一条执行链 `topicChains`：
+
+- 第二个事件**等待**第一个事件的整条链（读取→Intent→CAS→回读→账本）结束；
+- 等待结束后**重新检查**运行时锁与最新修订，不会用旧快照继续；
+- 同一 eventId 并发 → 第一个 applied，第二个 duplicate；
+- 不同 eventId 同一 Topic → 后到者拿到 `E_REVISION_MISMATCH`（不双写）；
+- 执行抛异常 → 链尾仍会清理 map 条目，Topic 不会被永久占用；
+- 事件进入 uncertain → 链释放，但 `topicLocks` 保留，后续事件返回
+  `E_TOPIC_INTENT_STATE_UNKNOWN`。
+
+### B. 账本全局持久化顺序
+
+- 运行时只有**一条**保存链 `saveChain`；快照在链内、前一次保存结束之后才取，
+  因此后一次保存不可能写入更旧的快照，也不会丢掉其他 Topic 的记录；
+- 每个事件的 Intent 必须 `await` 保存成功后才执行 Topic CAS（不变）；
+- `createObsidianPluginDataStore` 的 `saveData` 也串行化（同一 adapter 内），
+  避免并发 read-modify-write 导致后保存的键覆盖先保存的键；
+- 残余限制（已披露）：调用方绕过 adapter 直接 `plugin.saveData()` 仍可能竞争。
+
+### C. MetadataCache 契约
+
+- MetadataCache 只当**索引**用：命中后仍在 `Vault.process` 回调里用最新字节复核
+  `mf_id`，缓存过期/指向错误笔记 → 失败关闭，不写错文件；
+- 缓存未命中（新建文件尚未索引）→ 有界直接读取回退（最多 500 个 Markdown 文件），
+  找到后记住解析结果；未找到/重复 → `E_TOPIC_NOT_FOUND` / `E_DUPLICATE_TOPIC_ID`；
+- 读取失败（文件已移动/删除）→ 丢弃记忆并失败关闭。
+
+### D. 诊断与结果诚实性修复
+
+- 结果保存失败 → 记录回落为 `uncertain`（而不是内存里留 `applied`），`recover()` 才能处理；
+- `view().blockedTopicIds` 现在同时包含账本阻塞状态与运行时锁；
+- 恢复成功会解除该 Topic 的运行时锁；
+- “已恢复的 duplicate 但结果保存失败”不再返回 `duplicate:true`，而是 `uncertain`；
+- `writesPerformed`：确定未写 = `false`；回读失败/异常 = `null`（未知）。
+
+### E. 本轮测试
+
+```
+test/mf-us-1-host-concurrency.test.js   16 pass
+test/mf-us-1-host-runtime.test.js       15 pass
+test/*.test.js                        1190 pass
+```

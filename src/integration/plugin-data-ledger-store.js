@@ -95,19 +95,32 @@ function createKeyedDataStore(data = {}) {
 // Maps Obsidian's Plugin.loadData()/saveData(data) signatures. Ledger data is
 // namespaced; other settings/Refine state are merged from the latest snapshot
 // and never overwritten by the ledger.
+//
+// Saves are serialised inside the adapter: two overlapping read-modify-write
+// cycles used to be able to land out of order and silently drop the newer
+// snapshot. The merge still reads the latest persisted data, so concurrent
+// writes to a *different* key are preserved as long as they go through this
+// adapter. A caller that bypasses the adapter and calls plugin.saveData()
+// directly can still race; that residual limit is documented, not hidden.
 function createObsidianPluginDataStore(plugin, { defaultKey = 'mfUs1Ledger' } = {}) {
   if (!plugin || typeof plugin.loadData !== 'function' || typeof plugin.saveData !== 'function') {
     fail('E_LEDGER_STORE_REQUIRED', 'a plugin with loadData()/saveData(data) is required');
   }
+  let chain = Promise.resolve();
   return {
     async loadData(key = defaultKey) {
       const all = await plugin.loadData();
       return all && typeof all === 'object' ? (all[key] ?? null) : null;
     },
-    async saveData(key = defaultKey, value) {
-      const current = await plugin.loadData();
-      const base = current && typeof current === 'object' ? current : {};
-      await plugin.saveData({ ...base, [key]: value });
+    saveData(key = defaultKey, value) {
+      const run = chain.then(async () => {
+        const current = await plugin.loadData();
+        const base = current && typeof current === 'object' ? current : {};
+        await plugin.saveData({ ...base, [key]: value });
+      });
+      // Keep the chain alive after a rejection, but let the caller see it.
+      chain = run.then(() => undefined, () => undefined);
+      return run;
     },
   };
 }

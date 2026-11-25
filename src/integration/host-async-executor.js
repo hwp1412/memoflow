@@ -104,8 +104,17 @@ async function executeUnifiedEventAsync(request, dependencies = {}) {
         audit: { ...classification.record.audit, result: 'recovered-from-intent' },
       });
       const saved = await persistOrFail(dependencies.persistResult, 'E_LEDGER_SAVE_FAILED');
-      if (!saved.ok) return { status: 'uncertain', duplicate: true, writesPerformed: false, reason: saved.code, recovered: true, ledgerError: saved.code, record: ledger.get(request.eventId) };
-      return { status: 'applied', duplicate: true, recovered: true, writesPerformed: false, record: ledger.get(request.eventId) };
+      if (!saved.ok) {
+        // The recovery could not be made durable. It must never be reported as
+        // a successful duplicate: the caller has to treat this as uncertain.
+        ledger.markUncertain(request.eventId, 'E_APPLIED_PERSIST_FAILED', classification.record.audit);
+        return {
+          status: 'uncertain', duplicate: false, verified: false, recovered: true,
+          writesPerformed: false, reason: 'E_APPLIED_PERSIST_FAILED', ledgerError: saved.code,
+          requiresManualRecovery: true, record: ledger.get(request.eventId),
+        };
+      }
+      return { status: 'applied', duplicate: true, verified: true, recovered: true, writesPerformed: false, record: ledger.get(request.eventId) };
     }
     if (currentHash !== classification.record.beforeHash) {
       ledger.markManual(request.eventId, 'E_EXTERNAL_EDIT', { ...classification.record.audit, requiresManualRecovery: true });
@@ -155,7 +164,10 @@ async function executeUnifiedEventAsync(request, dependencies = {}) {
       writesPerformed: false, audit: { ...record.audit, result: applied.reason || 'no-op', writesPerformed: false },
     });
     const saved = await persistOrFail(dependencies.persistResult, 'E_LEDGER_SAVE_FAILED');
-    if (!saved.ok) return { status: 'uncertain', duplicate: false, writesPerformed: false, reason: saved.code, ledgerError: saved.code };
+    if (!saved.ok) {
+      ledger.markUncertain(request.eventId, 'E_APPLIED_PERSIST_FAILED', record.audit);
+      return { status: 'uncertain', duplicate: false, writesPerformed: false, reason: 'E_APPLIED_PERSIST_FAILED', ledgerError: saved.code, requiresManualRecovery: true };
+    }
     return { status: 'no-op', duplicate: false, writesPerformed: false, reason: applied.reason || 'NO_STATE_CHANGE', record: ledger.get(request.eventId) };
   }
 
@@ -228,7 +240,10 @@ async function executeUnifiedEventAsync(request, dependencies = {}) {
   });
   const saved = await persistOrFail(dependencies.persistResult, 'E_LEDGER_SAVE_FAILED');
   if (!saved.ok) {
-    // The topic changed but the durable result did not land: uncertain, not applied.
+    // The topic changed but the durable result did not land: uncertain, not
+    // applied. The in-memory record must say uncertain too, otherwise recover()
+    // would skip a write whose confirmation never persisted.
+    ledger.markUncertain(request.eventId, 'E_APPLIED_PERSIST_FAILED', { ...record.audit, requiresManualRecovery: true });
     return {
       status: 'uncertain', duplicate: false, writesPerformed: true, reason: 'E_APPLIED_PERSIST_FAILED',
       ledgerError: saved.code, requiresManualRecovery: true, record: finalRecord,

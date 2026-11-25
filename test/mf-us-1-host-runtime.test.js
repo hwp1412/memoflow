@@ -423,3 +423,19 @@ test('a structured scheduling field is refused instead of being flattened', asyn
   assert.equal(result.code, 'E_FIELD_STRUCTURED');
   assert.equal(content(app, file), original);
 });
+
+test('comments and quoted values in Frontmatter survive a Unified event', async () => {
+  const { plugin, app } = await harness();
+  const file = addTopic(app, 'Sources/R.md', uuid(15));
+  const original = content(app, file).replace(
+    'custom_field: keep-me',
+    '# keep this comment\ncustom_field: "00123"\nquoted: "a: b # c"',
+  );
+  await app.vault.process(file, () => original);
+  await plugin._gradeTopic(file, fmOf(app, file), TODAY);
+  const after = content(app, file);
+  assert.ok(after.includes('# keep this comment'));
+  assert.ok(after.includes('custom_field: "00123"'));
+  assert.ok(after.includes('quoted: "a: b # c"'));
+  assert.equal(fmOf(app, file).mf_revision, 1);
+});
