@@ -28,6 +28,7 @@ reconcileMigrationBatch(batch, storage)
 - `context`：必须显式提供 `dateFormat`；不读系统时钟、不读文件系统。
 - `options`：`snapshotId`、`uuidAllocator`（注入式确定性分配器）、`createdAt`（显式审计时间，可选）。
 - 迁移执行必须提供 `authorization = {environment:'memory', authorized:true, batchId}`；其他环境、`authorized!==true`、`mode:'unified'` 一律拒绝。
+- **存储可信性**：只接受本模块通过私有 `WeakSet` 注册的 `MemoryStorage` 与 `MemoryBackupStore`。带 `getFile/write`、`environment='memory'`、`authorized=true` 的普通对象在读取前即被 `E_STORAGE_UNTRUSTED` / `E_BACKUP_STORE_UNTRUSTED` 拒绝（测试用 spy 证明零读取/零写入）。
 
 ## 3. 分类
 
@@ -39,14 +40,15 @@ reconcileMigrationBatch(batch, storage)
 | `blocked` | 数据非法或不支持（坏日期、缺失 Priority、`inbox/pending/container`、Card） |
 | `conflict` | 新旧字段矛盾或重复身份 |
 
-不合法、歧义、重复 ID、关系不明的记录**不会**进入执行集合；单条异常不影响其他记录。
+不合法、歧义、重复 ID、关系不明的记录**不会**进入执行集合；单条异常不影响其他记录。要执行 `migratable` 的记录还必须携带精确 `content`（预览时计算 hash）；缺内容/无法合并 Frontmatter 的记录降为 `manual-review`/`blocked`。
 
 ## 4. 字段映射（严格 A10.2）
 
 - 合法旧 `next_review` → `mf_ideal_due`；旧 `interval` → `mf_interval_days`；`a_factor`、`review_count` 原样保留；
 - `review_count=0` 但已有合法 interval 的旧数据**不重算**首次间隔；
 - 旧 `next_review` 与现代字段冲突 → `conflict` 并阻塞；
-- `mf_not_before = null` + `NOT_BEFORE_NOT_RECOVERABLE`；旧 interval 可能含行政操作 → `LEGACY_INTERVAL_MAY_INCLUDE_ADMINISTRATIVE_VALUE`；
+- 已有合法 `mf_not_before` 原样保留（before/after 都使用实际值，Effective Due 取 max）；仅当历史没有该字段时才写 `null` + `NOT_BEFORE_NOT_RECOVERABLE`；
+- 旧 interval 可能含行政操作 → `LEGACY_INTERVAL_MAY_INCLUDE_ADMINISTRATIVE_VALUE`；
 - 不推测恢复被旧 Mercy/postpone 污染的间隔；
 - 每条记录给出 Before/After 的 Ideal Due、Not Before、Effective Due 与 Interval/A-Factor/Priority/review_count，并断言 Effective Due 前后一致；不一致 → `blocked`；
 - 只新增缺失字段，不静默覆盖现存合法现代字段。
@@ -71,37 +73,39 @@ reconcileMigrationBatch(batch, storage)
 ```
 
 - `contentHash` 使用纯 JS SHA-256（测试与 Node `crypto` 逐字节比对）；
-- 备份前校验：文件存在、preview 内容 hash 一致、revision 一致；失败即拒绝；
+- 备份前校验：文件存在、preview 内容 hash **必须存在且一致**、revision 一致（预览有 revision 而存储无 revision → `E_REVISION_UNAVAILABLE`）、Frontmatter 可安全合并；失败即拒绝；
 - 备份后再次校验所有 hash；`verified=false` 的批次不能执行；
 - 未知 Frontmatter、来源信息、阅读历史、正文、换行等均保留。
 
 ## 7. 执行事务模型
 
 - 校验计划完整性（`planId` 重算）、授权环境、备份存在且 hash 正确；
+- 每个条目在写入前固定**写入意图** `{expectedContent, expectedAfterHash, fields}`，即使崩溃后状态仍为 `pending`，也能用当前 hash 与意图判断是否已应用；
 - 逐文件：当前 hash 必须等于备份前 hash；有 revision 时还须匹配；发现外部编辑 → `conflict` 并跳过；
-- 只更新批准字段（`mergeFrontmatter`），其他行与正文逐字节保留；
+- 只更新批准字段（`mergeFrontmatter`），支持 LF/CRLF、UTF-8 BOM，保留未知字段、注释、正文与尾部空行；无 Frontmatter/未闭合/替换字符 → 明确错误，不插入新头部；
 - 单文件写入后回读校验；记录 before/after hash；
-- 不假设跨文件原子性：允许部分完成，批次状态 `applied` / `partially-applied` / `failed`；
+- 不假设跨文件原子性：允许部分完成；
+- `writesPerformed` 仅在有真实成功写入时为 true；全部冲突/仅确认/重复执行为 false；写入后无法回读 → `uncertain` + `writeOutcome:'uncertain'`，批次进入 `requires-manual-recovery`，不谎报成功；
 - 已写入的文件再次执行 → `already-applied`（幂等）。
 
 ## 8. 回滚与恢复
 
 状态：`pending` / `applied` / `failed` / `rolled-back` / `conflict` / `requires-manual-recovery`。
 
-- `previewRollback`：根据当前内容 hash 判断 `rollback-ready` / `already-rolled-back` / `conflict` / `requires-manual-recovery`；
-- `rollbackMigration`：只回滚当前仍等于 after hash 的文件；用户后续编辑 → 拒绝覆盖；
+- `previewRollback`：根据写入意图的 `expectedAfterHash`（无 afterHash 也可）判断 `rollback-ready` / `already-rolled-back` / `conflict` / `requires-manual-recovery`；
+- `rollbackMigration`：只回滚当前仍等于 after hash 的文件；用户后续编辑 → 拒绝覆盖；写入/回读异常 → `uncertain`；`writesPerformed` 同样只在真实恢复成功时为 true；
 - 精确恢复原始内容与原始 revision，不使用“清空新字段”；
 - 部分回滚、重复回滚幂等；已恢复文件不再次损坏；
 - `reconcileMigrationBatch`：根据 before/after hash 重新核实中断后的真实状态。
 
 ## 9. 已验证的故障注入
 
-备份前失败、备份后写入前失败、首条写入失败、部分成功部分失败、写入成功但状态未记录（reconcile）、回滚前用户编辑、备份损坏/缺失、计划被篡改、重复执行、重复回滚。
+备份前失败、备份后写入前失败、首条写入失败、部分成功部分失败、**写入成功但 applied/afterHash 未记录**（pending 批次 + intent → reconcile/rollback）、写入成功但回读失败（`uncertain`）、回滚成功但确认失败、回滚前用户编辑、备份损坏/缺失、计划被篡改、重复执行、重复回滚。
 
 ## 10. 测试与性能
 
 ```
-node --test test/mf-us-1-migration*.test.js   tests 42  pass 42  fail 0
+node --test test/mf-us-1-migration*.test.js   tests 62  pass 62  fail 0
 ```
 
 10,000 个合成 Source 的迁移预览：**约 177ms**（Apple M4 / Node v24.21.0）。仅为迁移规划观测，**不是** A14 队列基准。
@@ -123,4 +127,4 @@ node --test test/mf-us-1-migration*.test.js   tests 42  pass 42  fail 0
 
 ## 13. 安全边界
 
-全部测试使用合成数据与注入式内存存储；未访问真实 Vault、`MemoFlow-Test`、`phase2 test`、Obsidian、SR；未修改 Frontmatter/`data.json`；未生成或落盘真实 UUID；未执行真实迁移；未启用 Unified；未修改 PR-01～07 已验收算法；未创建 PR/合并。
+全部测试使用合成数据与模块注册的内存存储；未访问真实 Vault、`MemoFlow-Test`、`phase2 test`、Obsidian、SR；未修改 Frontmatter/`data.json`；未生成或落盘真实 UUID；未执行真实迁移；未启用 Unified；未修改 PR-01～07 已验收算法；未创建 PR/合并。

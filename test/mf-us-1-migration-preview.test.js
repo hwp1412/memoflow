@@ -133,3 +133,62 @@ test('preview is deterministic, frozen-input safe and carries no writes', () => 
   assert.deepEqual(JSON.parse(JSON.stringify(raw)), frozen);
   assert.equal(first.writesPerformed, false);
 });
+
+// ---- snapshot evidence and existing not-before (review fixes 3, 5) --------
+
+test('a preview without exact content cannot become executable', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  delete raw.content;
+  const plan = previewMigration([raw], CONTEXT);
+  assert.equal(plan.entries[0].status, 'manual-review');
+  assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'SNAPSHOT_CONTENT_MISSING'));
+  assert.equal(plan.executable, 0);
+});
+
+test('an existing modern not-before is preserved on both sides', () => {
+  const { raw } = note({ mfId: uuid(1), extra: { mf_not_before: '2026-11-30' } });
+  const plan = previewMigration([raw], CONTEXT);
+  const entry = plan.entries[0];
+  assert.equal(entry.before.notBefore, '2026-11-30');
+  assert.equal(entry.after.notBefore, '2026-11-30');
+  assert.equal(entry.before.effectiveDue, '2026-11-30');
+  assert.equal(entry.after.effectiveDue, '2026-11-30');
+  assert.equal(entry.effectiveDuePreserved, true);
+  assert.equal('mf_not_before' in entry.fieldsToAdd, false);
+  assert.equal(entry.lossNotes.includes('NOT_BEFORE_NOT_RECOVERABLE'), false);
+});
+
+test('a fully modern note with not-before is already migrated', () => {
+  const { raw } = note({
+    mfId: uuid(1),
+    extra: {
+      mf_ideal_due: '2026-11-24',
+      mf_not_before: '2026-11-30',
+      mf_interval_days: 8,
+      mf_scheduler_version: 1,
+      mf_revision: 0,
+      mf_last_event_id: null,
+      mf_root_id: uuid(1),
+    },
+  });
+  const plan = previewMigration([raw], CONTEXT);
+  assert.equal(plan.entries[0].status, 'already-migrated');
+  assert.deepEqual(plan.entries[0].fieldsToAdd, {});
+});
+
+test('an illegal modern not-before blocks the note', () => {
+  const { raw } = note({ mfId: uuid(1), extra: { mf_not_before: 'not-a-date' } });
+  const plan = previewMigration([raw], CONTEXT);
+  assert.equal(plan.entries[0].status, 'blocked');
+  assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'E_DATE_INVALID'));
+});
+
+test('a mixed batch keeps not-before and no-not-before entries separate', () => {
+  const { raw: withNotBefore } = note({ mfId: uuid(1), extra: { mf_not_before: '2026-11-30' } });
+  const { raw: without } = note({ mfId: uuid(2), path: 'Sources/B.md', basename: 'B' });
+  const plan = previewMigration([withNotBefore, without], CONTEXT);
+  assert.equal(plan.entries[0].before.effectiveDue, '2026-11-30');
+  assert.equal(plan.entries[1].before.effectiveDue, '2026-11-24');
+  assert.equal(plan.entries[1].fieldsToAdd.mf_not_before, null);
+  assert.equal(plan.entries[1].lossNotes.includes('NOT_BEFORE_NOT_RECOVERABLE'), true);
+});

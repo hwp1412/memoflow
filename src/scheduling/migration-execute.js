@@ -1,13 +1,16 @@
 'use strict';
 
-// Migration execution, rollback and reconciliation on INJECTED memory storage
-// only (PR-08). There is no real-vault path here: a caller cannot unlock a real
-// environment with authorized=true, and Unified writes stay refused.
+// Migration execution, reconciliation and rollback on the module-registered
+// MemoryStorage only (PR-08). A plain object with getFile/write cannot pass:
+// the trust registry is a module-private WeakSet. Real Obsidian storage needs a
+// separately reviewed adapter in a later PR.
 
 const { fail, isSchedulingError } = require('./errors.js');
 const { sha256Hex } = require('./migration-hash.js');
 const { PLAN_KIND, planHashOf } = require('./migration-plan.js');
 const { verifyMigrationBackup } = require('./migration-backup.js');
+const { mergeFrontmatter } = require('./migration-frontmatter.js');
+const { assertTrustedStorage, assertTrustedBackupStore } = require('./migration-storage.js');
 
 const BATCH_KIND = 'mf-us-1-migration-batch';
 
@@ -33,54 +36,33 @@ function assertPlanIntegrity(plan) {
   return plan;
 }
 
-function assertStorage(storage) {
-  if (!storage || typeof storage.getFile !== 'function' || typeof storage.write !== 'function') {
-    fail('E_STORAGE_INVALID', 'migration requires an injected storage with getFile/write');
-  }
-  return storage;
-}
-
-function serializeValue(value) {
-  if (value === null) return 'null';
-  return String(value);
-}
-
-// Update only the approved frontmatter keys; every other line and the body are
-// preserved byte for byte.
-function mergeFrontmatter(content, fields) {
-  const text = String(content);
-  const lines = text.split('\n');
-  const rendered = new Map(Object.entries(fields).map(([key, value]) => [key, `${key}: ${serializeValue(value)}`]));
-
-  if (lines[0] === '---') {
-    let end = -1;
-    for (let index = 1; index < lines.length; index += 1) {
-      if (lines[index] === '---') {
-        end = index;
-        break;
-      }
-    }
-    if (end > 0) {
-      const frontmatter = lines.slice(1, end);
-      const applied = new Set();
-      const next = frontmatter.map(line => {
-        const match = line.match(/^([A-Za-z0-9_-]+)\s*:/);
-        if (!match || !rendered.has(match[1])) return line;
-        applied.add(match[1]);
-        return rendered.get(match[1]);
-      });
-      for (const [key, line] of rendered) {
-        if (!applied.has(key)) next.push(line);
-      }
-      return [lines[0], ...next, ...lines.slice(end)].join('\n');
-    }
-  }
-
-  return ['---', ...rendered.values(), '---', ...lines].join('\n');
-}
-
 function bumpRevision(revision) {
   return Number.isInteger(revision) ? revision + 1 : revision ?? null;
+}
+
+function makeIntent(path, fields, originalContent) {
+  const expectedContent = mergeFrontmatter(originalContent, fields);
+  return {
+    path,
+    fields: { ...fields },
+    expectedContent,
+    expectedAfterHash: sha256Hex(expectedContent),
+  };
+}
+
+function intentIsValid(entry) {
+  const intent = entry && entry.intent;
+  return Boolean(
+    intent
+    && intent.path === entry.path
+    && typeof intent.expectedContent === 'string'
+    && typeof intent.expectedAfterHash === 'string'
+    && sha256Hex(intent.expectedContent) === intent.expectedAfterHash
+  );
+}
+
+function expectedAfterHashOf(entry) {
+  return intentIsValid(entry) ? entry.intent.expectedAfterHash : null;
 }
 
 function createBatch(plan, backup) {
@@ -90,29 +72,46 @@ function createBatch(plan, backup) {
     planId: plan.planId,
     status: 'pending',
     environment: 'memory',
-    entries: backup.entries.map(entry => ({
-      operationId: entry.operationId,
-      index: entry.index,
-      path: entry.path,
-      beforeHash: entry.contentHash,
-      afterHash: null,
-      revision: entry.revision,
-      status: 'pending',
-      error: null,
-      originalContent: entry.content,
-      fields: { ...entry.fields },
-    })),
+    entries: backup.entries.map(entry => {
+      const planEntry = plan.entries.find(candidate => candidate.path === entry.path);
+      const intent = planEntry
+        ? makeIntent(entry.path, planEntry.fieldsToAdd, entry.content)
+        : null;
+      return {
+        operationId: entry.operationId,
+        index: entry.index,
+        path: entry.path,
+        beforeHash: entry.contentHash,
+        afterHash: null,
+        revision: entry.revision,
+        status: 'pending',
+        error: null,
+        originalContent: entry.content,
+        fields: { ...entry.fields },
+        intent,
+      };
+    }),
     writesPerformed: false,
+    writeOutcome: 'none',
+    counts: null,
   };
+}
+
+function summaryOfBatch(batch) {
+  const statuses = batch.entries.map(entry => entry.status);
+  const uncertain = statuses.filter(status => status === 'uncertain').length;
+  if (uncertain > 0) return 'requires-manual-recovery';
+  if (statuses.every(status => status === 'applied' || status === 'already-applied')) return 'applied';
+  if (statuses.some(status => status === 'applied' || status === 'already-applied')) return 'partially-applied';
+  return 'failed';
 }
 
 function executeMigration(plan, storage, authorization, backupStore) {
   assertPlanIntegrity(plan);
-  assertStorage(storage);
+  assertTrustedStorage(storage);
+  assertTrustedBackupStore(backupStore);
   assertMemoryAuthorization(authorization);
-  if (!backupStore || typeof backupStore.get !== 'function') {
-    fail('E_BACKUP_STORE_REQUIRED', 'migration requires a backup store');
-  }
+
   const batchId = authorization.batchId;
   if (!batchId) fail('E_MIGRATION_UNAUTHORIZED', 'authorization must name the migration batch');
   const backup = backupStore.get(batchId);
@@ -124,65 +123,97 @@ function executeMigration(plan, storage, authorization, backupStore) {
   }
 
   const batch = createBatch(plan, backup);
+  if (typeof backupStore.putBatch === 'function') backupStore.putBatch(batch);
+
   const planByPath = new Map(plan.entries.map(entry => [entry.path, entry]));
+  const counts = { attempted: 0, succeeded: 0, failed: 0, alreadyApplied: 0, conflicts: 0, uncertain: 0 };
 
   for (const entry of batch.entries) {
     const planEntry = planByPath.get(entry.path);
-    const current = storage.getFile(entry.path);
-    if (!planEntry) {
+    if (!planEntry || !intentIsValid(entry)) {
       entry.status = 'failed';
-      entry.error = { code: 'E_PLAN_ENTRY_MISSING', message: 'plan entry missing for backup entry' };
+      entry.error = { code: 'E_INTENT_INVALID', message: 'the batch write intent is missing or inconsistent' };
+      counts.failed += 1;
       continue;
     }
+
+    const current = storage.getFile(entry.path);
     if (!current) {
       entry.status = 'failed';
       entry.error = { code: 'E_FILE_MISSING', message: 'the file disappeared before migration' };
+      counts.failed += 1;
       continue;
     }
 
     const currentHash = sha256Hex(current.content);
-    const expectedContent = mergeFrontmatter(entry.originalContent, planEntry.fieldsToAdd);
-    const expectedHash = sha256Hex(expectedContent);
+    const expectedAfterHash = entry.intent.expectedAfterHash;
 
-    if (currentHash === expectedHash) {
+    // Recovery window: a pending entry may already hold the expected result.
+    if (currentHash === expectedAfterHash) {
       entry.status = 'already-applied';
-      entry.afterHash = expectedHash;
+      entry.afterHash = expectedAfterHash;
+      counts.alreadyApplied += 1;
       continue;
     }
     if (currentHash !== entry.beforeHash) {
       entry.status = 'conflict';
       entry.error = { code: 'E_EXTERNAL_EDIT', message: 'the file changed after the backup was taken' };
+      counts.conflicts += 1;
       continue;
     }
-    if (planEntry.revision != null && current.revision != null && current.revision !== planEntry.revision) {
-      entry.status = 'conflict';
-      entry.error = { code: 'E_REVISION_MISMATCH', message: 'the persisted revision changed after preview' };
-      continue;
+    if (planEntry.revision != null) {
+      if (current.revision == null) {
+        entry.status = 'conflict';
+        entry.error = { code: 'E_REVISION_UNAVAILABLE', message: 'the storage cannot prove the preview revision' };
+        counts.conflicts += 1;
+        continue;
+      }
+      if (current.revision !== planEntry.revision) {
+        entry.status = 'conflict';
+        entry.error = { code: 'E_REVISION_MISMATCH', message: 'the persisted revision changed after preview' };
+        counts.conflicts += 1;
+        continue;
+      }
     }
 
+    counts.attempted += 1;
     try {
-      storage.write(entry.path, expectedContent, bumpRevision(current.revision));
+      storage.write(entry.path, entry.intent.expectedContent, bumpRevision(current.revision));
       const written = storage.getFile(entry.path);
-      if (!written || written.content !== expectedContent) {
+      if (!written || written.content !== entry.intent.expectedContent) {
         throw new Error('written content did not verify');
       }
       entry.status = 'applied';
-      entry.afterHash = sha256Hex(written.content);
+      entry.afterHash = expectedAfterHash;
+      counts.succeeded += 1;
     } catch (error) {
-      entry.status = 'failed';
-      entry.error = {
-        code: isSchedulingError(error) ? error.code : 'E_WRITE_FAILED',
-        message: error && error.message ? error.message : 'write failed',
-      };
+      const code = isSchedulingError(error) ? error.code : 'E_WRITE_UNVERIFIED';
+      if (code === 'E_STORAGE_WRITE_FAILED') {
+        entry.status = 'failed';
+        counts.failed += 1;
+      } else {
+        // The write may have landed; this is not reported as success or failure.
+        entry.status = 'uncertain';
+        counts.uncertain += 1;
+      }
+      entry.error = { code, message: error && error.message ? error.message : 'write outcome is unknown' };
     }
   }
 
-  const statuses = batch.entries.map(entry => entry.status);
-  if (statuses.every(status => status === 'applied' || status === 'already-applied')) batch.status = 'applied';
-  else if (statuses.some(status => status === 'applied' || status === 'already-applied')) batch.status = 'partially-applied';
-  else batch.status = 'failed';
+  batch.status = summaryOfBatch(batch);
+  batch.counts = counts;
+  batch.writesPerformed = counts.succeeded > 0;
+  batch.writeOutcome = counts.uncertain > 0 ? 'uncertain' : (counts.succeeded > 0 ? 'committed' : 'none');
+  if (typeof backupStore.putBatch === 'function') backupStore.putBatch(batch);
 
-  return { batch, environment: 'memory', writesPerformed: true, verified: true };
+  return {
+    batch,
+    counts,
+    environment: 'memory',
+    verified: true,
+    writesPerformed: batch.writesPerformed,
+    writeOutcome: batch.writeOutcome,
+  };
 }
 
 function contentMap(currentSnapshots) {
@@ -207,8 +238,12 @@ function previewRollback(batch, currentSnapshots) {
     if (typeof content !== 'string') {
       return { path: entry.path, status: 'requires-manual-recovery', reason: 'CURRENT_FILE_MISSING' };
     }
+    if (!intentIsValid(entry) && !entry.afterHash) {
+      return { path: entry.path, status: 'requires-manual-recovery', reason: 'INTENT_INVALID' };
+    }
     const hash = sha256Hex(content);
-    if (entry.afterHash && hash === entry.afterHash) return { path: entry.path, status: 'rollback-ready' };
+    const expectedAfterHash = expectedAfterHashOf(entry) || entry.afterHash;
+    if (expectedAfterHash && hash === expectedAfterHash) return { path: entry.path, status: 'rollback-ready' };
     if (hash === entry.beforeHash) return { path: entry.path, status: 'already-rolled-back' };
     return { path: entry.path, status: 'conflict', reason: 'EXTERNAL_EDIT' };
   });
@@ -224,12 +259,13 @@ function previewRollback(batch, currentSnapshots) {
 
 function rollbackMigration(batch, storage, authorization) {
   if (!batch || batch.kind !== BATCH_KIND) fail('E_BATCH_INVALID', 'a migration batch is required');
-  assertStorage(storage);
+  assertTrustedStorage(storage);
   assertMemoryAuthorization(authorization);
 
+  const counts = { attempted: 0, succeeded: 0, alreadyRolledBack: 0, conflicts: 0, failed: 0, uncertain: 0 };
   const entries = batch.entries.map(entry => {
-    const current = storage.getFile(entry.path);
     const next = { ...entry };
+    const current = storage.getFile(entry.path);
     if (!current) {
       next.status = 'requires-manual-recovery';
       next.error = { code: 'E_FILE_MISSING', message: 'the file is missing during rollback' };
@@ -238,13 +274,18 @@ function rollbackMigration(batch, storage, authorization) {
     const hash = sha256Hex(current.content);
     if (hash === entry.beforeHash) {
       next.status = 'rolled-back';
+      next.error = null;
+      counts.alreadyRolledBack += 1;
       return next;
     }
-    if (!entry.afterHash || hash !== entry.afterHash) {
+    const expectedAfterHash = expectedAfterHashOf(entry) || entry.afterHash;
+    if (!expectedAfterHash || hash !== expectedAfterHash) {
       next.status = 'conflict';
       next.error = { code: 'E_EXTERNAL_EDIT', message: 'the file changed after migration; rollback refused' };
+      counts.conflicts += 1;
       return next;
     }
+    counts.attempted += 1;
     try {
       storage.write(entry.path, entry.originalContent, entry.revision ?? null);
       const restored = storage.getFile(entry.path);
@@ -253,60 +294,102 @@ function rollbackMigration(batch, storage, authorization) {
       }
       next.status = 'rolled-back';
       next.error = null;
+      counts.succeeded += 1;
     } catch (error) {
-      next.status = 'failed';
-      next.error = {
-        code: isSchedulingError(error) ? error.code : 'E_WRITE_FAILED',
-        message: error && error.message ? error.message : 'rollback write failed',
-      };
+      const code = isSchedulingError(error) ? error.code : 'E_WRITE_UNVERIFIED';
+      if (code === 'E_STORAGE_WRITE_FAILED') {
+        next.status = 'failed';
+        counts.failed += 1;
+      } else {
+        next.status = 'uncertain';
+        counts.uncertain += 1;
+      }
+      next.error = { code, message: error && error.message ? error.message : 'rollback outcome is unknown' };
     }
     return next;
   });
 
   const statuses = entries.map(entry => entry.status);
   let status;
-  if (statuses.every(value => value === 'rolled-back')) status = 'rolled-back';
+  if (counts.uncertain > 0) status = 'requires-manual-recovery';
+  else if (statuses.every(value => value === 'rolled-back')) status = 'rolled-back';
   else if (statuses.some(value => value === 'rolled-back')) status = 'partially-rolled-back';
   else status = 'requires-manual-recovery';
 
+  const writesPerformed = counts.succeeded > 0;
   return {
-    batch: { ...batch, entries, status },
+    batch: {
+      ...batch,
+      entries,
+      status,
+      writesPerformed,
+      writeOutcome: counts.uncertain > 0 ? 'uncertain' : (writesPerformed ? 'committed' : 'none'),
+      counts,
+    },
     environment: 'memory',
-    writesPerformed: true,
+    writesPerformed,
+    writeOutcome: counts.uncertain > 0 ? 'uncertain' : (writesPerformed ? 'committed' : 'none'),
     summary: {
       total: entries.length,
       rolledBack: statuses.filter(value => value === 'rolled-back').length,
-      conflict: statuses.filter(value => value === 'conflict').length,
-      failed: statuses.filter(value => value === 'failed').length,
+      conflict: counts.conflicts,
+      failed: counts.failed,
+      uncertain: counts.uncertain,
       requiresManualRecovery: statuses.filter(value => value === 'requires-manual-recovery').length,
     },
+    counts,
   };
 }
 
 function reconcileMigrationBatch(batch, storage) {
   if (!batch || batch.kind !== BATCH_KIND) fail('E_BATCH_INVALID', 'a migration batch is required');
-  assertStorage(storage);
+  assertTrustedStorage(storage);
+
   const entries = batch.entries.map(entry => {
+    if (!intentIsValid(entry)) {
+      return {
+        ...entry,
+        status: 'requires-manual-recovery',
+        error: { code: 'E_INTENT_INVALID', message: 'the stored write intent is inconsistent with this batch' },
+      };
+    }
     const current = storage.getFile(entry.path);
-    if (!current) return { ...entry, status: 'requires-manual-recovery', error: { code: 'E_FILE_MISSING', message: 'file missing during reconciliation' } };
+    if (!current) {
+      return { ...entry, status: 'requires-manual-recovery', error: { code: 'E_FILE_MISSING', message: 'file missing during reconciliation' } };
+    }
     const hash = sha256Hex(current.content);
-    if (entry.afterHash && hash === entry.afterHash) return { ...entry, status: 'applied', error: null };
-    if (hash === entry.beforeHash) return { ...entry, status: entry.status === 'rolled-back' ? 'rolled-back' : 'pending', error: null };
+    if (hash === entry.intent.expectedAfterHash) return { ...entry, status: 'applied', afterHash: entry.intent.expectedAfterHash, error: null };
+    if (hash === entry.beforeHash) {
+      const status = entry.status === 'rolled-back' ? 'rolled-back' : 'pending';
+      return { ...entry, status, error: null };
+    }
     return { ...entry, status: 'conflict', error: { code: 'E_EXTERNAL_EDIT', message: 'content matches neither before nor after state' } };
   });
+
   const statuses = entries.map(entry => entry.status);
   let status;
-  if (statuses.every(value => value === 'applied')) status = 'applied';
+  if (statuses.some(value => value === 'requires-manual-recovery')) status = 'requires-manual-recovery';
+  else if (statuses.every(value => value === 'applied')) status = 'applied';
   else if (statuses.some(value => value === 'applied')) status = 'partially-applied';
   else if (statuses.every(value => value === 'rolled-back')) status = 'rolled-back';
   else if (statuses.some(value => value === 'rolled-back')) status = 'partially-rolled-back';
-  else status = 'requires-manual-recovery';
-  return { batch: { ...batch, entries, status }, summary: { applied: statuses.filter(v => v === 'applied').length, conflict: statuses.filter(v => v === 'conflict').length } };
+  else if (statuses.some(value => value === 'conflict')) status = 'requires-manual-recovery';
+  else status = 'pending';
+
+  return {
+    batch: { ...batch, entries, status },
+    summary: {
+      applied: statuses.filter(value => value === 'applied').length,
+      pending: statuses.filter(value => value === 'pending').length,
+      rolledBack: statuses.filter(value => value === 'rolled-back').length,
+      conflict: statuses.filter(value => value === 'conflict').length,
+      requiresManualRecovery: statuses.filter(value => value === 'requires-manual-recovery').length,
+    },
+  };
 }
 
 module.exports = {
   BATCH_KIND,
-  mergeFrontmatter,
   executeMigration,
   previewRollback,
   rollbackMigration,

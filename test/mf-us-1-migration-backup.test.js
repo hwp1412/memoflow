@@ -115,3 +115,86 @@ test('a backup from another plan and a tampered plan are rejected', () => {
   assert.throws(() => executeMigration(otherPlan, storage, auth, store),
     error => error.code === 'E_BACKUP_PLAN_MISMATCH');
 });
+
+// ---- storage trust and snapshot evidence (review fixes 1, 3) -------------
+
+test('a forged storage object is rejected before any read or write', () => {
+  const calls = { getFile: 0, write: 0 };
+  const fake = {
+    environment: 'memory',
+    authorized: true,
+    getFile() { calls.getFile += 1; return null; },
+    write() { calls.write += 1; },
+  };
+  const { raw } = note({ mfId: uuid(1) });
+  const plan = planFor(raw);
+  assert.throws(
+    () => createMigrationBackup(plan, fake, new MemoryBackupStore(), { batchId: 'b' }),
+    error => error.code === 'E_STORAGE_UNTRUSTED'
+  );
+  assert.deepEqual(calls, { getFile: 0, write: 0 });
+});
+
+test('a forged backup store is rejected before any lookup', () => {
+  const calls = { get: 0, putBatch: 0 };
+  const fakeStore = {
+    environment: 'memory',
+    get() { calls.get += 1; return null; },
+    putBatch() { calls.putBatch += 1; },
+  };
+  const { raw, content } = note({ mfId: uuid(1) });
+  const plan = planFor(raw);
+  const storage = new MemoryStorage({ 'Sources/A.md': content });
+  const realStore = new MemoryBackupStore();
+  createMigrationBackup(plan, storage, realStore, { batchId: 'b' });
+  assert.throws(
+    () => executeMigration(plan, storage, { environment: 'memory', authorized: true, batchId: 'b' }, fakeStore),
+    error => error.code === 'E_BACKUP_STORE_UNTRUSTED'
+  );
+  assert.deepEqual(calls, { get: 0, putBatch: 0 });
+});
+
+test('a forgery cannot pass by copying the real method names', () => {
+  const { raw, content } = note({ mfId: uuid(1) });
+  const plan = planFor(raw);
+  const real = new MemoryStorage({ 'Sources/A.md': content });
+  const clone = {
+    files: real.files,
+    getFile: real.getFile.bind(real),
+    write: real.write.bind(real),
+    environment: 'memory',
+    authorized: true,
+  };
+  assert.throws(() => createMigrationBackup(plan, clone, new MemoryBackupStore(), { batchId: 'b' }),
+    error => error.code === 'E_STORAGE_UNTRUSTED');
+});
+
+test('a preview without an exact hash is refused at backup time', () => {
+  const { raw, content } = note({ mfId: uuid(1) });
+  const plan = planFor(raw);
+  delete plan.entries[0].contentHash;
+  const storage = new MemoryStorage({ 'Sources/A.md': content });
+  const batch = createMigrationBackup(plan, storage, new MemoryBackupStore(), { batchId: 'b' });
+  assert.equal(batch.verified, false);
+  assert.ok(batch.errors.some(error => error.code === 'E_PREVIEW_HASH_MISSING'));
+});
+
+test('a preview revision that storage cannot prove is rejected', () => {
+  const { raw, content } = note({ mfId: uuid(1), extra: { mf_revision: 2 } });
+  const plan = planFor(raw);
+  const storage = new MemoryStorage({ 'Sources/A.md': content }); // no revision
+  const batch = createMigrationBackup(plan, storage, new MemoryBackupStore(), { batchId: 'b' });
+  assert.equal(batch.verified, false);
+  assert.ok(batch.errors.some(error => error.code === 'E_REVISION_UNAVAILABLE'));
+});
+
+test('an unmergeable frontmatter is rejected during backup', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  const plan = planFor(raw);
+  const broken = 'no frontmatter here';
+  plan.entries[0].contentHash = sha256Hex(broken);
+  const storage = new MemoryStorage({ 'Sources/A.md': broken });
+  const batch = createMigrationBackup(plan, storage, new MemoryBackupStore(), { batchId: 'b' });
+  assert.equal(batch.verified, false);
+  assert.ok(batch.errors.some(error => error.code === 'E_FRONTMATTER_INVALID'));
+});

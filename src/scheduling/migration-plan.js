@@ -21,6 +21,7 @@ const { resolveRelations } = require('./legacy-relations.js');
 const { isPersistentUuid } = require('./legacy-identity.js');
 const { effectiveDueFromDates } = require('./due.js');
 const { sha256Hex, hashObject } = require('./migration-hash.js');
+const { mergeFrontmatter } = require('./migration-frontmatter.js');
 
 const PLAN_KIND = 'mf-us-1-migration-plan';
 
@@ -101,10 +102,12 @@ function baseEntry(result, raw, index) {
 
   entry.status = 'pending';
   entry.requiresUuid = !entry.identity.persistent;
+  const existingNotBefore = typeof raw.mf_not_before === 'string' ? raw.mf_not_before : null;
+  if (existingNotBefore) entry.lossNotes = entry.lossNotes.filter(note => note !== 'NOT_BEFORE_NOT_RECOVERABLE');
   entry.before = {
     idealDue: topic.mf_ideal_due,
-    notBefore: null,
-    effectiveDue: effectiveDueFromDates(topic.mf_ideal_due, null),
+    notBefore: existingNotBefore,
+    effectiveDue: effectiveDueFromDates(topic.mf_ideal_due, existingNotBefore),
     intervalDays: topic.mf_interval_days,
     aFactor: topic.a_factor,
     priority: topic.priority,
@@ -194,6 +197,19 @@ function finalizeEntry(entry, raw, reportEntry, rawRelation, idToUuid, context) 
   if (raw.mf_parent_id == null && parentId) fields.mf_parent_id = parentId;
   if (raw.mf_root_id == null && rootId) fields.mf_root_id = rootId;
   entry.fieldsToAdd = fields;
+
+  // --- snapshot evidence ------------------------------------------------
+  if (Object.keys(fields).length > 0) {
+    if (typeof raw.content !== 'string') {
+      reasons.push(reason('SNAPSHOT_CONTENT_MISSING', 'the preview has no exact content/hash, so migration cannot verify the file later'));
+    } else {
+      try {
+        mergeFrontmatter(raw.content, fields);
+      } catch (error) {
+        reasons.push(reason(error.code || 'E_FRONTMATTER_INVALID', error.message || 'the frontmatter cannot be merged safely'));
+      }
+    }
+  }
 
   // --- status -----------------------------------------------------------
   const adapterStatus = reportEntry.status;

@@ -1,19 +1,25 @@
 'use strict';
 
-// Injected storage for migration tests (PR-08). This is the ONLY storage the
-// migration executor accepts. There is deliberately no adapter that would touch
-// a real vault or Obsidian; a future PR must provide its own reviewed adapter.
+// Injected storage for migration tests (PR-08). Only instances registered by
+// this module are accepted; a plain object with getFile/write cannot pass,
+// because the registry is a module-private WeakSet.
 
 const { fail } = require('./errors.js');
+
+const TRUSTED_STORAGE = new WeakSet();
+const TRUSTED_BACKUP_STORES = new WeakSet();
 
 class MemoryStorage {
   constructor(files = {}) {
     this.files = new Map();
     this.writeFailures = new Map();
+    this.verifyFailures = new Map();
+    this.verifyAfterWrite = new Map();
     for (const [path, value] of Object.entries(files)) {
       if (typeof value === 'string') this.setFile(path, value, null);
       else if (value && typeof value === 'object') this.setFile(path, String(value.content), value.revision ?? null);
     }
+    TRUSTED_STORAGE.add(this);
   }
 
   setFile(path, content, revision = null) {
@@ -24,7 +30,14 @@ class MemoryStorage {
 
   getFile(path) {
     const file = this.files.get(path);
-    return file ? { path, content: file.content, revision: file.revision } : null;
+    if (!file) return null;
+    const remaining = this.verifyFailures.get(path) || 0;
+    if (remaining > 0) {
+      this.verifyFailures.set(path, remaining - 1);
+      // Simulates a read-back that does not match what was written.
+      return { path, content: `${file.content}\u0000verify-failure`, revision: file.revision };
+    }
+    return { path, content: file.content, revision: file.revision };
   }
 
   read(path) {
@@ -39,10 +52,23 @@ class MemoryStorage {
       fail('E_STORAGE_WRITE_FAILED', `injected write failure for ${path}`, { path });
     }
     this.files.set(path, { content, revision: revision ?? null });
+    const pendingVerify = this.verifyAfterWrite.get(path) || 0;
+    if (pendingVerify > 0) {
+      this.verifyFailures.set(path, pendingVerify);
+      this.verifyAfterWrite.delete(path);
+    }
   }
 
   failNextWrite(path, count = 1) {
     this.writeFailures.set(path, count);
+  }
+
+  failNextVerify(path, count = 1) {
+    this.verifyFailures.set(path, count);
+  }
+
+  failNextVerifyAfterWrite(path, count = 1) {
+    this.verifyAfterWrite.set(path, count);
   }
 
   corrupt(path, content) {
@@ -58,6 +84,8 @@ class MemoryStorage {
 class MemoryBackupStore {
   constructor() {
     this.records = new Map();
+    this.batches = new Map();
+    TRUSTED_BACKUP_STORES.add(this);
   }
 
   put(batch) {
@@ -70,6 +98,14 @@ class MemoryBackupStore {
 
   has(batchId) {
     return this.records.has(batchId);
+  }
+
+  putBatch(batch) {
+    this.batches.set(batch.batchId, batch);
+  }
+
+  getBatch(batchId) {
+    return this.batches.get(batchId) || null;
   }
 
   corrupt(batchId) {
@@ -85,4 +121,23 @@ class MemoryBackupStore {
   }
 }
 
-module.exports = { MemoryStorage, MemoryBackupStore };
+function assertTrustedStorage(storage) {
+  if (!storage || !TRUSTED_STORAGE.has(storage)) {
+    fail('E_STORAGE_UNTRUSTED', 'migration only accepts the built-in MemoryStorage instance', {});
+  }
+  return storage;
+}
+
+function assertTrustedBackupStore(store) {
+  if (!store || !TRUSTED_BACKUP_STORES.has(store)) {
+    fail('E_BACKUP_STORE_UNTRUSTED', 'migration only accepts the built-in MemoryBackupStore instance', {});
+  }
+  return store;
+}
+
+module.exports = {
+  MemoryStorage,
+  MemoryBackupStore,
+  assertTrustedStorage,
+  assertTrustedBackupStore,
+};
