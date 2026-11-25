@@ -1041,6 +1041,10 @@ class MemoFlowPlugin extends BasePlugin {
   }
 
   async spreadOverdue(overdueRows, days) {
+    return this._mfUs1RunLegacy({ action: 'MERCY_APPLY' }, () => this._spreadOverdueLegacy(overdueRows, days));
+  }
+
+  async _spreadOverdueLegacy(overdueRows, days) {
     const format = dateCore.normalizeDateFormat(this.settings?.misc?.date_format);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -1329,7 +1333,11 @@ class MemoFlowPlugin extends BasePlugin {
     }
   }
 
-  async createTimestampExtract({ fromSelection = true, text = null, sourceFile = null, page = null, pageFallback = null, open = true } = {}) {
+  async createTimestampExtract(options = {}) {
+    return this._mfUs1RunLegacy({ action: 'CREATE_EXTRACT' }, () => this._createTimestampExtractLegacy(options));
+  }
+
+  async _createTimestampExtractLegacy({ fromSelection = true, text = null, sourceFile = null, page = null, pageFallback = null, open = true } = {}) {
     const active = this.app.workspace.getActiveFile();
     const context = this._resolveExtractContext({ active, sourceFile });
     if (!context) {
