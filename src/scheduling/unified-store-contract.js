@@ -14,6 +14,7 @@ const TRUSTED_TOPIC_STORES = new WeakSet();
 const TRUSTED_LEDGER_STORES = new WeakSet();
 const TRUSTED_BATCH_STORES = new WeakSet();
 const SYNTHETIC_CAPABILITIES = new WeakSet();
+const MERCY_CONFIRMATIONS = new WeakSet();
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -225,6 +226,20 @@ function issueSyntheticUnifiedCapability(label = 'synthetic-test') {
   return capability;
 }
 
+function issueSyntheticMercyConfirmation(batchId) {
+  if (typeof batchId !== 'string' || !batchId) fail('E_BATCH_ID_REQUIRED', 'a mercy confirmation needs a batch id');
+  const confirmation = Object.freeze({ kind: 'synthetic-mercy-confirmation', batchId });
+  MERCY_CONFIRMATIONS.add(confirmation);
+  return confirmation;
+}
+
+function assertSyntheticMercyConfirmation(confirmation, batchId) {
+  if (!confirmation || !MERCY_CONFIRMATIONS.has(confirmation) || confirmation.batchId !== batchId) {
+    fail('E_MERCY_CONFIRMATION_REQUIRED', 'mercy writes require an explicit trusted preview confirmation', { batchId });
+  }
+  return confirmation;
+}
+
 function assertSyntheticUnifiedCapability(capability) {
   if (!capability || !SYNTHETIC_CAPABILITIES.has(capability)) {
     fail('E_UNIFIED_NOT_AUTHORIZED', 'unified writes require a trusted synthetic capability', {});
@@ -242,4 +257,6 @@ module.exports = {
   assertTrustedBatchStore,
   issueSyntheticUnifiedCapability,
   assertSyntheticUnifiedCapability,
+  issueSyntheticMercyConfirmation,
+  assertSyntheticMercyConfirmation,
 };

@@ -5,8 +5,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { executeUnifiedEvent } = require('../src/scheduling/index.js');
-const { setup, makeRequest, uuid } = require('./helpers/unified-fixtures.js');
+const {
+  executeUnifiedEvent,
+  SyntheticUnifiedStorage,
+  MemoryLedgerStore,
+  PersistentEventLedger,
+  issueSyntheticUnifiedCapability,
+} = require('../src/scheduling/index.js');
+const { setup, makeRequest, makeTopic, uuid } = require('./helpers/unified-fixtures.js');
 
 function read(context) {
   return context.storage.read(context.topic.path);
@@ -178,4 +184,69 @@ test('a card is not an MF-US-1 topic', () => {
   const result = executeUnifiedEvent(makeRequest(context.topic), context.deps);
   assert.equal(result.status, 'conflict');
   assert.equal(result.reason, 'E_TOPIC_TYPE');
+});
+
+// ---- persisted Frontmatter identity and revision (review fix 1) ----------
+
+function storageWith(frontmatter, options = {}) {
+  const base = setup();
+  const storage = new SyntheticUnifiedStorage({
+    [base.topic.path]: {
+      mfId: options.mfId ?? base.topic.mfId,
+      revision: options.revision ?? 1,
+      frontmatter,
+      body: 'Body text',
+    },
+  });
+  const ledger = new PersistentEventLedger(new MemoryLedgerStore());
+  const deps = {
+    mode: { mode: 'unified' },
+    storage,
+    ledger,
+    capability: issueSyntheticUnifiedCapability(),
+  };
+  return { base, storage, ledger, deps };
+}
+
+test('an index id without a persisted frontmatter id is refused', () => {
+  const { base, storage, deps } = storageWith({
+    ...makeTopic({ seq: 1 }).entry.frontmatter,
+    mf_id: undefined,
+  });
+  const result = executeUnifiedEvent(makeRequest(base.topic), deps);
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.reason, 'E_ID_NOT_PERSISTED');
+  assert.equal(storage.read(base.topic.path).frontmatter.mf_revision, 1);
+});
+
+test('an index revision without a persisted frontmatter revision is refused', () => {
+  const { base, deps } = storageWith({
+    ...makeTopic({ seq: 1 }).entry.frontmatter,
+    mf_revision: undefined,
+  });
+  const result = executeUnifiedEvent(makeRequest(base.topic), deps);
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.reason, 'E_REVISION_NOT_PERSISTED');
+});
+
+test('conflicting index and frontmatter revisions are refused', () => {
+  const { base, deps } = storageWith({
+    ...makeTopic({ seq: 1 }).entry.frontmatter,
+    mf_revision: 1,
+  }, { revision: 2 });
+  const result = executeUnifiedEvent(makeRequest(base.topic, { expectedRevision: 2 }), deps);
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.reason, 'E_REVISION_FRONTMATTER_MISMATCH');
+});
+
+test('a frontmatter id that differs from the requested id is refused', () => {
+  const base = setup();
+  const { storage, ledger, deps } = storageWith({
+    ...base.topic.entry.frontmatter,
+    mf_id: uuid(999),
+  }, { mfId: base.topic.mfId });
+  const request = makeRequest(base.topic);
+  const result = executeUnifiedEvent(request, deps);
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.reason, 'E_TOPIC_ID_MISMATCH');
 });

@@ -72,7 +72,7 @@ function makeRequest(topic, overrides = {}) {
     expectedRevision: overrides.expectedRevision ?? 1,
     algorithmVersion: overrides.algorithmVersion ?? 1,
     today: overrides.today ?? '2026-11-24',
-    calendarDate: overrides.calendarDate,
+    calendarDate: overrides.calendarDate ?? '2026-11-24',
     ...overrides,
   };
 }

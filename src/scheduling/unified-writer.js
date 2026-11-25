@@ -16,8 +16,11 @@ const { applyEvent } = require('./events.js');
 const { resolveSchedulerMode } = require('./mode.js');
 const { sha256Hex } = require('./migration-hash.js');
 const { isPersistentUuid } = require('./legacy-identity.js');
+const { stableStringify } = require('./migration-hash.js');
 const { renderContent, assertTrustedTopicStorage, assertSyntheticUnifiedCapability } = require('./unified-store-contract.js');
 const { PersistentEventLedger } = require('./persistent-event-ledger.js');
+
+const SUPPORTED_DATE_FORMATS = Object.freeze(['DD-MM-YYYY', 'MM-DD-YYYY', 'YYYY-MM-DD', 'DD/MM/YYYY', 'MM/DD/YYYY']);
 
 const WRITE_FIELDS = Object.freeze([
   'mf_revision',
@@ -75,6 +78,12 @@ function assertRequest(request) {
     fail('E_REVISION_REQUIRED', 'a persisted expectedRevision is required', { field: 'expectedRevision' });
   }
   if (!isValidDateString(request.today)) fail('E_TODAY_REQUIRED', 'an explicit valid today is required', { field: 'today' });
+  if (request.calendarDate == null) {
+    fail('E_EVENT_DATE_REQUIRED', 'the event occurrence date must be explicit; it is never inferred from today', { field: 'calendarDate' });
+  }
+  if (!isValidDateString(request.calendarDate)) {
+    fail('E_EVENT_DATE_INVALID', 'calendarDate must be a strict calendar date', { field: 'calendarDate' });
+  }
   if (request.algorithmVersion !== ALGORITHM_VERSION) {
     fail('E_VERSION_UNSUPPORTED', 'unsupported algorithm version', { field: 'algorithmVersion' });
   }
@@ -83,8 +92,16 @@ function assertRequest(request) {
 
 function buildTopic(entry, request) {
   const frontmatter = entry.frontmatter || {};
-  if (frontmatter.mf_id && frontmatter.mf_id !== request.topicId) {
+  // The persisted Frontmatter is the source of truth: the index may never fill
+  // in a missing or contradictory identity/revision.
+  if (!isPersistentUuid(frontmatter.mf_id)) {
+    return { error: 'E_ID_NOT_PERSISTED' };
+  }
+  if (frontmatter.mf_id !== request.topicId) {
     return { error: 'E_TOPIC_ID_MISMATCH' };
+  }
+  if (frontmatter.mf_id !== entry.mfId) {
+    return { error: 'E_INDEX_ID_MISMATCH' };
   }
   if (frontmatter.type !== 'source' && frontmatter.type !== 'extract') {
     return { error: 'E_TOPIC_TYPE' };
@@ -93,10 +110,13 @@ function buildTopic(entry, request) {
   if (!allowedStatuses.includes(frontmatter.status)) {
     return { error: 'E_TOPIC_NOT_ACTIVE' };
   }
-  if (entry.revision == null || !Number.isInteger(entry.revision)) {
+  if (!Number.isInteger(frontmatter.mf_revision) || frontmatter.mf_revision < 0) {
     return { error: 'E_REVISION_NOT_PERSISTED' };
   }
-  if (entry.revision !== request.expectedRevision) {
+  if (!Number.isInteger(entry.revision) || entry.revision !== frontmatter.mf_revision) {
+    return { error: 'E_REVISION_FRONTMATTER_MISMATCH' };
+  }
+  if (frontmatter.mf_revision !== request.expectedRevision) {
     return { error: 'E_REVISION_MISMATCH' };
   }
   if (frontmatter.mf_scheduler_version !== ALGORITHM_VERSION) {
@@ -104,11 +124,21 @@ function buildTopic(entry, request) {
   }
   const topic = {
     ...frontmatter,
-    mf_id: entry.mfId,
-    mf_revision: entry.revision,
+    mf_id: frontmatter.mf_id,
+    mf_revision: frontmatter.mf_revision,
     mf_scheduler_version: frontmatter.mf_scheduler_version,
   };
   return { topic };
+}
+
+function verifyPersistedState(entry, record, topicId) {
+  const frontmatter = entry.frontmatter || {};
+  if (frontmatter.mf_id !== topicId) return false;
+  if (!Number.isInteger(frontmatter.mf_revision)) return false;
+  if (frontmatter.mf_scheduler_version !== ALGORITHM_VERSION) return false;
+  const noop = record.beforeHash === record.expectedAfterHash;
+  const expectedRevision = noop ? record.expectedRevision : record.expectedRevision + 1;
+  return frontmatter.mf_revision === expectedRevision;
 }
 
 function buildProjection(topic, dateFormat) {
@@ -147,8 +177,13 @@ function executeUnifiedEvent(request, dependencies = {}) {
   const storage = assertTrustedTopicStorage(dependencies.storage);
   const ledger = assertLedger(dependencies.ledger);
   const dateFormat = dependencies.dateFormat || request.dateFormat || 'DD-MM-YYYY';
+  if (!SUPPORTED_DATE_FORMATS.includes(dateFormat)) {
+    fail('E_DATE_FORMAT_UNSUPPORTED', 'unsupported Vault date format; no silent fallback', { dateFormat });
+  }
+  const configDigest = sha256Hex(stableStringify(dependencies.config ?? null));
+  const ledgerRequest = { ...request, dateFormat, configDigest };
 
-  const classification = ledger.classify(request);
+  const classification = ledger.classify(ledgerRequest);
   if (classification.state === 'conflict') {
     fail('E_EVENT_ID_CONFLICT', 'the event id was already used by a different request', { eventId: request.eventId });
   }
@@ -176,6 +211,10 @@ function executeUnifiedEvent(request, dependencies = {}) {
   // A pending/uncertain event first reconciles against the current file.
   if (classification.record && classification.state !== 'new' && classification.state !== 'retryable' && classification.state !== 'duplicate') {
     if (currentHash === classification.record.expectedAfterHash) {
+      if (!verifyPersistedState(entry, classification.record, request.topicId)) {
+        ledger.markManual(request.eventId, 'E_RECOVERY_STATE_MISMATCH', { ...classification.record.audit, requiresManualRecovery: true });
+        return { status: 'requires-manual-recovery', duplicate: false, writesPerformed: false, reason: 'E_RECOVERY_STATE_MISMATCH', record: ledger.get(request.eventId) };
+      }
       ledger.markApplied(request.eventId, {
         afterHash: currentHash, actualRevision: entry.revision,
         result: 'recovered-from-intent', writesPerformed: false,
@@ -207,7 +246,7 @@ function executeUnifiedEvent(request, dependencies = {}) {
     payload: request.payload,
     expectedRevision: request.expectedRevision,
     algorithmVersion: request.algorithmVersion,
-    calendarDate: request.calendarDate || request.today,
+    calendarDate: request.calendarDate,
   };
 
   let applied;
@@ -220,7 +259,7 @@ function executeUnifiedEvent(request, dependencies = {}) {
   }
 
   if (!applied.needsWrite || applied.topic === topic) {
-    const record = ledger.prepare(request, {
+    const record = ledger.prepare(ledgerRequest, {
       beforeHash: currentHash, expectedAfterHash: currentHash,
       fields: {}, before: auditSnapshot(topic), after: auditSnapshot(topic),
     });
@@ -245,7 +284,7 @@ function executeUnifiedEvent(request, dependencies = {}) {
   const auditBefore = auditSnapshot(topic);
   const auditAfter = auditSnapshot(next);
 
-  const record = ledger.prepare(request, {
+  const record = ledger.prepare(ledgerRequest, {
     beforeHash: currentHash,
     expectedAfterHash,
     fields: changed,
@@ -296,6 +335,10 @@ function reconcileUnifiedEvent(eventId, dependencies = {}) {
   const ledger = assertLedger(dependencies.ledger);
   const record = ledger.get(eventId);
   if (!record) fail('E_EVENT_NOT_FOUND', 'the ledger has no such event', { eventId });
+  // A historical success stays successful even if later events changed the file.
+  if (record.status === 'applied') {
+    return { status: 'applied', recovered: true, writesPerformed: false, record };
+  }
   const storage = assertTrustedTopicStorage(dependencies.storage);
   const located = storage.findByTopicId(record.topicId);
   if (!located.entry) {
@@ -304,6 +347,10 @@ function reconcileUnifiedEvent(eventId, dependencies = {}) {
   }
   const hash = sha256Hex(located.entry.content);
   if (record.expectedAfterHash && hash === record.expectedAfterHash) {
+    if (!verifyPersistedState(located.entry, record, record.topicId)) {
+      ledger.markManual(eventId, 'E_RECOVERY_STATE_MISMATCH', { ...record.audit, requiresManualRecovery: true });
+      return { status: 'requires-manual-recovery', reason: 'E_RECOVERY_STATE_MISMATCH', writesPerformed: false, record: ledger.get(eventId) };
+    }
     ledger.markApplied(eventId, {
       afterHash: hash, actualRevision: located.entry.revision,
       result: 'reconciled', writesPerformed: false,

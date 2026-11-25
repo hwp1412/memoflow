@@ -36,10 +36,11 @@
   audit: { before, after, result, reason, writesPerformed, requiresManualRecovery }, ... }
 ```
 
-- `fingerprint = sha256(canonical request)`：同 eventId 不同 payload/type/topicId → `E_EVENT_ID_CONFLICT`。
+- `fingerprint = sha256(canonical request)`，绑定 eventId/topicId/type/payload/expectedRevision/algorithmVersion/today/calendarDate/**dateFormat/configDigest**：同 eventId 不同内容或配置 → `E_EVENT_ID_CONFLICT`；prepared 意图不会被不同配置静默改写。
 - 状态：`prepared / applied / failed / uncertain / conflict / requires-manual-recovery`。
 - 跨重启：账本存储在注入式 `MemoryLedgerStore`，`dump()` 后可由新的 `PersistentEventLedger` 加载；测试用新实例验证 E1→E2→E1 不重复计数。
-- 不依赖 `mf_last_event_id` 判断全部历史。
+- 不依赖 `mf_last_event_id` 判断全部历史；`applied` 历史事件即使之后被 E2 改变文件也保持成功（reconcile 早返回）。
+- 业务执行日 `today` 与事件发生日 `calendarDate` 分离：`calendarDate` 必须显式提供（`E_EVENT_DATE_REQUIRED`），不自动用 today 冒充；审计分别记录。
 
 ## 4. 存储契约与 CAS 限制
 
@@ -71,7 +72,7 @@
 | 准备前失败 | 无记录，无写入 |
 | prepared、未写入 | 重试时按 beforeHash 安全重算并写入 |
 | 写入成功、回读失败 | `uncertain`，不报成功 |
-| 写入成功、账本未 applied | 用持久 intent 的 expectedAfterHash 识别 → 恢复为 applied（不重写） |
+| 写入成功、账本未 applied | 用持久 intent 的 expectedAfterHash + revision/身份/版本校验识别 → 恢复为 applied（不重写）；不一致 → 人工恢复 |
 | 恢复时文件被用户编辑 | `requires-manual-recovery`，不覆盖 |
 | 账本损坏 | `E_LEDGER_CORRUPT` → 人工恢复 |
 | 账本丢失 | 旧 revision 与当前不符 → conflict，不重放 |
@@ -80,7 +81,10 @@
 
 ## 7. Mercy 持久批次
 
-- `prepareUnifiedMercyBatch(plan)`：从 PR-04 预览生成固定批次（topicId、before/after notBefore、before/after revision）。
+- `prepareUnifiedMercyBatch(plan)`：从 PR-04 预览生成固定批次（topicId、before/after notBefore、before/after revision、`previewDigest`）。
+- 应用/撤销必须提供不可伪造的合成确认（`issueSyntheticMercyConfirmation`），普通 `confirmed:true` 无效。
+- 同 batchId 不同内容 → `E_BATCH_ID_CONFLICT`；重复 topicId/operationId、非 UUID 目标、Card、done/dismissed、未迁移目标均拒绝。
+- 首次 CAS 前持久化批次与每条 intent（before/expectedAfter hash、notBefore、revision）；每步更新批次，回读失败记 `uncertain` 并保留批次。
 - `applyUnifiedMercyBatch`：逐 Topic CAS；已有 notBefore 且 revision 匹配 → `already-applied`；revision 不符 → conflict；部分失败保留。
 - `undoUnifiedMercyBatch`：只回滚仍为 after 状态的 Topic；重复撤销幂等；用户编辑 → conflict。
 - 批次存储在注入式 `MemoryBatchStore`，可 dump/reload。
@@ -93,7 +97,7 @@
 
 ```
 node --test test/mf-us-1-unified*.test.js test/mf-us-1-persistent-ledger.test.js
-  tests 58  pass 58  fail 0
+  tests 82  pass 82  fail 0
 ```
 
 - 合成性能：1,000 Topic / 1,000 Event ≈ 48ms；10,000 Topic / 1,000 Event ≈ 39ms（Apple M4 / Node v24.21.0）。仅持久写入观测，不是 A14 队列基准。

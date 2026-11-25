@@ -31,6 +31,8 @@ function requestFingerprint(request) {
     algorithmVersion: request.algorithmVersion,
     today: request.today,
     calendarDate: request.calendarDate ?? null,
+    dateFormat: request.dateFormat ?? null,
+    configDigest: request.configDigest ?? null,
   }));
 }
 
