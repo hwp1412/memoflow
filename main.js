@@ -4366,10 +4366,6 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async postpone() {
-    return this._mfUs1RunLegacy({ action: 'POSTPONE' }, () => this._postponeLegacy());
-  }
-
-  async _postponeLegacy() {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const choice = await pickFromList(
@@ -4378,7 +4374,14 @@ class IncrementalReadingPlugin extends Plugin {
       [1, 3, 7, 14],
       'Postpone how long?'
     );
-    if (!choice) return;
+    if (!choice) return; // cancel: no event, no write
+    return this._mfUs1RunLegacy(
+      this._mfUs1EventDescriptor('POSTPONE', r.tfile, r.fm, this._todayKey(), { days: choice }),
+      () => this._postponeLegacyWrite(r, choice)
+    );
+  }
+
+  async _postponeLegacyWrite(r, choice) {
     const newDate = futureDateString(choice, this.settings);
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
       fmw.next_review = newDate;
@@ -4388,16 +4391,12 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async schedule() {
-    return this._mfUs1RunLegacy({ action: 'MANUAL_SCHEDULE' }, () => this._scheduleLegacy());
-  }
-
-  async _scheduleLegacy() {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const cur = r.fm.next_review || '(unscheduled)';
     const dateFormat = configuredDateFormat(this.settings);
     const raw = await askText(this.app, `Schedule (${dateFormat} or +Nd/-Nd; current: ${cur})`, '');
-    if (!raw || raw.trim() === '') return;
+    if (!raw || raw.trim() === '') return; // cancel: no event, no write
     const input = raw.trim();
 
     let newDate = null;
@@ -4410,6 +4409,15 @@ class IncrementalReadingPlugin extends Plugin {
       if (!parsed) { new Notice(`Invalid ${dateFormat} date: ${input}`); return; }
       newDate = formatDateValue(parsed, this.settings);
     }
+    return this._mfUs1RunLegacy(
+      this._mfUs1EventDescriptor('MANUAL_SCHEDULE', r.tfile, r.fm, this._todayKey(), {
+        idealDue: newDate, reason: 'manual-schedule',
+      }),
+      () => this._scheduleLegacyWrite(r, cur, newDate)
+    );
+  }
+
+  async _scheduleLegacyWrite(r, cur, newDate) {
     const newParsed = parseDateValue(newDate, this.settings);
     const newInterval = newParsed ? Math.max(1, Math.round((newParsed - todayDate()) / 86400000)) : null;
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
@@ -4422,18 +4430,21 @@ class IncrementalReadingPlugin extends Plugin {
   // ---- Set Priority / Boost ---------------------------------------------
 
   async setPriority() {
-    return this._mfUs1RunLegacy({ action: 'SET_PRIORITY' }, () => this._setPriorityLegacy());
-  }
-
-  async _setPriorityLegacy() {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const cur = r.fm.priority ?? 50;
     const raw = await askText(this.app, 'New priority (1-100, 1=highest)', String(cur));
-    if (raw === null) return;
+    if (raw === null) return; // cancel: no event, no write
     if (!/^\d+$/.test(raw.trim())) { new Notice('Invalid priority — integer 1-100.'); return; }
     const p = Number(raw);
     if (!Number.isInteger(p) || p < 1 || p > 100) { new Notice('Invalid priority — integer 1-100.'); return; }
+    return this._mfUs1RunLegacy(
+      this._mfUs1EventDescriptor('SET_PRIORITY', r.tfile, r.fm, this._todayKey(), { priority: p }),
+      () => this._setPriorityLegacyWrite(r, p)
+    );
+  }
+
+  async _setPriorityLegacyWrite(r, p) {
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => { fmw.priority = p; });
     new Notice(`Priority → ${p} (next_review unchanged — A-Factor-driven)`);
   }

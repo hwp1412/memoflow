@@ -34,7 +34,7 @@ test('every audited root entry delegates through the host scheduler service', ()
     if (['_gradeTopic', 'markDone', 'dismiss'].includes(method)) {
       assert.match(body, /_mfUs1(Event|Active)Descriptor\(/, `${method} must build an explicit event descriptor`);
     } else {
-      assert.match(body, new RegExp(`action: '${action}'`), method);
+      assert.ok(body.includes(`'${action}'`), `${method} must name its event action`);
     }
   }
   assert.match(mainSource, /createHostSchedulerService/);
@@ -46,6 +46,19 @@ test('reading-page extraction and mercy routing delegate in src/main.js', () => 
   assert.match(srcSource, /async spreadOverdue\(overdueRows, days\) \{[\s\S]{0,200}?_mfUs1RunLegacy\(\{ action: 'MERCY_APPLY' \}/);
 });
 
+test('postpone, schedule and setPriority confirm UI parameters before routing', () => {
+  for (const [method, picker] of [['postpone', 'pickFromList'], ['schedule', 'askText'], ['setPriority', 'askText']]) {
+    const start = mainSource.indexOf(`  async ${method}(`);
+    const end = mainSource.indexOf('\n  async ', start + 10);
+    const body = mainSource.slice(start, end < 0 ? undefined : end);
+    const pickerIndex = body.indexOf(picker);
+    const routeIndex = body.indexOf('_mfUs1RunLegacy');
+    assert.ok(pickerIndex >= 0, `${method} must confirm parameters first`);
+    assert.ok(pickerIndex < routeIndex, `${method} must not route before confirmation`);
+    assert.match(body, /return; \/\/ cancel: no event, no write|if \(!choice\) return;/);
+  }
+});
+
 test('the default host mode remains legacy and unified has no authorization path', () => {
   assert.match(mainSource, /getMode: \(\) => \(this\.settings && this\.settings\.mf_us1_mode \? this\.settings\.mf_us1_mode : 'legacy'\)/);
   assert.equal(/issueSyntheticRuntimeAuthorization/.test(mainSource), false);
@@ -53,7 +66,7 @@ test('the default host mode remains legacy and unified has no authorization path
 });
 
 test('the legacy bodies are preserved behind distinct methods', () => {
-  for (const name of ['_gradeTopicLegacy', '_markDoneLegacy', '_dismissLegacy', '_postponeLegacy', '_scheduleLegacy', '_setPriorityLegacy', '_newSourceLegacy', '_createExtractLegacy']) {
+  for (const name of ['_gradeTopicLegacy', '_markDoneLegacy', '_dismissLegacy', '_postponeLegacyWrite', '_scheduleLegacyWrite', '_setPriorityLegacyWrite', '_newSourceLegacy', '_createExtractLegacy']) {
     assert.ok(mainSource.includes(`async ${name}(`), name);
   }
   assert.ok(srcSource.includes('async _createTimestampExtractLegacy('));

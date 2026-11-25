@@ -177,7 +177,7 @@ test('a unified failure never falls back to legacy and writes nothing', async ()
   assert.equal(frontmatter(storage, 'Sources/3.md').mf_revision, 0);
 });
 
-test('a ledger flush failure turns an applied write into uncertain', async () => {
+test('an intent persistence failure blocks the topic write entirely', async () => {
   const topic = initializeTopic({ type: 'source', priority: 50, mfId: uuid(4) }, undefined, TODAY).topic;
   const storage = new SyntheticUnifiedStorage({ 'Sources/4.md': entry(topic) });
   const ledger = new PersistentEventLedger(new MemoryLedgerStore());
@@ -190,9 +190,9 @@ test('a ledger flush failure turns an applied write into uncertain', async () =>
     eventId: uuid(1006), topicId: uuid(4), type: 'ADVANCED', expectedRevision: 0,
     algorithmVersion: 1, today: TODAY, calendarDate: TODAY,
   });
-  assert.equal(result.status, 'uncertain');
-  assert.equal(result.ledgerError, 'E_LEDGER_SAVE_FAILED');
-  assert.equal(frontmatter(storage, 'Sources/4.md').review_count, 1);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'E_INTENT_PERSIST_FAILED');
+  assert.equal(frontmatter(storage, 'Sources/4.md').review_count, 0);
 });
 
 test('startup recovery reports blocked topics for prepared records', async () => {
@@ -234,4 +234,135 @@ test('the mode view lists blockers and never enables a real unified write', () =
   assert.equal(synthetic.writeEnabled, true);
   assert.equal(synthetic.synthetic, true);
   assert.equal(synthetic.reason, null);
+});
+
+// ---- write-ahead intent ordering (production wiring) --------------------
+
+function walFixture(seq = 10) {
+  const topic = initializeTopic({ type: 'source', priority: 50, mfId: uuid(seq) }, undefined, TODAY).topic;
+  const storage = new SyntheticUnifiedStorage({ [`Sources/${seq}.md`]: entry(topic) });
+  const dataStore = createKeyedDataStore();
+  return { topic, storage, dataStore };
+}
+
+test('a failed intent save aborts the CAS before any topic write', async () => {
+  const { storage, dataStore } = walFixture(11);
+  const { opened, ledger } = await openDurable(dataStore);
+  let intentSaves = 0;
+  const runtime = createHostRuntime({
+    mode: 'unified', conditions: CONDITIONS, authorization: issueSyntheticHostAuthorization(),
+    storage, ledger, capability: issueSyntheticUnifiedCapability(),
+    persist: async records => {
+      intentSaves += 1;
+      if (intentSaves === 1) return { ok: false, code: 'E_LEDGER_SAVE_FAILED' };
+      opened.store.replace(records);
+      return opened.flush();
+    },
+  });
+  const result = await runtime.execute({
+    eventId: uuid(1011), topicId: uuid(11), type: 'ADVANCED', expectedRevision: 0,
+    algorithmVersion: 1, today: TODAY, calendarDate: TODAY,
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'E_INTENT_PERSIST_FAILED');
+  assert.equal(frontmatter(storage, 'Sources/11.md').mf_revision, 0, 'the CAS must not run');
+  assert.equal(frontmatter(storage, 'Sources/11.md').review_count, 0);
+});
+
+test('a crash after CAS but before applied persistence recovers from the prepared intent', async () => {
+  const { storage, dataStore } = walFixture(12);
+  const { opened, ledger } = await openDurable(dataStore);
+  let saves = 0;
+  const runtime = createHostRuntime({
+    mode: 'unified', conditions: CONDITIONS, authorization: issueSyntheticHostAuthorization(),
+    storage, ledger, capability: issueSyntheticUnifiedCapability(),
+    persist: async records => {
+      saves += 1;
+      if (saves === 2) return { ok: false, code: 'E_LEDGER_SAVE_FAILED' }; // applied save fails
+      opened.store.replace(records);
+      return opened.flush();
+    },
+  });
+  const request = {
+    eventId: uuid(1012), topicId: uuid(12), type: 'ADVANCED', expectedRevision: 0,
+    algorithmVersion: 1, today: TODAY, calendarDate: TODAY,
+  };
+  const result = await runtime.execute(request);
+  assert.equal(result.status, 'uncertain');
+  assert.equal(frontmatter(storage, 'Sources/12.md').review_count, 1, 'the topic write happened');
+
+  // Simulated restart from the durable prepared record.
+  const reopened = await openDurable(dataStore);
+  const restarted = makeRuntime({ storage, ledger: reopened.ledger, opened: reopened.opened });
+  const recovered = await restarted.execute(request);
+  assert.ok(['applied', 'duplicate'].includes(recovered.status));
+  assert.equal(recovered.recovered === true || recovered.duplicate === true, true);
+  assert.equal(reopened.ledger.get(uuid(1012)).status, 'applied');
+  assert.equal(frontmatter(storage, 'Sources/12.md').review_count, 1, 'recovery must not re-review');
+});
+
+test('an external edit between intent and CAS is a conflict and is not overwritten', async () => {
+  const { storage } = walFixture(13);
+  const { opened, ledger } = await openDurable(createKeyedDataStore());
+  const runtime = createHostRuntime({
+    mode: 'unified', conditions: CONDITIONS, authorization: issueSyntheticHostAuthorization(),
+    storage, ledger, capability: issueSyntheticUnifiedCapability(),
+    persist: async records => { opened.store.replace(records); return opened.flush(); },
+  });
+  const original = storage.read('Sources/13.md').content;
+  storage.overwrite = null;
+  // Simulate another writer editing after the intent persisted.
+  const wrapped = storage.compareAndSwap.bind(storage);
+  storage.compareAndSwap = (path, args) => {
+    const entry = storage.read(path);
+    storage.setFile(path, {
+      mfId: entry.mfId, revision: entry.revision, frontmatter: entry.frontmatter, body: `${entry.body}\nexternal`,
+    });
+    return wrapped(path, args);
+  };
+  const result = await runtime.execute({
+    eventId: uuid(1013), topicId: uuid(13), type: 'ADVANCED', expectedRevision: 0,
+    algorithmVersion: 1, today: TODAY, calendarDate: TODAY,
+  });
+  assert.ok(['conflict', 'requires-manual-recovery'].includes(result.status));
+  assert.match(storage.read('Sources/13.md').content, /external/);
+});
+
+// ---- onload lifecycle ----------------------------------------------------
+
+const { initializeHostLifecycle } = require('../src/integration/host-lifecycle.js');
+
+test('onload lifecycle loads, recovers and blocks pending topics without enabling unified', async () => {
+  const pluginData = {
+    settings: { keep: true },
+    mfUs1Ledger: {
+      version: 1,
+      records: {
+        [uuid(1020)]: {
+          eventId: uuid(1020), topicId: uuid(20), fingerprint: 'c'.repeat(64), type: 'ADVANCED',
+          algorithmVersion: 1, expectedRevision: 0, today: TODAY, eventDate: TODAY,
+          status: 'prepared', beforeHash: '0'.repeat(64), expectedAfterHash: '1'.repeat(64),
+          afterHash: null, actualRevision: null,
+        },
+      },
+    },
+  };
+  const plugin = {
+    async loadData() { return JSON.parse(JSON.stringify(pluginData)); },
+    async saveData(data) { Object.keys(pluginData).forEach(key => delete pluginData[key]); Object.assign(pluginData, JSON.parse(JSON.stringify(data))); },
+  };
+  const lifecycle = await initializeHostLifecycle({ plugin, mode: 'unified', conditions: CONDITIONS });
+  assert.equal(lifecycle.view.writeEnabled, false);
+  assert.equal(lifecycle.view.blockers.includes('PRODUCTION_WRITE_UNAUTHORIZED'), true);
+  assert.deepEqual(lifecycle.blockedTopicIds, [uuid(20)]);
+  assert.deepEqual(pluginData.settings, { keep: true }, 'unrelated settings survive');
+  assert.equal(lifecycle.ledger.get(uuid(1020)).status, 'prepared');
+});
+
+test('onload lifecycle rejects a corrupt ledger version', async () => {
+  const plugin = {
+    async loadData() { return { mfUs1Ledger: { version: 99, records: {} } }; },
+    async saveData() {},
+  };
+  await assert.rejects(initializeHostLifecycle({ plugin }), error => error.code === 'E_LEDGER_VERSION_UNSUPPORTED');
 });

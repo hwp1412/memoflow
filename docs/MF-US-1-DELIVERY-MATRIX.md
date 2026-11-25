@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-1.0-CLOSURE（合成 host runtime、账本生命周期、模式模型；生产接线仍有阻塞）
+> 最后更新：P2-US1-PROD-WIRING（WAL Intent、UI 前置 postpone/schedule/priority、onload 生命周期合成验证）
 
 ## 0. 状态定义
 
@@ -56,7 +56,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；现代/旧关系与事件字段冲突检测；writesPerformed=false |
 | 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `TESTED` | 08 | 私有存储 + 意图重算 + 计划/备份双向对应 + 引号键 add-only；真实 Vault 待 09/12 |
 | 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `TESTED` | 06/08 | 固定 UUID 批次清单 + 冲突检测 + 重试幂等；真实落盘待 09 |
-| 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `TESTED` | 09/10B/12 | 合成 runtime 账本生命周期 + E2E；真实写入/恢复接线阻塞 |
+| 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `TESTED` | 09/10B/12/13 | 写前 Intent 持久化 + 崩溃窗口测试；真实写入/恢复接线阻塞 |
 | 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |
 | 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
 | 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→08 | T01–T16 PASS；T17/T20 纯层证据含 5 级链；T19 PASS（PR-07）；T18 仍缺真实验收 |

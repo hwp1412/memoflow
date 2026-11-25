@@ -7,7 +7,7 @@
 // AND every migration/backup/recovery/storage/single-writer/user condition
 // holds. The synthetic token exists for isolated tests only.
 
-const { executeUnifiedEvent, reconcileUnifiedEvent, PersistentEventLedger, MemoryLedgerStore } = require('../scheduling/index.js');
+const { executeUnifiedEvent, reconcileUnifiedEvent, PersistentEventLedger, MemoryLedgerStore, SyntheticUnifiedStorage } = require('../scheduling/index.js');
 const { evaluateRuntimeMode, issueSyntheticRuntimeAuthorization } = require('../scheduling/runtime-mode-guard.js');
 
 const SYNTHETIC_HOST_AUTHORIZATIONS = new WeakSet();
@@ -61,6 +61,25 @@ function createHostRuntime({ mode = 'legacy', conditions = {}, authorization = n
     return persist(persisted.store.dump());
   }
 
+  // Plan the exact write on a detached storage clone + throwaway ledger, so the
+  // prepared record (beforeHash/expectedAfterHash/fields) can be persisted
+  // BEFORE the real topic CAS. Only the synthetic storage can be cloned; any
+  // other backend fails closed because intent planning is unavailable.
+  function planIntent(request) {
+    if (!(storage instanceof SyntheticUnifiedStorage)) return null;
+    const clone = new SyntheticUnifiedStorage(Object.fromEntries(
+      [...storage.files.entries()].map(([filePath, entry]) => [filePath, {
+        mfId: entry.mfId, revision: entry.revision, frontmatter: entry.frontmatter, body: entry.body,
+      }]),
+    ));
+    const tempLedger = new PersistentEventLedger(new MemoryLedgerStore());
+    const planned = executeUnifiedEvent(request, {
+      mode: { mode: 'unified' }, storage: clone, ledger: tempLedger, capability,
+    });
+    if (planned.status !== 'applied' || !planned.writesPerformed) return { planned, record: null };
+    return { planned, record: tempLedger.get(request.eventId) };
+  }
+
   async function execute(request, { legacy = null, shadow = null } = {}) {
     const evaluation = state();
     if (evaluation.mode === 'unified') {
@@ -69,6 +88,25 @@ function createHostRuntime({ mode = 'legacy', conditions = {}, authorization = n
         error.code = 'E_HOST_MODE_BLOCKED';
         error.blockers = evaluation.blockers;
         throw error;
+      }
+      if (typeof persist !== 'function') {
+        const error = new Error('a durable ledger sink is required for unified writes');
+        error.code = 'E_LEDGER_PERSIST_REQUIRED';
+        throw error;
+      }
+      if (!persisted.get(request.eventId)) {
+        const intent = planIntent(request);
+        if (intent === null) {
+          return { status: 'failed', duplicate: false, writesPerformed: false, reason: 'E_INTENT_PLAN_UNAVAILABLE' };
+        }
+        if (intent.record) {
+          const prepared = { ...intent.record, status: 'prepared', afterHash: null, actualRevision: null, result: null };
+          persisted.store.put(request.eventId, prepared);
+          const saved = await save();
+          if (!saved || !saved.ok) {
+            return { status: 'failed', duplicate: false, writesPerformed: false, reason: 'E_INTENT_PERSIST_FAILED', ledgerError: saved && saved.code };
+          }
+        }
       }
       const result = executeUnifiedEvent(request, {
         mode: { mode: 'unified' }, storage, ledger: persisted, capability,
