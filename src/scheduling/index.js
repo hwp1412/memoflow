@@ -22,6 +22,8 @@ const mercyBatch = require('./mercy-batch.js');
 const legacyIdentity = require('./legacy-identity.js');
 const legacyAdapter = require('./legacy-adapter.js');
 const legacyRelations = require('./legacy-relations.js');
+const mode = require('./mode.js');
+const shadow = require('./shadow.js');
 
 module.exports = {
   ...errors,
@@ -41,6 +43,8 @@ module.exports = {
   ...legacyIdentity,
   ...legacyAdapter,
   ...legacyRelations,
+  ...mode,
+  ...shadow,
   // Namespaced access for callers that prefer explicit module grouping.
   schema,
   dates,
@@ -57,4 +61,6 @@ module.exports = {
   legacyIdentity,
   legacyAdapter,
   legacyRelations,
+  mode,
+  shadow,
 };
