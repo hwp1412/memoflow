@@ -24,6 +24,12 @@ const legacyAdapter = require('./legacy-adapter.js');
 const legacyRelations = require('./legacy-relations.js');
 const mode = require('./mode.js');
 const shadow = require('./shadow.js');
+const migrationHash = require('./migration-hash.js');
+const migrationPlan = require('./migration-plan.js');
+const migrationStorage = require('./migration-storage.js');
+const migrationFrontmatter = require('./migration-frontmatter.js');
+const migrationBackup = require('./migration-backup.js');
+const migrationExecute = require('./migration-execute.js');
 
 module.exports = {
   ...errors,
@@ -45,6 +51,12 @@ module.exports = {
   ...legacyRelations,
   ...mode,
   ...shadow,
+  ...migrationHash,
+  ...migrationPlan,
+  ...migrationStorage,
+  ...migrationFrontmatter,
+  ...migrationBackup,
+  ...migrationExecute,
   // Namespaced access for callers that prefer explicit module grouping.
   schema,
   dates,
@@ -63,4 +75,10 @@ module.exports = {
   legacyRelations,
   mode,
   shadow,
+  migrationHash,
+  migrationPlan,
+  migrationStorage,
+  migrationFrontmatter,
+  migrationBackup,
+  migrationExecute,
 };

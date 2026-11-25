@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-SHADOW-01（模式隔离、只读 Shadow 对照、事件预览）
+> 最后更新：P2-US1-MIG-01（迁移预览、备份、恢复与稳定 UUID 初始化）
 
 ## 0. 状态定义
 
@@ -54,13 +54,13 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→07 | 已交付初始化/事件/队列/Mercy + mode/shadow 只读接口；`explainSchedule` 待后续 |
 | 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09 | 纯模式策略 + Shadow 只读；能力字段不可伪造、观察值唯一性校验、门禁复用；真实入口未接线 |
 | 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；现代/旧关系与事件字段冲突检测；writesPerformed=false |
-| 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `NOT_STARTED` | 08 | 写库需单独授权 |
-| 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `IN_PROGRESS` | 06 | 临时 ID + 大小写不敏感冲突检测 + Q8 方案；UUID 持久化待 08 |
+| 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `TESTED` | 08 | 私有存储 + 意图重算 + 计划/备份双向对应 + 引号键 add-only；真实 Vault 待 09/12 |
+| 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `TESTED` | 06/08 | 固定 UUID 批次清单 + 冲突检测 + 重试幂等；真实落盘待 09 |
 | 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `NOT_STARTED` | 09 | |
 | 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |
 | 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
-| 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→07 | T01–T16 PASS；T17 纯对象层；T19 纯算法层 PASS（PR-07）；T18/T20 仍缺真实验收 |
-| 38 | TEST-02 | 性质测试（9 条） | A13.1 | `TESTED` | 01→06 | 8 条 PASS；迁移前后 Effective Due 在只读候选层已证（PR-06），真实迁移待 08 |
+| 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→08 | T01–T16 PASS；T17/T20 纯层证据含 5 级链；T19 PASS（PR-07）；T18 仍缺真实验收 |
+| 38 | TEST-02 | 性质测试（9 条） | A13.1 | `TESTED` | 01→08 | 迁移前后 Effective Due 在计划与合成执行层已证；真实 Vault 待 12 |
 | 39 | TEST-03 | 离线模拟（8 场景、8 指标） | A13.2 | `TESTED` | 05 | S01–S08 + M01–M08 + 对照；M06 按初始/新增群体拆分；对照为 **Legacy proxy**（见 docs/P2-US1-SIM-01.md） |
 | 40 | TEST-04 | 性能基准（10k Topic 队列 < 500ms） | A14 | `TESTED` | 05 | 本机 Apple M4：10k 中位 53.15ms（P95 65.88ms）；见 docs/MF-US-1-BENCHMARK.md |
 | 41 | ACC-01 | 隔离 Vault 实机验收与发布门槛 | A14 | `NOT_STARTED` | 12 | 禁碰 `MemoFlow-Test` |
