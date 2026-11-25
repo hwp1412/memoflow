@@ -241,3 +241,106 @@ test('only a ready persistent candidate is schedulable', () => {
   const invalid = adaptLegacyTopic(rawSource({ mf_id: 'nope' }), CONTEXT);
   assert.equal(isSchedulableCandidate(invalid), false);
 });
+
+// ---- modern relation / event fields (review fix 3) ------------------------
+
+const UUID3 = '5e9a7c1d-2b4f-4c8e-9f1a-0d3b6e8c2a45';
+
+test('modern and legacy relations are compared, never silently chosen', () => {
+  const report = adaptLegacyTopics([
+    rawSource({ mf_id: UUID }),
+    rawExtract({ mf_id: UUID2, mf_parent_id: UUID, mf_root_id: UUID }),
+  ], CONTEXT);
+  const extract = report.results[1];
+  assert.equal(extract.status, 'ready');
+  assert.equal(extract.topic.mf_parent_id, UUID);
+  assert.equal(extract.topic.mf_root_id, UUID);
+  assert.equal(extract.relationVerified, true);
+
+  const conflict = adaptLegacyTopics([
+    rawSource({ mf_id: UUID }),
+    rawExtract({ mf_id: UUID2, mf_parent_id: UUID3 }),
+  ], CONTEXT);
+  assert.equal(conflict.results[1].status, 'conflict');
+  assert.equal(conflict.results[1].conflicts[0].field, 'mf_parent_id');
+  assert.equal(conflict.results[1].topic.mf_parent_id, UUID);
+});
+
+test('a modern-only relation stays unverified instead of being inferred from paths', () => {
+  const report = adaptLegacyTopics([
+    rawSource({ mf_id: UUID, path: 'Sources/A.md', basename: 'A' }),
+    rawExtract({ mf_id: UUID2, parent: undefined, source: undefined, mf_parent_id: UUID, mf_root_id: UUID }),
+  ], CONTEXT);
+  const extract = report.results[1];
+  assert.equal(extract.topic.mf_parent_id, UUID);
+  assert.equal(extract.relationVerified, false);
+  assert.equal(extract.status, 'read-only-limited');
+  assert.ok(extract.warnings.some(warning => warning.code === 'MODERN_RELATION_UNVERIFIED'));
+});
+
+test('an illegal modern relation or event id is invalid', () => {
+  const badParent = adaptLegacyTopic(rawSource({ mf_id: UUID, mf_parent_id: 'not-a-uuid' }), CONTEXT);
+  assert.equal(badParent.status, 'invalid');
+  assert.ok(badParent.errors.some(error => error.field === 'mf_parent_id' && error.code === 'E_ID_FORMAT'));
+
+  const badEvent = adaptLegacyTopic(rawSource({ mf_id: UUID, mf_last_event_id: '123' }), CONTEXT);
+  assert.equal(badEvent.status, 'invalid');
+  assert.ok(badEvent.errors.some(error => error.field === 'mf_last_event_id' && error.code === 'E_ID_FORMAT'));
+});
+
+test('an existing mf_last_event_id is never silently dropped', () => {
+  const result = adaptLegacyTopic(rawSource({ mf_id: UUID, mf_last_event_id: UUID3 }), CONTEXT);
+  assert.equal(result.status, 'ready');
+  assert.equal(result.topic.mf_last_event_id, UUID3);
+  assert.equal(result.fieldSources.mf_last_event_id, 'modern');
+});
+
+test('assumed revision and scheduler version are flagged as provisional', () => {
+  const result = adaptLegacyTopic(rawSource({ mf_id: UUID }), CONTEXT);
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(result.provisionalFields.sort(), ['mf_revision', 'mf_scheduler_version']);
+  assert.ok(result.warnings.some(warning => warning.code === 'REVISION_INITIALIZED'));
+  assert.ok(result.warnings.some(warning => warning.code === 'SCHEDULER_VERSION_INITIALIZED'));
+});
+
+// ---- schedulable candidate gate (review fix 4) ---------------------------
+
+test('only an active persistent candidate with no unresolved conflict is schedulable', () => {
+  const active = adaptLegacyTopic(rawSource({ mf_id: UUID }), CONTEXT);
+  assert.equal(active.status, 'ready');
+  assert.equal(isSchedulableCandidate(active), true);
+
+  for (const status of ['done', 'dismissed']) {
+    const result = adaptLegacyTopic(rawSource({ mf_id: UUID, status }), CONTEXT);
+    assert.equal(result.status, 'ready');
+    assert.equal(isSchedulableCandidate(result), false, status);
+    assert.equal(result.topic.status, status);
+  }
+
+  const temporary = adaptLegacyTopic(rawSource(), CONTEXT);
+  assert.equal(isSchedulableCandidate(temporary), false);
+
+  const invalid = adaptLegacyTopic(rawSource({ mf_id: UUID, priority: 0 }), CONTEXT);
+  assert.equal(isSchedulableCandidate(invalid), false);
+
+  const unsupported = adaptLegacyTopic(rawSource({ mf_id: UUID, status: 'pending' }), CONTEXT);
+  assert.equal(isSchedulableCandidate(unsupported), false);
+});
+
+test('an orphan, ambiguous or conflicting relation blocks scheduling', () => {
+  const orphan = adaptLegacyTopics([rawExtract({ mf_id: UUID2, parent: '[[Missing]]' })], CONTEXT).results[0];
+  assert.equal(isSchedulableCandidate(orphan), false);
+
+  const ambiguous = adaptLegacyTopics([
+    rawSource({ mf_id: UUID, path: 'Sources/x/A.md', basename: 'A' }),
+    rawSource({ mf_id: UUID3, path: 'Sources/y/A.md', basename: 'A' }),
+    rawExtract({ mf_id: UUID2, parent: '[[A]]' }),
+  ], CONTEXT).results[2];
+  assert.equal(isSchedulableCandidate(ambiguous), false);
+
+  const conflict = adaptLegacyTopics([
+    rawSource({ mf_id: UUID }),
+    rawExtract({ mf_id: UUID2, mf_parent_id: UUID3 }),
+  ], CONTEXT).results[1];
+  assert.equal(isSchedulableCandidate(conflict), false);
+});

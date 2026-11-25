@@ -27,8 +27,8 @@ const {
   validateCount,
   isPriority,
 } = require('./schema.js');
-const { resolveIdentity, findIdentityCollisions } = require('./legacy-identity.js');
-const { resolveRelations } = require('./legacy-relations.js');
+const { resolveIdentity, findIdentityCollisions, isPersistentUuid } = require('./legacy-identity.js');
+const { resolveRelations, normalizeLinkValue } = require('./legacy-relations.js');
 
 const DATE_FORMATS = Object.freeze({
   'DD-MM-YYYY': /^(\d{2})-(\d{2})-(\d{4})$/,
@@ -97,6 +97,9 @@ function adaptLegacyTopic(raw, context = {}) {
     warnings: [],
     errors: [],
     ambiguities: [],
+    provisionalFields: [],
+    hasLegacyRelation: false,
+    relationVerified: false,
     lossNotes: [
       'NOT_BEFORE_NOT_RECOVERABLE',
       'LEGACY_INTERVAL_MAY_INCLUDE_ADMINISTRATIVE_VALUE',
@@ -144,6 +147,7 @@ function adaptLegacyTopic(raw, context = {}) {
   }
   const mappedStatus = SUPPORTED_STATUS_MAP[raw.status];
   result.fieldSources.status = 'legacy_status_map';
+  result.hasLegacyRelation = Boolean(normalizeLinkValue(raw.parent) || normalizeLinkValue(raw.source));
 
   // ----- scalar fields -----
   let priority = null;
@@ -272,12 +276,14 @@ function adaptLegacyTopic(raw, context = {}) {
       revision = raw.mf_revision;
     }
   } else {
+    result.provisionalFields.push('mf_revision');
     result.warnings.push({ code: 'REVISION_INITIALIZED', field: 'mf_revision', message: 'mf_revision is absent; the read-only candidate uses 0 and nothing is written' });
   }
 
   if (raw.mf_scheduler_version != null && raw.mf_scheduler_version !== ALGORITHM_VERSION) {
     result.conflicts.push({ field: 'mf_scheduler_version', legacy: null, modern: raw.mf_scheduler_version });
   } else if (raw.mf_scheduler_version == null) {
+    result.provisionalFields.push('mf_scheduler_version');
     result.warnings.push({ code: 'SCHEDULER_VERSION_INITIALIZED', field: 'mf_scheduler_version', message: 'mf_scheduler_version is absent; the candidate uses 1 for analysis only' });
   }
 
@@ -289,6 +295,20 @@ function adaptLegacyTopic(raw, context = {}) {
       estimatedMinutes = raw.estimated_minutes;
     }
   }
+
+  // ----- modern relation / event fields -----
+  for (const field of ['mf_parent_id', 'mf_root_id', 'mf_last_event_id']) {
+    if (raw[field] == null) continue;
+    if (!isPersistentUuid(raw[field])) {
+      result.errors.push({ code: 'E_ID_FORMAT', field, message: `${field} must be a UUID or null`, value: raw[field] });
+    }
+  }
+  const modernParentId = isPersistentUuid(raw.mf_parent_id) ? raw.mf_parent_id : null;
+  const modernRootId = isPersistentUuid(raw.mf_root_id) ? raw.mf_root_id : null;
+  const modernLastEventId = isPersistentUuid(raw.mf_last_event_id) ? raw.mf_last_event_id : null;
+  if (modernParentId) result.fieldSources.mf_parent_id = 'modern';
+  if (modernRootId) result.fieldSources.mf_root_id = 'modern';
+  if (modernLastEventId) result.fieldSources.mf_last_event_id = 'modern';
 
   // ----- candidate -----
   const canBuild = result.errors.length === 0
@@ -310,7 +330,9 @@ function adaptLegacyTopic(raw, context = {}) {
       last_reviewed: lastReviewed,
       mf_scheduler_version: ALGORITHM_VERSION,
       mf_revision: revision,
-      mf_last_event_id: null,
+      mf_parent_id: modernParentId,
+      mf_root_id: modernRootId,
+      mf_last_event_id: modernLastEventId,
     };
     if (dateAdded) result.topic.date_added = dateAdded;
     if (estimatedMinutes != null) result.topic.estimated_minutes = estimatedMinutes;
@@ -322,6 +344,9 @@ function adaptLegacyTopic(raw, context = {}) {
   else if (result.conflicts.length > 0) result.status = 'conflict';
   else if (result.identity.kind !== 'persistent') result.status = 'read-only-limited';
   else result.status = 'ready';
+
+  result.relationVerified = !result.hasLegacyRelation && !modernParentId && !modernRootId
+    && result.status !== 'invalid' && result.status !== 'unsupported' && result.status !== 'ambiguous' && result.status !== 'conflict';
 
   return result;
 }
@@ -364,11 +389,12 @@ function adaptLegacyTopics(rawTopics, context = {}) {
   const collisions = findIdentityCollisions(results);
   for (const result of results) {
     const id = result.identity && result.identity.id;
-    if (!id || !collisions.has(id)) continue;
+    const key = id ? id.toLowerCase() : null;
+    if (!key || !collisions.has(key)) continue;
     result.errors.push({
       code: 'E_DUPLICATE_ID',
       field: 'mf_id',
-      message: `stable id "${id}" appears ${collisions.get(id)} times in this snapshot`,
+      message: `stable id "${id}" appears ${collisions.get(key)} times in this snapshot`,
     });
     if (result.status !== 'invalid') result.status = 'conflict';
   }
@@ -391,26 +417,85 @@ function adaptLegacyTopics(rawTopics, context = {}) {
   for (const result of results) {
     const id = result.identity && result.identity.id;
     if (!id) continue;
-    const relation = relationResult.byId.get(id);
+    const relation = relationResult.byId.get(id.toLowerCase());
     if (!relation) continue;
+    const raw = rawTopics[result.index] || {};
+    const statusOk = relation.status === 'root' || relation.status === 'ok';
+    const legacyParent = statusOk && relation.parentPersistent && isPersistentUuid(relation.parentId) ? relation.parentId : null;
+    const legacyRoot = statusOk && relation.chainPersistent && isPersistentUuid(relation.rootId) ? relation.rootId : null;
+
+    const declaredParent = Object.prototype.hasOwnProperty.call(raw, 'mf_parent_id');
+    const declaredRoot = Object.prototype.hasOwnProperty.call(raw, 'mf_root_id');
+    const modernParent = declaredParent ? raw.mf_parent_id : undefined;
+    const modernRoot = declaredRoot ? raw.mf_root_id : undefined;
+    const hasLegacy = Boolean(result.hasLegacyRelation || relation.parentId);
+
+    let parentId = legacyParent;
+    let rootId = legacyRoot;
+    let verified = Boolean(statusOk && relation.chainPersistent);
+    let conflictField = null;
+
+    if (declaredParent) {
+      if (modernParent != null) {
+        if (legacyParent && legacyParent.toLowerCase() !== modernParent.toLowerCase()) {
+          conflictField = { field: 'mf_parent_id', legacy: legacyParent, modern: modernParent };
+        } else if (!legacyParent) {
+          parentId = modernParent;
+          verified = false;
+          result.warnings.push({ code: 'MODERN_RELATION_UNVERIFIED', field: 'mf_parent_id', message: 'modern parent cannot be confirmed against the legacy links in this snapshot' });
+        } else {
+          parentId = legacyParent;
+        }
+      } else if (legacyParent) {
+        conflictField = { field: 'mf_parent_id', legacy: legacyParent, modern: null };
+      } else {
+        parentId = null;
+      }
+    }
+
+    if (declaredRoot) {
+      if (modernRoot != null) {
+        if (hasLegacy && legacyRoot && legacyRoot.toLowerCase() !== modernRoot.toLowerCase()) {
+          conflictField = conflictField || { field: 'mf_root_id', legacy: legacyRoot, modern: modernRoot };
+        } else if (!hasLegacy || !legacyRoot) {
+          rootId = modernRoot;
+          verified = false;
+          result.warnings.push({ code: 'MODERN_RELATION_UNVERIFIED', field: 'mf_root_id', message: 'modern root cannot be confirmed against the legacy links in this snapshot' });
+        } else {
+          rootId = legacyRoot;
+        }
+      } else if (legacyRoot) {
+        conflictField = conflictField || { field: 'mf_root_id', legacy: legacyRoot, modern: null };
+      } else {
+        rootId = null;
+      }
+    }
+
     result.relation = {
       status: relation.status,
-      parentId: relation.parentId,
-      rootId: relation.rootId,
+      parentId,
+      rootId,
       depth: relation.depth,
-      persistent: relation.persistent,
+      parentPersistent: relation.parentPersistent,
+      chainPersistent: relation.chainPersistent,
+      persistent: relation.chainPersistent,
       link: relation.link,
+      verified: Boolean(verified && !conflictField),
     };
+    result.relationVerified = Boolean(verified && !conflictField && statusOk);
     if (result.topic) {
-      result.topic.mf_parent_id = relation.persistent && relation.parentId ? relation.parentId : null;
-      result.topic.mf_root_id = relation.persistent && relation.rootId ? relation.rootId : null;
-      if (!relation.persistent) {
-        result.warnings.push({
-          code: 'RELATION_NOT_PERSISTENT',
-          field: 'mf_parent_id',
-          message: 'parent/root relation depends on a temporary identity; it is not a persisted relation',
-        });
-      }
+      result.topic.mf_parent_id = parentId;
+      result.topic.mf_root_id = rootId;
+    }
+
+    if (conflictField) {
+      result.conflicts.push(conflictField);
+      result.status = 'conflict';
+    }
+
+    if (statusOk && !relation.chainPersistent && (relation.parentId || result.hasLegacyRelation)) {
+      result.warnings.push({ code: 'RELATION_NOT_PERSISTENT', field: 'mf_parent_id', message: 'the relation chain depends on a temporary identity or is not fully resolvable; it is not a persisted relation' });
+      if (result.status === 'ready') result.status = 'read-only-limited';
     }
 
     if (relation.status === 'cycle') {
@@ -419,6 +504,9 @@ function adaptLegacyTopics(rawTopics, context = {}) {
     } else if (relation.status === 'self') {
       result.errors.push({ code: 'E_RELATION_SELF', field: 'parent', message: 'topic cannot be its own parent' });
       result.status = 'invalid';
+    } else if (relation.status === 'duplicate') {
+      result.warnings.push({ code: 'E_RELATION_DUPLICATE', field: 'parent', message: 'this identity is duplicated in the snapshot; relations are not bound' });
+      if (result.status !== 'conflict' && result.status !== 'invalid') result.status = 'conflict';
     } else if (relation.status === 'ambiguous') {
       result.warnings.push({ code: 'E_RELATION_AMBIGUOUS', field: 'parent', message: 'more than one snapshot note matches the parent link' });
       if (result.status === 'ready' || result.status === 'read-only-limited') result.status = 'ambiguous';
@@ -426,6 +514,7 @@ function adaptLegacyTopics(rawTopics, context = {}) {
       result.warnings.push({ code: 'E_RELATION_ORPHAN', field: 'parent', message: 'the linked parent is missing from the snapshot' });
       if (result.status === 'ready') result.status = 'read-only-limited';
     }
+    if (!result.relationVerified && result.status === 'ready') result.status = 'read-only-limited';
   }
 
   const summary = {
@@ -451,14 +540,24 @@ function adaptLegacyTopics(rawTopics, context = {}) {
 // A candidate may only be handed to the schedulers when it is fully mapped and
 // has a persisted identity. Temporary ids stay analysis-only.
 function isSchedulableCandidate(result) {
-  return Boolean(
-    result
-    && result.status === 'ready'
-    && result.topic
-    && result.identity
-    && result.identity.persistent === true
-    && isPriority(result.topic.priority)
-  );
+  if (!result || result.status !== 'ready' || !result.topic || !result.identity) return false;
+  if (result.identity.kind !== 'persistent' || result.identity.persistent !== true) return false;
+  if (!isPersistentUuid(result.identity.id)) return false;
+  if (result.errors.length || result.conflicts.length || result.ambiguities.length) return false;
+  if (result.relationVerified !== true) return false;
+
+  const topic = result.topic;
+  if (topic.type !== 'source' && topic.type !== 'extract') return false;
+  if (topic.status !== 'active') return false;
+  if (!isPriority(topic.priority)) return false;
+  if (!Number.isInteger(topic.mf_interval_days) || topic.mf_interval_days < 1 || topic.mf_interval_days > 3650) return false;
+  if (typeof topic.a_factor !== 'number' || !Number.isFinite(topic.a_factor) || topic.a_factor < 1.1 || topic.a_factor > 3) return false;
+  if (!Number.isInteger(topic.review_count) || topic.review_count < 0) return false;
+  if (typeof topic.mf_ideal_due !== 'string' || !isValidDateString(topic.mf_ideal_due)) return false;
+  if (topic.mf_parent_id != null && !isPersistentUuid(topic.mf_parent_id)) return false;
+  if (topic.mf_root_id != null && !isPersistentUuid(topic.mf_root_id)) return false;
+  if (topic.mf_last_event_id != null && !isPersistentUuid(topic.mf_last_event_id)) return false;
+  return true;
 }
 
 module.exports = {

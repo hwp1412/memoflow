@@ -77,7 +77,7 @@
 | 都没有 | `E_LEGACY_ID_UNAVAILABLE`，`invalid` |
 
 - 临时 ID **永不**是 UUID 格式，也永不写回；
-- 批量内重复 ID（持久或临时）→ 每个出现都 `conflict / E_DUPLICATE_ID`；
+- 批量内重复 ID（持久或临时）→ 每个出现都 `conflict / E_DUPLICATE_ID`；UUID 比较键统一小写，大小写差异不会漏判（不改写原始值）；
 - 同一路径的两条快照会得到相同临时 ID → 被识别为冲突；
 - 读取前后原始对象逐字节不变。
 
@@ -88,7 +88,9 @@
 - 解析顺序：`tree_root: true` → 根；否则 `parent` 链接，缺失时回退 `source`（与 `tree-core.effectiveParent` 一致）。
 - 链接匹配只在**当前快照**内进行：含 `/` 按路径匹配，否则按 basename；同名多条 → `ambiguous`（列出候选）；无匹配 → `orphan`。
 - 自引用 → `E_RELATION_SELF`；环 → `E_RELATION_CYCLE`（链上所有节点标记）。
-- `depth` / `rootId` 沿父链计算；`mf_parent_id`/`mf_root_id` 仅在整条关系都由持久 ID 构成时填写，否则为 null + `RELATION_NOT_PERSISTENT`。
+- `depth` / `rootId` 沿父链计算；`mf_parent_id` 只在**直接父节点**是持久 UUID 时填写，`mf_root_id` 只在**整条祖先链**都是持久 UUID 时填写，否则为 null + `RELATION_NOT_PERSISTENT`；临时祖先或未解析祖先会沿链传播（orphan/ambiguous/duplicate/cycle）。
+- 同一规范化路径的多条记录全部保留，引用该路径即 `ambiguous`（列出候选），不取第一条；重复 ID 不进入关系绑定。
+- 原始 `mf_parent_id` / `mf_root_id` / `mf_last_event_id` 分别校验 UUID 格式；现代关系与旧 parent/source 推导逐一比较，一致才 `verified`，不一致 `conflict`，仅有现代关系时 `MODERN_RELATION_UNVERIFIED`（保留现代值但不声称已验证）。
 - 子节点解析**不修改**父节点任何字段（测试用快照比对）。
 - 临时 ID 关系明确标注为非持久；重命名后需要重新解析。
 
@@ -96,11 +98,20 @@
 
 `ready` / `read-only-limited` / `unsupported` / `invalid` / `conflict` / `ambiguous` 六类；单项异常不影响其他条目。批量摘要给出各类计数，`writesPerformed: false`。
 
+## 7.1 架构审查安全修复（本轮）
+
+| 修复 | 内容 | 回归测试 |
+|---|---|---|
+| 祖先链持久性 | 沿完整链判定；三层/五层混合临时/持久身份，`mf_root_id` 不泄漏临时 ID；未解析祖先沿链传播 | 3 项 |
+| 路径/重复身份 | 路径索引保留全部候选；重复 UUID（含大小写差异）、重复路径、重复临时 ID 不绑定关系；乱序一致 | 6 项 |
+| 现代字段 | `mf_parent_id`/`mf_root_id`/`mf_last_event_id` 校验与保留；新旧关系一致/冲突/仅现代/非法 UUID；revision/version 标记 provisional | 5 项 |
+| 可调度门禁 | 仅 ready + 持久唯一身份 + source/extract + active + 必要字段合法 + 无未解决冲突 | 2 项 |
+
 ## 8. 测试证据
 
 ```
 node --test test/mf-us-1-legacy-adapter.test.js test/mf-us-1-legacy-identity.test.js test/mf-us-1-legacy-relations.test.js
-  tests 39  pass 39  fail 0
+  tests 54  pass 54  fail 0
 ```
 
 覆盖：合法 Source/Extract；`review_count=0` 保留 interval；优先级缺失/非法；A-Factor 缺失/越界；日期格式（ISO/DD-MM/MM-DD/斜杠）、歧义、闰年、跨年、非法日期；新旧字段冲突与一致；`mf_not_before` 信息损失；`estimated_minutes` 校验；卡片与历史状态；UUID 合法/非法；临时 ID 确定性/重命名/碰撞；五级链、orphan、ambiguous、cycle、self、tree_root、done 父节点、临时关系、乱序一致、输入不可变。

@@ -196,3 +196,115 @@ test('relation resolution is order independent and never mutates the snapshot', 
   assert.deepEqual(summarise(forward), summarise(backward));
   assert.deepEqual(JSON.parse(JSON.stringify(topics)), snapshot);
 });
+
+// ---- ancestor-chain persistence (review fix 1) ----------------------------
+
+test('a temporary ancestor never becomes a formal mf_root_id candidate', () => {
+  const report = adaptLegacyTopics([
+    source(200, 'A', { mf_id: undefined }),
+    extract(201, 'B', 'A'),
+    extract(202, 'C', 'B'),
+  ], CONTEXT);
+  const results = byName(report);
+  assert.equal(results.B.topic.mf_parent_id, null, 'temporary parent cannot be a formal parent');
+  assert.equal(results.B.topic.mf_root_id, null);
+  assert.equal(results.C.topic.mf_parent_id, uuid(201), 'direct parent is persistent');
+  assert.equal(results.C.topic.mf_root_id, null, 'temporary root must not leak into mf_root_id');
+  assert.equal(results.C.relation.chainPersistent, false);
+  assert.equal(results.C.status, 'read-only-limited');
+  for (const result of report.results) {
+    assert.equal(result.topic.mf_root_id == null || /^[0-9a-f-]{36}$/i.test(result.topic.mf_root_id), true);
+  }
+});
+
+test('a five-level mixed chain validates persistence over every ancestor', () => {
+  const report = adaptLegacyTopics([
+    source(210, 'A', { mf_id: undefined }),
+    extract(211, 'B', 'A'),
+    extract(212, 'C', 'B'),
+    extract(213, 'D', 'C'),
+    extract(214, 'E', 'D'),
+  ], CONTEXT);
+  const results = byName(report);
+  assert.equal(results.E.relation.depth, 4);
+  assert.equal(results.E.topic.mf_parent_id, uuid(213));
+  assert.equal(results.E.topic.mf_root_id, null);
+  assert.equal(results.E.relation.chainPersistent, false);
+  assert.equal(results.C.topic.mf_parent_id, uuid(211));
+  assert.equal(results.C.topic.mf_root_id, null);
+  assert.equal(results.B.relation.parentPersistent, false);
+});
+
+test('an unresolved ancestor poisons the whole descendant chain', () => {
+  const report = adaptLegacyTopics([
+    extract(220, 'B', 'Missing'),
+    extract(221, 'C', 'B'),
+  ], CONTEXT);
+  const results = byName(report);
+  assert.equal(results.B.relation.status, 'orphan');
+  assert.equal(results.C.relation.status, 'orphan');
+  assert.equal(results.C.topic.mf_parent_id, null);
+  assert.equal(results.C.topic.mf_root_id, null);
+});
+
+// ---- duplicate paths / ids never bind arbitrarily (review fix 2) ----------
+
+test('two notes sharing one path make a path link ambiguous', () => {
+  const report = adaptLegacyTopics([
+    source(230, 'A1', { path: 'Sources/Shared.md' }),
+    source(231, 'A2', { path: 'Sources/Shared.md' }),
+    extract(232, 'E', 'Sources/Shared.md'),
+  ], CONTEXT);
+  const result = byName(report).E;
+  assert.equal(result.relation.status, 'ambiguous');
+  assert.equal(result.topic.mf_parent_id, null);
+  assert.equal(report.relationIssues.ambiguous[0].candidates.length, 2);
+});
+
+test('the same UUID on different paths is a duplicate, not a merge', () => {
+  const report = adaptLegacyTopics([
+    source(240, 'A1', { mf_id: uuid(240), path: 'Sources/A1.md' }),
+    source(241, 'A2', { mf_id: uuid(240), path: 'Sources/A2.md' }),
+    extract(242, 'E', 'A1'),
+  ], CONTEXT);
+  const results = byName(report);
+  assert.equal(results.A1.status, 'conflict');
+  assert.equal(results.A2.status, 'conflict');
+  assert.equal(results.E.topic.mf_parent_id, null);
+  assert.equal(results.E.relation.status, 'duplicate');
+  assert.equal(results.E.status, 'conflict');
+});
+
+test('two temporary ids from the same path are duplicated and unbound', () => {
+  const report = adaptLegacyTopics([
+    source(250, 'A1', { mf_id: undefined, path: 'Sources/Same.md' }),
+    source(251, 'A2', { mf_id: undefined, path: 'Sources/Same.md' }),
+    extract(252, 'E', 'Sources/Same.md'),
+  ], CONTEXT);
+  assert.equal(report.results[0].identity.id, report.results[1].identity.id);
+  assert.equal(report.results[0].status, 'conflict');
+  assert.equal(report.results[1].status, 'conflict');
+  assert.equal(report.results[2].topic.mf_parent_id, null);
+});
+
+test('UUID case differences are still the same identity', () => {
+  const upper = uuid(260).toUpperCase();
+  const report = adaptLegacyTopics([
+    source(260, 'A1', { mf_id: upper }),
+    source(261, 'A2', { mf_id: uuid(260) }),
+  ], CONTEXT);
+  assert.equal(report.results[0].status, 'conflict');
+  assert.equal(report.results[1].status, 'conflict');
+});
+
+test('conflict classification is independent of input order', () => {
+  const build = () => [
+    source(270, 'A1', { mf_id: uuid(270), path: 'Sources/A1.md' }),
+    source(271, 'A2', { mf_id: uuid(270), path: 'Sources/A2.md' }),
+    extract(272, 'E', 'A1'),
+  ];
+  const forward = adaptLegacyTopics(build(), CONTEXT);
+  const backward = adaptLegacyTopics(build().reverse(), CONTEXT);
+  const statusOf = report => Object.fromEntries(report.results.map(result => [result.source.basename, result.status]));
+  assert.deepEqual(statusOf(forward), statusOf(backward));
+});

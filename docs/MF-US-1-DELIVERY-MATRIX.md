@@ -32,7 +32,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 7 | INIT-02 | 类型系数 K、half-up 取整、I0 钳制 1..30 | A3.1, A3.3 | `TESTED` | 01 | r2：B(P) 与 K 以精确有理数计算，无浮点路径 |
 | 8 | INIT-03 | 初始 A-Factor（Source 1.50 / Extract 1.80） | A3.1 | `TESTED` | 01 | |
 | 9 | INIT-04 | 新建 Topic 字段初始化（active、`mf_not_before=null`、`review_count=0`、version=1） | A3.3, A8 | `TESTED` | 01 | 不生成 ID、不读时钟；r2：非 active/非法历史一律显式报错 |
-| 10 | INIT-05 | 父子继承与创建语义（只继承 Priority 数值；不改父节点） | A3.4 | `IN_PROGRESS` | 06 | 只读关系解析已交付（orphan/ambiguous/cycle/五级链）；真实创建集成待后续 |
+| 10 | INIT-05 | 父子继承与创建语义（只继承 Priority 数值；不改父节点） | A3.4 | `IN_PROGRESS` | 06 | 关系解析含祖先链持久性/重复路径不绑定；真实创建集成待后续 |
 | 11 | REV-01 | 后续间隔 `clamp(roundHalfUp(I×A),1,3650)` 与“不重新初始化”保护 | A4.1, A13 T11 | `TESTED` | 01 | 与 Priority 无关；r2：I×A 精确十进制，无容差吸附 |
 | 12 | EVT-01 | ADVANCED / HOLD / SOON 评阅 | A4.2 | `TESTED` | 02 | T05–T07；清行政延期、count+1、revision+1 |
 | 13 | EVT-02 | COMPLETE / DISMISS | A4.3, A8 | `TESTED` | 02 | T12；保留间隔/日期/评阅历史，不级联删除 |
@@ -53,9 +53,9 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `TESTED` | 04 | T16；可续撤销（already-undone/pendingCount）；重复身份与过期预览拒绝；持久化批次记录待 09（Q10） |
 | 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→04 | 已交付 `initializeTopic` / `applyEvent` / `selectDailyQueue` / `previewMercy`；`explainSchedule` 待后续 |
 | 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `NOT_STARTED` | 07/09 | |
-| 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；新旧字段冲突检测；writesPerformed=false |
+| 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；现代/旧关系与事件字段冲突检测；writesPerformed=false |
 | 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `NOT_STARTED` | 08 | 写库需单独授权 |
-| 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `IN_PROGRESS` | 06 | 临时 ID + 冲突检测 + Q8 方案已交付；UUID 持久化待 08 |
+| 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `IN_PROGRESS` | 06 | 临时 ID + 大小写不敏感冲突检测 + Q8 方案；UUID 持久化待 08 |
 | 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `NOT_STARTED` | 09 | |
 | 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |
 | 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
