@@ -366,3 +366,118 @@ test('onload lifecycle rejects a corrupt ledger version', async () => {
   };
   await assert.rejects(initializeHostLifecycle({ plugin }), error => error.code === 'E_LEDGER_VERSION_UNSUPPORTED');
 });
+
+// ---- durable-confirmed WAL regression -----------------------------------
+
+test('a failed intent save cannot be bypassed by retrying the same event', async () => {
+  const { storage, dataStore } = walFixture(30);
+  const { opened, ledger } = await openDurable(dataStore);
+  let saves = 0;
+  const runtime = createHostRuntime({
+    mode: 'unified', conditions: CONDITIONS, authorization: issueSyntheticHostAuthorization(),
+    storage, ledger, capability: issueSyntheticUnifiedCapability(),
+    persist: async () => { saves += 1; return { ok: false, code: 'E_LEDGER_SAVE_FAILED' }; },
+  });
+  const request = {
+    eventId: uuid(1030), topicId: uuid(30), type: 'ADVANCED', expectedRevision: 0,
+    algorithmVersion: 1, today: TODAY, calendarDate: TODAY,
+  };
+  const first = await runtime.execute(request);
+  const second = await runtime.execute(request);
+  assert.equal(first.reason, 'E_INTENT_PERSIST_FAILED');
+  assert.equal(second.reason, 'E_INTENT_PERSIST_FAILED');
+  assert.equal(saves, 2, 'the retry must attempt the durable save again');
+  assert.equal(frontmatter(storage, 'Sources/30.md').mf_revision, 0);
+  assert.equal(frontmatter(storage, 'Sources/30.md').review_count, 0);
+});
+
+test('after an intent failure a different event on the same topic is blocked', async () => {
+  const { storage, dataStore } = walFixture(31);
+  const { opened, ledger } = await openDurable(dataStore);
+  const runtime = createHostRuntime({
+    mode: 'unified', conditions: CONDITIONS, authorization: issueSyntheticHostAuthorization(),
+    storage, ledger, capability: issueSyntheticUnifiedCapability(),
+    persist: async () => ({ ok: false, code: 'E_LEDGER_SAVE_FAILED' }),
+  });
+  const e1 = {
+    eventId: uuid(1031), topicId: uuid(31), type: 'ADVANCED', expectedRevision: 0,
+    algorithmVersion: 1, today: TODAY, calendarDate: TODAY,
+  };
+  await runtime.execute(e1);
+  const e2 = { ...e1, eventId: uuid(1032) };
+  const blocked = await runtime.execute(e2);
+  assert.equal(blocked.reason, 'E_TOPIC_INTENT_UNRESOLVED');
+  assert.equal(frontmatter(storage, 'Sources/31.md').mf_revision, 0);
+});
+
+test('a throwing persist rejects the write and blocks until re-verification', async () => {
+  const { storage, dataStore } = walFixture(32);
+  const { opened, ledger } = await openDurable(dataStore);
+  const runtime = createHostRuntime({
+    mode: 'unified', conditions: CONDITIONS, authorization: issueSyntheticHostAuthorization(),
+    storage, ledger, capability: issueSyntheticUnifiedCapability(),
+    persist: async () => { throw new Error('network'); },
+  });
+  const request = {
+    eventId: uuid(1033), topicId: uuid(32), type: 'ADVANCED', expectedRevision: 0,
+    algorithmVersion: 1, today: TODAY, calendarDate: TODAY,
+  };
+  const first = await runtime.execute(request);
+  assert.equal(first.reason, 'E_INTENT_STATE_UNKNOWN');
+  const retry = await runtime.execute(request);
+  assert.equal(retry.reason, 'E_TOPIC_INTENT_STATE_UNKNOWN');
+  assert.equal(frontmatter(storage, 'Sources/32.md').review_count, 0);
+});
+
+test('an applied-save exception after CAS recovers without a second review', async () => {
+  const { storage, dataStore } = walFixture(33);
+  const { opened, ledger } = await openDurable(dataStore);
+  let saves = 0;
+  const runtime = createHostRuntime({
+    mode: 'unified', conditions: CONDITIONS, authorization: issueSyntheticHostAuthorization(),
+    storage, ledger, capability: issueSyntheticUnifiedCapability(),
+    persist: async records => {
+      saves += 1;
+      if (saves === 2) throw new Error('disk');
+      opened.store.replace(records);
+      return opened.flush();
+    },
+  });
+  const request = {
+    eventId: uuid(1034), topicId: uuid(33), type: 'ADVANCED', expectedRevision: 0,
+    algorithmVersion: 1, today: TODAY, calendarDate: TODAY,
+  };
+  const result = await runtime.execute(request);
+  assert.equal(result.status, 'uncertain');
+  assert.equal(frontmatter(storage, 'Sources/33.md').review_count, 1);
+
+  const reopened = await openDurable(dataStore);
+  const restarted = makeRuntime({ storage, ledger: reopened.ledger, opened: reopened.opened });
+  const recovered = await restarted.execute(request);
+  assert.equal(reopened.ledger.get(uuid(1034)).status, 'applied');
+  assert.equal(frontmatter(storage, 'Sources/33.md').review_count, 1);
+  assert.ok(['applied', 'duplicate'].includes(recovered.status));
+});
+
+test('a recovery persistence failure keeps the topic blocked', async () => {
+  const { storage, dataStore } = walFixture(34);
+  const { opened, ledger } = await openDurable(dataStore);
+  ledger.store.put(uuid(1035), {
+    eventId: uuid(1035), topicId: uuid(34), fingerprint: 'd'.repeat(64), type: 'ADVANCED',
+    algorithmVersion: 1, expectedRevision: 0, today: TODAY, eventDate: TODAY,
+    status: 'prepared', beforeHash: '0'.repeat(64), expectedAfterHash: '1'.repeat(64),
+    afterHash: null, actualRevision: null,
+  });
+  const runtime = createHostRuntime({
+    mode: 'unified', conditions: CONDITIONS, authorization: issueSyntheticHostAuthorization(),
+    storage, ledger, capability: issueSyntheticUnifiedCapability(),
+    persist: async () => ({ ok: false, code: 'E_LEDGER_SAVE_FAILED' }),
+  });
+  const recovery = await runtime.recover();
+  assert.equal(recovery.persisted, false);
+  const blocked = await runtime.execute({
+    eventId: uuid(1036), topicId: uuid(34), type: 'ADVANCED', expectedRevision: 0,
+    algorithmVersion: 1, today: TODAY, calendarDate: TODAY,
+  });
+  assert.ok(['E_TOPIC_INTENT_UNRESOLVED', 'E_TOPIC_INTENT_STATE_UNKNOWN'].includes(blocked.reason));
+});

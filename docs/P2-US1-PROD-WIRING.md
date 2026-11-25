@@ -33,6 +33,16 @@
 
 该实现不修改 PR-09 writer；规划阶段仅在 `SyntheticUnifiedStorage` 上可用，其他后端 fail-closed（`E_INTENT_PLAN_UNAVAILABLE`）。真实 Unified 未授权。
 
+### 3.1 durable-confirmed 重试补丁
+
+- 内存 prepared ≠ 已持久化：runtime 维护 `confirmed` 集合，只有 `saveData` 成功才加入；
+- prepared 保存失败：记录保留在内存但**不进入 confirmed**，并锁定该 Topic；
+- 同 eventId 重试会重新尝试持久化，成功前不执行 CAS；
+- 不同 eventId 在锁定 Topic 上返回 `E_TOPIC_INTENT_UNRESOLVED`（未知状态返回 `E_TOPIC_INTENT_STATE_UNKNOWN`）；
+- 保存抛异常视为持久化结果未知，需重新核验/恢复，不能直接重试；
+- applied 保存失败/异常 → `uncertain`，锁定 Topic，重启从 prepared 恢复；
+- `recover()` 持久化失败 → `persisted:false`，恢复涉及的 Topic 全部保持锁定。
+
 ## 3. 故障窗口测试
 
 `test/mf-us-1-closure-e2e.test.js` 覆盖：
@@ -55,9 +65,9 @@ Legacy 保留原行为；Unified 显式 `E_RESET_CURRENT_UNDECIDED`，不映射�
 ## 6. 测试
 
 ```
-test/mf-us-1-closure-e2e.test.js   9 pass
-test/mf-us-1-*.test.js           715 pass
-test/*.test.js                  1110 pass
+test/mf-us-1-closure-e2e.test.js  16 pass
+test/mf-us-1-*.test.js           720 pass
+test/*.test.js                  1115 pass
 validate-release                valid
 build --dry-run                 no files written
 ```
