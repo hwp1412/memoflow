@@ -202,6 +202,26 @@ function validateTopic(topic, field = 'topic') {
   return topic;
 }
 
+// Queue-layer fields (SPEC A6.3): a per-topic expected cost of 1..120 minutes.
+function validateEstimatedMinutes(value, field = 'estimated_minutes') {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 120) {
+    fail('E_ESTIMATED_MINUTES_INVALID', `${field} must be an integer within 1..120 minutes`, { field, value });
+  }
+  return value;
+}
+
+// A caller-provided stable read-only identifier for legacy topics that have no
+// mf_id yet. The core never mints one.
+function validateStableId(value, field = 'stable_id') {
+  if (typeof value !== 'string') {
+    fail('E_STABLE_ID_INVALID', `${field} must be a non-empty string`, { field, value });
+  }
+  if (value.length === 0 || value.length > 200 || value !== value.trim()) {
+    fail('E_STABLE_ID_INVALID', `${field} must be a trimmed string of 1..200 characters`, { field, value });
+  }
+  return value;
+}
+
 module.exports = {
   UUID_RE,
   KNOWN_STATUSES,
@@ -220,5 +240,7 @@ module.exports = {
   validateRevision,
   validateCount,
   validateTopic,
+  validateEstimatedMinutes,
+  validateStableId,
   assertConfig,
 };

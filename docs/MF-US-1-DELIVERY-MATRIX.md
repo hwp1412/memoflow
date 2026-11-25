@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-CORE-02（事件状态机、Effective Due、内存幂等模型）
+> 最后更新：P2-US1-QUEUE-01（每日队列、Priority/逾期补偿、预算、七日负荷）
 
 ## 0. 状态定义
 
@@ -43,15 +43,15 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 18 | EVT-07 | SET_PRIORITY（不重排理想日期） | A5.4, A13 T10 | `TESTED` | 02 | T10；不改间隔/日期/A-Factor/子节点 |
 | 19 | EVT-08 | 事件对象契约、`eventId` 幂等、`mf_revision` 乐观并发 | A8, A13 T13 | `TESTED` | 02 | T13；内存账本；持久化未实现（见 WRITE-01/Q14） |
 | 20 | DUE-01 | Ideal Due / Not Before / Effective Due 三日期语义与分别统计 | A2.4 | `TESTED` | 02 | 三类统计分离，不用改日期掩盖积压 |
-| 21 | QUEUE-01 | 到期候选筛选（仅 Source/Extract、可调度状态） | A6.1 | `NOT_STARTED` | 03 | |
-| 22 | QUEUE-02 | Priority 排序、逾期补偿、五级稳定键 | A6.2, A13 T14 | `NOT_STARTED` | 03 | |
-| 23 | QUEUE-03 | 每日时间预算与贪心选择 | A6.3 | `NOT_STARTED` | 03 | 待裁决 Q4 |
-| 24 | QUEUE-04 | 未来 7 天负荷统计 | A6.4 | `NOT_STARTED` | 03 | |
-| 25 | QUEUE-05 | 排期解释（算法日期 vs 行政日期分离） | A12 | `IN_PROGRESS` | 01→03 | PR-01 已提供首次/后续两条解释器 |
+| 21 | QUEUE-01 | 到期候选筛选（仅 Source/Extract、可调度状态） | A6.1 | `TESTED` | 03 | active 才入队；Card/历史状态/未到期分别报告；身份解析先于字段校验 |
+| 22 | QUEUE-02 | Priority 排序、逾期补偿、五级稳定键 | A6.2, A13 T14 | `TESTED` | 03 | T14；effectivePriority 不写回；缺创建日期排最后（Q16）；重复身份跨状态且覆盖非法字段记录 |
+| 23 | QUEUE-03 | 每日时间预算与贪心选择 | A6.3 | `TESTED` | 03 | Q4 已落地为 `estimated_minutes`（1–120）；预算 Q15 1–1440 |
+| 24 | QUEUE-04 | 未来 7 天负荷统计 | A6.4 | `TESTED` | 03 | 窗口 [today, today+6]（Q17）；Ideal/Effective 分轴；逾期积压计入今日实际负荷（available*），原始积压用 idealBacklog*，只计一次不摊未来 |
+| 25 | QUEUE-05 | 排期解释（算法日期 vs 行政日期分离） | A12 | `TESTED` | 01→03 | 队列逐条解释：到期、补偿、排序、预算、延期原因 |
 | 26 | MERCY-01 | Mercy 分配（明天起 W 槽、预算、超载标记） | A7.2 | `NOT_STARTED` | 04 | |
 | 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `NOT_STARTED` | 04 | |
 | 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `NOT_STARTED` | 04 | 待裁决 Q10 |
-| 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→04 | 已交付 `initializeTopic` |
+| 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→04 | 已交付 `initializeTopic` / `applyEvent` / `selectDailyQueue`；`previewMercy` 待 04 |
 | 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `NOT_STARTED` | 07/09 | |
 | 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `NOT_STARTED` | 06 | |
 | 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `NOT_STARTED` | 08 | 写库需单独授权 |
@@ -62,7 +62,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→05 | 见 §2 |
 | 38 | TEST-02 | 性质测试（9 条） | A13.1 | `IN_PROGRESS` | 01→05 | 见 §3 |
 | 39 | TEST-03 | 离线模拟（8 场景、8 指标） | A13.2 | `NOT_STARTED` | 05 | |
-| 40 | TEST-04 | 性能基准（10k Topic 队列 < 500ms） | A14 | `NOT_STARTED` | 05 | |
+| 40 | TEST-04 | 性能基准（10k Topic 队列 < 500ms） | A14 | `NOT_STARTED` | 05 | PR-03 初步实测 10k ≈ 47–62ms；正式模拟与基准在 05 | |
 | 41 | ACC-01 | 隔离 Vault 实机验收与发布门槛 | A14 | `NOT_STARTED` | 12 | 禁碰 `MemoFlow-Test` |
 
 ## 2. 规范测试 T01–T20 覆盖
@@ -84,7 +84,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | T11 | 旧 I=8,A=1.5,ADVANCED → 12，不重算首次值 | `PASS` | PR-01 同时覆盖“不重新初始化”保护 |
 | T12 | COMPLETE 退出队列且不删子节点 | `PASS` | 核心无级联；父/根关联与全部调度字段保留 |
 | T13 | `eventId` 重复不重复计数 | `PASS` | `mf-us-1-idempotency.test.js`（含 E1→E2→E1） |
-| T14 | 相同优先级与日期稳定排序 | `TODO` | PR-03 |
+| T14 | 相同优先级与日期稳定排序 | `PASS` | `mf-us-1-queue.test.js`（含乱序与 code-unit 决胜） |
 | T15 | 跨夏令时 +1 天 | `PASS` | `mf-us-1-dates.test.js`（美/欧 DST 日） |
 | T16 | Mercy 撤销恢复原 `mf_not_before` | `TODO` | PR-04 |
 | T17 | 新建 Extract→Extract 不改父调度 | `PARTIAL` | PR-01 保证 `initializeTopic` 不触碰父对象；父节点语义在 PR-06 |
@@ -105,7 +105,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 5 | 后续评阅不重新调用首次间隔函数 | `PASS`（核心层） | 01 |
 | 6 | 完成或移出后不自动复活 | `PASS` | 02（只有显式 REACTIVATE 可复活） |
 | 7 | 合法旧数据迁移前后 Effective Due 相同 | `TODO` | 08 |
-| 8 | 普通每日队列不自动选择未到期项 | `TODO` | 03 |
+| 8 | 普通每日队列不自动选择未到期项 | `PASS` | 03（含 10k 性质测试） |
 | 9 | 跨失败/重试事件保持幂等 | `PASS`（纯模型） | 02；持久化重试待 09 |
 
 ## 4. 离线模拟（A13.2）规模核对
