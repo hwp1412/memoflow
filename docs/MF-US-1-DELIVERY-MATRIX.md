@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-SIM-01（离线模拟、性质回归、A14 性能基准）
+> 最后更新：P2-US1-LEGACY-01（旧数据只读适配、临时身份、来源关系）
 
 ## 0. 状态定义
 
@@ -32,7 +32,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 7 | INIT-02 | 类型系数 K、half-up 取整、I0 钳制 1..30 | A3.1, A3.3 | `TESTED` | 01 | r2：B(P) 与 K 以精确有理数计算，无浮点路径 |
 | 8 | INIT-03 | 初始 A-Factor（Source 1.50 / Extract 1.80） | A3.1 | `TESTED` | 01 | |
 | 9 | INIT-04 | 新建 Topic 字段初始化（active、`mf_not_before=null`、`review_count=0`、version=1） | A3.3, A8 | `TESTED` | 01 | 不生成 ID、不读时钟；r2：非 active/非法历史一律显式报错 |
-| 10 | INIT-05 | 父子继承与创建语义（只继承 Priority 数值；不改父节点） | A3.4 | `NOT_STARTED` | 06 | 需适配器与 ID 映射 |
+| 10 | INIT-05 | 父子继承与创建语义（只继承 Priority 数值；不改父节点） | A3.4 | `IN_PROGRESS` | 06 | 关系解析含祖先链持久性/重复路径不绑定；真实创建集成待后续 |
 | 11 | REV-01 | 后续间隔 `clamp(roundHalfUp(I×A),1,3650)` 与“不重新初始化”保护 | A4.1, A13 T11 | `TESTED` | 01 | 与 Priority 无关；r2：I×A 精确十进制，无容差吸附 |
 | 12 | EVT-01 | ADVANCED / HOLD / SOON 评阅 | A4.2 | `TESTED` | 02 | T05–T07；清行政延期、count+1、revision+1 |
 | 13 | EVT-02 | COMPLETE / DISMISS | A4.3, A8 | `TESTED` | 02 | T12；保留间隔/日期/评阅历史，不级联删除 |
@@ -53,14 +53,14 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `TESTED` | 04 | T16；可续撤销（already-undone/pendingCount）；重复身份与过期预览拒绝；持久化批次记录待 09（Q10） |
 | 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→04 | 已交付 `initializeTopic` / `applyEvent` / `selectDailyQueue` / `previewMercy`；`explainSchedule` 待后续 |
 | 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `NOT_STARTED` | 07/09 | |
-| 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `NOT_STARTED` | 06 | |
+| 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；现代/旧关系与事件字段冲突检测；writesPerformed=false |
 | 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `NOT_STARTED` | 08 | 写库需单独授权 |
-| 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `NOT_STARTED` | 06 | 待裁决 Q8 |
+| 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `IN_PROGRESS` | 06 | 临时 ID + 大小写不敏感冲突检测 + Q8 方案；UUID 持久化待 08 |
 | 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `NOT_STARTED` | 09 | |
 | 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |
 | 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
-| 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→05 | T01–T16 PASS；T17 仅纯对象层；T18/T19/T20 待 11/07/06（见 §2） |
-| 38 | TEST-02 | 性质测试（9 条） | A13.1 | `TESTED` | 01→05 | 8/9 在纯算法层通过；迁移前后 Effective Due 待 08（见 §3） |
+| 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→06 | T01–T16 PASS；T17 纯对象层（PR-05/06）；T18/T19/T20 仍缺真实验收 |
+| 38 | TEST-02 | 性质测试（9 条） | A13.1 | `TESTED` | 01→06 | 8 条 PASS；迁移前后 Effective Due 在只读候选层已证（PR-06），真实迁移待 08 |
 | 39 | TEST-03 | 离线模拟（8 场景、8 指标） | A13.2 | `TESTED` | 05 | S01–S08 + M01–M08 + 对照；M06 按初始/新增群体拆分；对照为 **Legacy proxy**（见 docs/P2-US1-SIM-01.md） |
 | 40 | TEST-04 | 性能基准（10k Topic 队列 < 500ms） | A14 | `TESTED` | 05 | 本机 Apple M4：10k 中位 53.15ms（P95 65.88ms）；见 docs/MF-US-1-BENCHMARK.md |
 | 41 | ACC-01 | 隔离 Vault 实机验收与发布门槛 | A14 | `NOT_STARTED` | 12 | 禁碰 `MemoFlow-Test` |
@@ -87,10 +87,10 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | T14 | 相同优先级与日期稳定排序 | `PASS` | `mf-us-1-queue.test.js`（含乱序与 code-unit 决胜） |
 | T15 | 跨夏令时 +1 天 | `PASS` | `mf-us-1-dates.test.js`（美/欧 DST 日） |
 | T16 | Mercy 撤销恢复原 `mf_not_before` | `PASS` | `mf-us-1-mercy-undo.test.js`（含 null 与具体日期混合） |
-| T17 | 新建 Extract→Extract 不改父调度 | `PARTIAL` | PR-01 + PR-05 S04 证明纯对象层父调度不变；真实父子创建/稳定 ID 属 PR-06 |
+| T17 | 新建 Extract→Extract 不改父调度 | `PARTIAL` | PR-01/05/06 证明纯对象层父调度不变；真实创建与适配器接线仍未执行 |
 | T18 | SR 卡片评分不触碰 SR 数据 | `TODO` | PR-11；本 PR 仅证明 Card 不进入阅读队列（S08/性质测试） |
 | T19 | Shadow 模式不写回 Topic | `TODO` | PR-07（尚未实现 Shadow，无证据） |
-| T20 | 同名/重命名后稳定 ID 关系正确 | `TODO` | PR-06（模拟仅用合成 ID，不代表真实重命名） |
+| T20 | 同名/重命名后稳定 ID 关系正确 | `TODO` | PR-06 证明持久 ID 不随路径/标题变化；真实重命名与路径解析未验收 |
 
 ## 3. 性质测试（A13.1，共 9 条）
 
@@ -104,7 +104,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 4 | Skip/Postpone/Mercy 不引入有效评阅 | `PASS` | 02 Skip/Postpone + 04 Mercy（仅改 mf_not_before） |
 | 5 | 后续评阅不重新调用首次间隔函数 | `PASS`（核心层） | 01 |
 | 6 | 完成或移出后不自动复活 | `PASS` | 02（只有显式 REACTIVATE 可复活） |
-| 7 | 合法旧数据迁移前后 Effective Due 相同 | `TODO` | 08 |
+| 7 | 合法旧数据迁移前后 Effective Due 相同 | `PARTIAL` | 06 只读候选层已证（严格解析后 Effective Due 不变）；真实迁移待 08 |
 | 8 | 普通每日队列不自动选择未到期项 | `PASS` | 03（含 10k 性质测试） |
 | 9 | 跨失败/重试事件保持幂等 | `PASS`（纯模型） | 02；持久化重试待 09 |
 
