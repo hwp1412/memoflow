@@ -21,7 +21,7 @@ const { resolveRelations } = require('./legacy-relations.js');
 const { isPersistentUuid } = require('./legacy-identity.js');
 const { effectiveDueFromDates } = require('./due.js');
 const { sha256Hex, hashObject } = require('./migration-hash.js');
-const { mergeFrontmatter } = require('./migration-frontmatter.js');
+const { mergeFrontmatter, assertAddOnly } = require('./migration-frontmatter.js');
 
 const PLAN_KIND = 'mf-us-1-migration-plan';
 
@@ -205,6 +205,7 @@ function finalizeEntry(entry, raw, reportEntry, rawRelation, idToUuid, context) 
     } else {
       try {
         mergeFrontmatter(raw.content, fields);
+        assertAddOnly(raw.content, fields);
       } catch (error) {
         reasons.push(reason(error.code || 'E_FRONTMATTER_INVALID', error.message || 'the frontmatter cannot be merged safely'));
       }
@@ -213,11 +214,19 @@ function finalizeEntry(entry, raw, reportEntry, rawRelation, idToUuid, context) 
 
   // --- status -----------------------------------------------------------
   const adapterStatus = reportEntry.status;
-  const blockedByDecision = reasons.some(item => ['EFFECTIVE_DUE_CHANGED', 'UUID_INVALID', 'UUID_ALLOCATOR_FAILED'].includes(item.code))
+  const fieldAlreadyPresent = reasons.some(item => item.code === 'E_FIELD_ALREADY_PRESENT');
+  const blockedByDecision = reasons.some(item => [
+    'EFFECTIVE_DUE_CHANGED',
+    'UUID_INVALID',
+    'UUID_ALLOCATOR_FAILED',
+    'E_FRONTMATTER_DUPLICATE_KEY',
+    'E_FRONTMATTER_UNSUPPORTED_STRUCTURE',
+    'E_ENCODING_UNSUPPORTED',
+  ].includes(item.code))
     || entry.uuidStatus === 'invalid'
     || entry.uuidStatus === 'allocator-failed';
   if (blockedByDecision) entry.status = 'blocked';
-  else if (adapterStatus === 'conflict') entry.status = 'conflict';
+  else if (adapterStatus === 'conflict' || fieldAlreadyPresent) entry.status = 'conflict';
   else if (adapterStatus === 'unsupported' || adapterStatus === 'invalid') entry.status = 'blocked';
   else if (adapterStatus === 'ambiguous') entry.status = 'manual-review';
   else if (reasons.length > 0) entry.status = 'manual-review';

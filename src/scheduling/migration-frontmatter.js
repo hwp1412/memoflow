@@ -63,6 +63,62 @@ function mergeFrontmatter(content, fields) {
   return bom + ['---', ...next, ...lines.slice(end)].join(newline);
 }
 
+// Strict, read-only frontmatter inspection used for add-only migration checks.
+function parseFrontmatter(content) {
+  if (typeof content !== 'string') {
+    fail('E_CONTENT_INVALID', 'file content must be a string', { field: 'content' });
+  }
+  let text = content;
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  if (text.includes('\uFFFD')) {
+    fail('E_ENCODING_UNSUPPORTED', 'replacement characters prevent a safe frontmatter check');
+  }
+  const newline = detectNewline(text);
+  const lines = text.split(newline);
+  if (lines.length === 0 || lines[0].trim() !== '---') {
+    fail('E_FRONTMATTER_MISSING', 'migration requires a YAML frontmatter block');
+  }
+  let end = -1;
+  for (let index = 1; index < lines.length; index += 1) {
+    if (lines[index].trim() === '---') {
+      end = index;
+      break;
+    }
+  }
+  if (end < 0) fail('E_FRONTMATTER_UNCLOSED', 'the YAML frontmatter block is not closed');
+
+  const keys = new Map();
+  const duplicates = new Set();
+  for (let index = 1; index < end; index += 1) {
+    const line = lines[index];
+    if (!line.trim()) continue;
+    if (/^\s+\S/.test(line)) {
+      fail('E_FRONTMATTER_UNSUPPORTED_STRUCTURE', 'nested or indented frontmatter is not safe to migrate');
+    }
+    const match = line.match(/^([A-Za-z0-9_-]+)\s*:/);
+    if (!match) continue; // comments and free-form lines are not keys
+    const key = match[1];
+    if (keys.has(key)) duplicates.add(key);
+    keys.set(key, (keys.get(key) || 0) + 1);
+  }
+  if (duplicates.size > 0) {
+    fail('E_FRONTMATTER_DUPLICATE_KEY', `duplicate frontmatter keys: ${[...duplicates].join(', ')}`);
+  }
+  return { keys, newline, hasFrontmatter: true };
+}
+
+// Migration is add-only: a field the plan wants to add must not already exist.
+function assertAddOnly(content, fields) {
+  const parsed = parseFrontmatter(content);
+  const present = Object.keys(fields).filter(key => parsed.keys.has(key));
+  if (present.length > 0) {
+    fail('E_FIELD_ALREADY_PRESENT', `frontmatter already contains: ${present.join(', ')}; migration refuses to overwrite`, {
+      fields: present,
+    });
+  }
+  return parsed;
+}
+
 function hasClosedFrontmatter(content) {
   try {
     mergeFrontmatter(content, {});
@@ -72,4 +128,4 @@ function hasClosedFrontmatter(content) {
   }
 }
 
-module.exports = { mergeFrontmatter, hasClosedFrontmatter };
+module.exports = { mergeFrontmatter, parseFrontmatter, assertAddOnly, hasClosedFrontmatter };

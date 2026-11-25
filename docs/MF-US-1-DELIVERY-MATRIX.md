@@ -54,7 +54,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→07 | 已交付初始化/事件/队列/Mercy + mode/shadow 只读接口；`explainSchedule` 待后续 |
 | 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09 | 纯模式策略 + Shadow 只读；能力字段不可伪造、观察值唯一性校验、门禁复用；真实入口未接线 |
 | 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；现代/旧关系与事件字段冲突检测；writesPerformed=false |
-| 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `TESTED` | 08 | 私有注册内存存储 + 写入意图恢复 + CRLF/BOM；真实 Vault 待 09/12 |
+| 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `TESTED` | 08 | 私有存储 + 写入意图 + 计划/备份双向对应 + add-only；真实 Vault 待 09/12 |
 | 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `TESTED` | 06/08 | 固定 UUID 批次清单 + 冲突检测 + 重试幂等；真实落盘待 09 |
 | 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `NOT_STARTED` | 09 | |
 | 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |

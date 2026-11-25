@@ -2,14 +2,17 @@
 
 // Migration execution, reconciliation and rollback on the module-registered
 // MemoryStorage only (PR-08). A plain object with getFile/write cannot pass:
-// the trust registry is a module-private WeakSet. Real Obsidian storage needs a
-// separately reviewed adapter in a later PR.
+// the trust registry is a module-private WeakSet.
 
 const { fail, isSchedulingError } = require('./errors.js');
-const { sha256Hex } = require('./migration-hash.js');
+const { sha256Hex, stableStringify } = require('./migration-hash.js');
 const { PLAN_KIND, planHashOf } = require('./migration-plan.js');
-const { verifyMigrationBackup } = require('./migration-backup.js');
-const { mergeFrontmatter } = require('./migration-frontmatter.js');
+const {
+  BACKUP_KIND,
+  verifyMigrationBackup,
+  verifyPlanBackupCorrespondence,
+} = require('./migration-backup.js');
+const { mergeFrontmatter, assertAddOnly } = require('./migration-frontmatter.js');
 const { assertTrustedStorage, assertTrustedBackupStore } = require('./migration-storage.js');
 
 const BATCH_KIND = 'mf-us-1-migration-batch';
@@ -41,6 +44,8 @@ function bumpRevision(revision) {
 }
 
 function makeIntent(path, fields, originalContent) {
+  // Migration is add-only: refuse to overwrite a field that already exists.
+  assertAddOnly(originalContent, fields);
   const expectedContent = mergeFrontmatter(originalContent, fields);
   return {
     path,
@@ -74,9 +79,15 @@ function createBatch(plan, backup) {
     environment: 'memory',
     entries: backup.entries.map(entry => {
       const planEntry = plan.entries.find(candidate => candidate.path === entry.path);
-      const intent = planEntry
-        ? makeIntent(entry.path, planEntry.fieldsToAdd, entry.content)
-        : null;
+      let intent = null;
+      let intentError = null;
+      if (planEntry) {
+        try {
+          intent = makeIntent(entry.path, planEntry.fieldsToAdd, entry.content);
+        } catch (error) {
+          intentError = { code: error.code || 'E_INTENT_INVALID', message: error.message || 'intent failed' };
+        }
+      }
       return {
         operationId: entry.operationId,
         index: entry.index,
@@ -86,9 +97,10 @@ function createBatch(plan, backup) {
         revision: entry.revision,
         status: 'pending',
         error: null,
+        intent,
+        intentError,
         originalContent: entry.content,
         fields: { ...entry.fields },
-        intent,
       };
     }),
     writesPerformed: false,
@@ -106,6 +118,10 @@ function summaryOfBatch(batch) {
   return 'failed';
 }
 
+function expectedRevisionAfter(beforeRevision) {
+  return Number.isInteger(beforeRevision) ? beforeRevision + 1 : null;
+}
+
 function executeMigration(plan, storage, authorization, backupStore) {
   assertPlanIntegrity(plan);
   assertTrustedStorage(storage);
@@ -121,6 +137,10 @@ function executeMigration(plan, storage, authorization, backupStore) {
   if (!verification.verified) {
     fail('E_BACKUP_CORRUPT', 'the backup failed its integrity check', { errors: verification.errors });
   }
+  const correspondence = verifyPlanBackupCorrespondence(plan, backup);
+  if (!correspondence.valid) {
+    fail('E_BACKUP_PLAN_MISMATCH', 'the backup does not correspond to the executable plan', { errors: correspondence.errors });
+  }
 
   const batch = createBatch(plan, backup);
   if (typeof backupStore.putBatch === 'function') backupStore.putBatch(batch);
@@ -131,9 +151,14 @@ function executeMigration(plan, storage, authorization, backupStore) {
   for (const entry of batch.entries) {
     const planEntry = planByPath.get(entry.path);
     if (!planEntry || !intentIsValid(entry)) {
-      entry.status = 'failed';
-      entry.error = { code: 'E_INTENT_INVALID', message: 'the batch write intent is missing or inconsistent' };
-      counts.failed += 1;
+      if (entry.intentError && entry.intentError.code === 'E_FIELD_ALREADY_PRESENT') {
+        entry.status = 'conflict';
+        counts.conflicts += 1;
+      } else {
+        entry.status = 'failed';
+        counts.failed += 1;
+      }
+      entry.error = entry.intentError || { code: 'E_INTENT_INVALID', message: 'the batch write intent is missing or inconsistent' };
       continue;
     }
 
@@ -148,7 +173,6 @@ function executeMigration(plan, storage, authorization, backupStore) {
     const currentHash = sha256Hex(current.content);
     const expectedAfterHash = entry.intent.expectedAfterHash;
 
-    // Recovery window: a pending entry may already hold the expected result.
     if (currentHash === expectedAfterHash) {
       entry.status = 'already-applied';
       entry.afterHash = expectedAfterHash;
@@ -192,7 +216,6 @@ function executeMigration(plan, storage, authorization, backupStore) {
         entry.status = 'failed';
         counts.failed += 1;
       } else {
-        // The write may have landed; this is not reported as success or failure.
         entry.status = 'uncertain';
         counts.uncertain += 1;
       }
@@ -220,33 +243,81 @@ function contentMap(currentSnapshots) {
   const map = new Map();
   if (Array.isArray(currentSnapshots)) {
     for (const item of currentSnapshots) {
-      if (item && typeof item.path === 'string' && typeof item.content === 'string') map.set(item.path, item.content);
+      if (!item || typeof item.path !== 'string') continue;
+      if (typeof item.content === 'string') map.set(item.path, { content: item.content, revision: item.revision ?? null });
     }
   } else if (currentSnapshots && typeof currentSnapshots === 'object') {
     for (const [path, value] of Object.entries(currentSnapshots)) {
-      if (typeof value === 'string') map.set(path, value);
+      if (typeof value === 'string') map.set(path, { content: value, revision: null });
+      else if (value && typeof value.content === 'string') map.set(path, { content: value.content, revision: value.revision ?? null });
     }
   }
   return map;
 }
 
-function previewRollback(batch, currentSnapshots) {
+// A rollback may only use a batch whose entries still match a verified backup.
+function validateRollbackSource(batch, backup, authorization) {
+  if (!backup || backup.kind !== BACKUP_KIND) fail('E_BACKUP_INVALID', 'a verified backup is required for rollback');
+  if (authorization && authorization.batchId && batch.batchId !== authorization.batchId) {
+    fail('E_BATCH_MISMATCH', 'authorization names another batch');
+  }
+  if (backup.batchId !== batch.batchId) fail('E_BATCH_MISMATCH', 'the backup belongs to another batch');
+  if (backup.planId !== batch.planId) fail('E_BACKUP_PLAN_MISMATCH', 'the backup belongs to another plan');
+  const verification = verifyMigrationBackup(backup);
+  if (!verification.verified) fail('E_BACKUP_CORRUPT', 'the backup failed its integrity check', { errors: verification.errors });
+  if (backup.entries.length !== batch.entries.length) {
+    fail('E_BACKUP_MISMATCH', 'the batch does not cover the same entries as the backup');
+  }
+
+  const byOperation = new Map();
+  for (const entry of backup.entries) {
+    if (byOperation.has(entry.operationId)) fail('E_BACKUP_DUPLICATE_OPERATION', 'duplicate operation id in backup');
+    byOperation.set(entry.operationId, entry);
+  }
+  for (const entry of batch.entries) {
+    const source = byOperation.get(entry.operationId);
+    if (!source) fail('E_BACKUP_ENTRY_MISSING', 'batch entry has no backup source');
+    if (source.path !== entry.path) fail('E_BACKUP_PATH_MISMATCH', 'batch path does not match the backup');
+    if (source.contentHash !== entry.beforeHash) fail('E_BACKUP_HASH_MISMATCH', 'batch beforeHash does not match the backup');
+    if (sha256Hex(source.content) !== source.contentHash) fail('E_BACKUP_CORRUPT', 'backup content hash mismatch');
+    if (source.content !== entry.originalContent) fail('E_BATCH_TAMPERED', 'batch original content does not match the backup');
+    if (stableStringify(source.fields) !== stableStringify(entry.fields)) fail('E_BACKUP_FIELDS_MISMATCH', 'batch fields do not match the backup');
+    if (sha256Hex(entry.originalContent) !== entry.beforeHash) fail('E_BATCH_TAMPERED', 'batch original content fails its own hash');
+  }
+  return backup;
+}
+
+function revisionAllowsRollback(entry, snapshot) {
+  if (entry.revision == null) return { ok: true };
+  if (snapshot.revision == null) return { ok: false, status: 'requires-manual-recovery', reason: 'E_REVISION_UNAVAILABLE' };
+  if (snapshot.revision !== expectedRevisionAfter(entry.revision)) {
+    return { ok: false, status: 'conflict', reason: 'E_REVISION_MISMATCH' };
+  }
+  return { ok: true };
+}
+
+function previewRollback(batch, currentSnapshots, backupStore) {
   if (!batch || batch.kind !== BATCH_KIND) fail('E_BATCH_INVALID', 'a migration batch is required');
+  assertTrustedBackupStore(backupStore);
+  const backup = backupStore.get(batch.batchId);
+  if (!backup) fail('E_BACKUP_MISSING', `no backup found for batch ${batch.batchId}`);
+  validateRollbackSource(batch, backup, { batchId: batch.batchId });
+
   const contents = contentMap(currentSnapshots);
   const results = batch.entries.map(entry => {
-    const content = contents.get(entry.path);
-    if (typeof content !== 'string') {
+    const snapshot = contents.get(entry.path);
+    if (!snapshot) {
       return { path: entry.path, status: 'requires-manual-recovery', reason: 'CURRENT_FILE_MISSING' };
     }
-    if (!intentIsValid(entry) && !entry.afterHash) {
-      return { path: entry.path, status: 'requires-manual-recovery', reason: 'INTENT_INVALID' };
-    }
-    const hash = sha256Hex(content);
-    const expectedAfterHash = expectedAfterHashOf(entry) || entry.afterHash;
-    if (expectedAfterHash && hash === expectedAfterHash) return { path: entry.path, status: 'rollback-ready' };
+    const hash = sha256Hex(snapshot.content);
     if (hash === entry.beforeHash) return { path: entry.path, status: 'already-rolled-back' };
-    return { path: entry.path, status: 'conflict', reason: 'EXTERNAL_EDIT' };
+    const expectedAfter = expectedAfterHashOf(entry) || entry.afterHash;
+    if (!expectedAfter || hash !== expectedAfter) return { path: entry.path, status: 'conflict', reason: 'EXTERNAL_EDIT' };
+    const revision = revisionAllowsRollback(entry, snapshot);
+    if (!revision.ok) return { path: entry.path, status: revision.status, reason: revision.reason };
+    return { path: entry.path, status: 'rollback-ready' };
   });
+
   const summary = {
     total: results.length,
     rollbackReady: results.filter(result => result.status === 'rollback-ready').length,
@@ -257,10 +328,15 @@ function previewRollback(batch, currentSnapshots) {
   return { batchId: batch.batchId, planId: batch.planId, results, summary, writesPerformed: false };
 }
 
-function rollbackMigration(batch, storage, authorization) {
+function rollbackMigration(batch, storage, authorization, backupStore) {
   if (!batch || batch.kind !== BATCH_KIND) fail('E_BATCH_INVALID', 'a migration batch is required');
   assertTrustedStorage(storage);
   assertMemoryAuthorization(authorization);
+  assertTrustedBackupStore(backupStore);
+  if (authorization.batchId !== batch.batchId) fail('E_BATCH_MISMATCH', 'authorization names another batch');
+  const backup = backupStore.get(batch.batchId);
+  if (!backup) fail('E_BACKUP_MISSING', `no backup found for batch ${batch.batchId}`);
+  validateRollbackSource(batch, backup, authorization);
 
   const counts = { attempted: 0, succeeded: 0, alreadyRolledBack: 0, conflicts: 0, failed: 0, uncertain: 0 };
   const entries = batch.entries.map(entry => {
@@ -278,13 +354,26 @@ function rollbackMigration(batch, storage, authorization) {
       counts.alreadyRolledBack += 1;
       return next;
     }
-    const expectedAfterHash = expectedAfterHashOf(entry) || entry.afterHash;
-    if (!expectedAfterHash || hash !== expectedAfterHash) {
+    const expectedAfter = expectedAfterHashOf(entry) || entry.afterHash;
+    if (!expectedAfter || hash !== expectedAfter) {
       next.status = 'conflict';
       next.error = { code: 'E_EXTERNAL_EDIT', message: 'the file changed after migration; rollback refused' };
       counts.conflicts += 1;
       return next;
     }
+    const revision = revisionAllowsRollback(entry, { content: current.content, revision: current.revision });
+    if (!revision.ok) {
+      next.status = revision.status;
+      next.error = { code: revision.reason, message: 'the post-migration revision cannot be confirmed' };
+      if (revision.status === 'conflict') counts.conflicts += 1;
+      return next;
+    }
+    if (sha256Hex(entry.originalContent) !== entry.beforeHash) {
+      next.status = 'requires-manual-recovery';
+      next.error = { code: 'E_BATCH_TAMPERED', message: 'the stored original content fails its own hash' };
+      return next;
+    }
+
     counts.attempted += 1;
     try {
       storage.write(entry.path, entry.originalContent, entry.revision ?? null);

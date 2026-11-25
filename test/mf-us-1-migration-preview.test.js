@@ -192,3 +192,55 @@ test('a mixed batch keeps not-before and no-not-before entries separate', () => 
   assert.equal(plan.entries[1].fieldsToAdd.mf_not_before, null);
   assert.equal(plan.entries[1].lossNotes.includes('NOT_BEFORE_NOT_RECOVERABLE'), true);
 });
+
+// ---- add-only frontmatter protection (review fix 3) ----------------------
+
+function withFrontmatterLine(raw, line) {
+  const next = { ...raw };
+  next.content = raw.content.replace('---\n', `---\n${line}\n`);
+  return next;
+}
+
+test('a frontmatter field the metadata does not know is never overwritten', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  const withField = withFrontmatterLine(raw, 'mf_ideal_due: 2026-12-01');
+  const plan = previewMigration([withField], CONTEXT);
+  assert.equal(plan.entries[0].status, 'conflict');
+  assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'E_FIELD_ALREADY_PRESENT'));
+  assert.equal(plan.executable, 0);
+});
+
+test('an existing value equal to the plan is still a conflict when metadata is missing', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  const withField = withFrontmatterLine(raw, 'mf_ideal_due: 2026-11-24');
+  const plan = previewMigration([withField], CONTEXT);
+  assert.equal(plan.entries[0].status, 'conflict');
+  assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'E_FIELD_ALREADY_PRESENT'));
+});
+
+test('an existing mf_revision in content blocks a metadata-only preview', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  const withField = withFrontmatterLine(raw, 'mf_revision: 0');
+  const plan = previewMigration([withField], CONTEXT);
+  assert.equal(plan.entries[0].status, 'conflict');
+  assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'E_FIELD_ALREADY_PRESENT'));
+});
+
+test('duplicate frontmatter keys are refused', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  const duplicate = {
+    ...raw,
+    content: raw.content.replace('---\n', '---\nmf_ideal_due: 2026-12-01\nmf_ideal_due: 2026-12-02\n'),
+  };
+  const plan = previewMigration([duplicate], CONTEXT);
+  assert.equal(plan.entries[0].status, 'blocked');
+  assert.ok(plan.entries[0].reasons.some(reason => reason.code === 'E_FRONTMATTER_DUPLICATE_KEY'));
+});
+
+test('a rejected record leaves the original content untouched', () => {
+  const { raw } = note({ mfId: uuid(1) });
+  const before = withFrontmatterLine(raw, 'mf_ideal_due: 2026-12-01');
+  const snapshot = before.content;
+  previewMigration([before], CONTEXT);
+  assert.equal(before.content, snapshot);
+});

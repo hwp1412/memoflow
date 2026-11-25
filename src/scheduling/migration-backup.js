@@ -8,7 +8,8 @@
 const { fail } = require('./errors.js');
 const { sha256Hex } = require('./migration-hash.js');
 const { PLAN_KIND, executableEntries } = require('./migration-plan.js');
-const { mergeFrontmatter } = require('./migration-frontmatter.js');
+const { mergeFrontmatter, assertAddOnly } = require('./migration-frontmatter.js');
+const { stableStringify } = require('./migration-hash.js');
 const { assertTrustedStorage, assertTrustedBackupStore } = require('./migration-storage.js');
 
 const BACKUP_KIND = 'mf-us-1-migration-backup';
@@ -71,6 +72,7 @@ function createMigrationBackup(plan, storage, backupStore, options = {}) {
     }
     try {
       mergeFrontmatter(file.content, entry.fieldsToAdd);
+      assertAddOnly(file.content, entry.fieldsToAdd);
     } catch (error) {
       errors.push({ code: 'E_FRONTMATTER_INVALID', path: entry.path, detail: error.code || 'E_FRONTMATTER_INVALID' });
       continue;
@@ -116,4 +118,48 @@ function createMigrationBackup(plan, storage, backupStore, options = {}) {
   return batch;
 }
 
-module.exports = { BACKUP_KIND, verifyMigrationBackup, createMigrationBackup };
+// Bidirectional correspondence between the executable plan and the backup.
+// Missing, duplicated, extra or altered entries are all refused before a write.
+function verifyPlanBackupCorrespondence(plan, backup) {
+  const errors = [];
+  const executable = executableEntries(plan);
+  if (!backup || backup.kind !== BACKUP_KIND) {
+    return { valid: false, errors: [{ code: 'E_BACKUP_INVALID' }] };
+  }
+  if (backup.planId !== plan.planId) errors.push({ code: 'E_PLAN_ID_MISMATCH' });
+  if (backup.entries.length !== executable.length) {
+    errors.push({ code: 'E_BACKUP_ENTRY_COUNT', expected: executable.length, actual: backup.entries.length });
+  }
+
+  const byPath = new Map();
+  const operationIds = new Set();
+  for (const entry of backup.entries) {
+    if (byPath.has(entry.path)) errors.push({ code: 'E_BACKUP_DUPLICATE_PATH', path: entry.path });
+    byPath.set(entry.path, entry);
+    if (operationIds.has(entry.operationId)) errors.push({ code: 'E_BACKUP_DUPLICATE_OPERATION', operationId: entry.operationId });
+    operationIds.add(entry.operationId);
+  }
+
+  for (const planEntry of executable) {
+    const backupEntry = byPath.get(planEntry.path);
+    if (!backupEntry) {
+      errors.push({ code: 'E_BACKUP_ENTRY_MISSING', path: planEntry.path });
+      continue;
+    }
+    if (backupEntry.contentHash !== planEntry.contentHash) {
+      errors.push({ code: 'E_BACKUP_CONTENT_HASH_MISMATCH', path: planEntry.path });
+    }
+    if (stableStringify(backupEntry.fields) !== stableStringify(planEntry.fieldsToAdd)) {
+      errors.push({ code: 'E_BACKUP_FIELDS_MISMATCH', path: planEntry.path });
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+module.exports = {
+  BACKUP_KIND,
+  verifyMigrationBackup,
+  verifyPlanBackupCorrespondence,
+  createMigrationBackup,
+};

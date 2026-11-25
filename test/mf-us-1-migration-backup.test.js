@@ -198,3 +198,63 @@ test('an unmergeable frontmatter is rejected during backup', () => {
   assert.equal(batch.verified, false);
   assert.ok(batch.errors.some(error => error.code === 'E_FRONTMATTER_INVALID'));
 });
+
+// ---- plan / backup correspondence (review fix 2) --------------------------
+
+function correspondenceSetup() {
+  const first = note({ mfId: uuid(1), path: 'Sources/A.md', basename: 'A', body: 'A body' });
+  const second = note({ mfId: uuid(2), path: 'Sources/B.md', basename: 'B', body: 'B body' });
+  const plan = previewMigration([first.raw, second.raw], CONTEXT, { snapshotId: 'snap-c' });
+  const storage = new MemoryStorage({
+    'Sources/A.md': { content: first.content, revision: 1 },
+    'Sources/B.md': { content: second.content, revision: 1 },
+  });
+  const store = new MemoryBackupStore();
+  createMigrationBackup(plan, storage, store, { batchId: 'batch-c' });
+  return { plan, storage, store, snapshot: storage.snapshot() };
+}
+
+function expectPlanBackupRejected(mutate) {
+  const context = correspondenceSetup();
+  const backup = context.store.get('batch-c');
+  mutate(backup, context);
+  assert.throws(
+    () => executeMigration(context.plan, context.storage, { environment: 'memory', authorized: true, batchId: 'batch-c' }, context.store),
+    error => error.code === 'E_BACKUP_PLAN_MISMATCH' || error.code === 'E_BACKUP_CORRUPT'
+  );
+  assert.deepEqual(context.storage.snapshot(), context.snapshot, 'no write may happen');
+}
+
+test('a backup missing one executable entry is rejected', () => {
+  expectPlanBackupRejected(backup => { backup.entries.pop(); });
+});
+
+test('an empty backup is rejected for a non-empty plan', () => {
+  expectPlanBackupRejected(backup => { backup.entries.length = 0; });
+});
+
+test('an extra backup entry is rejected', () => {
+  expectPlanBackupRejected(backup => {
+    backup.entries.push({ ...backup.entries[0], operationId: 'extra:1' });
+  });
+});
+
+test('a duplicated backup path is rejected', () => {
+  expectPlanBackupRejected(backup => {
+    backup.entries.push({ ...backup.entries[0], operationId: 'duplicate:1' });
+  });
+});
+
+test('altered backup fields with the correct hash are rejected', () => {
+  expectPlanBackupRejected(backup => {
+    backup.entries[0].fields = { ...backup.entries[0].fields, mf_ideal_due: '2030-01-01' };
+  });
+});
+
+test('replaced backup content with a recomputed hash is rejected', () => {
+  expectPlanBackupRejected(backup => {
+    const replacement = '---\ntype: source\nstatus: active\n---\nReplaced';
+    backup.entries[0].content = replacement;
+    backup.entries[0].contentHash = sha256Hex(replacement);
+  });
+});

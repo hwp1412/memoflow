@@ -81,14 +81,14 @@ test('a partial write failure is reported and the other file still applies', () 
 test('rollback restores every applied file exactly and is idempotent', () => {
   const { plan, storage, store, first, second } = setup();
   const result = executeMigration(plan, storage, AUTH, store);
-  const rolled = rollbackMigration(result.batch, storage, AUTH);
+  const rolled = rollbackMigration(result.batch, storage, AUTH, store);
   assert.equal(rolled.batch.status, 'rolled-back');
   assert.deepEqual(rolled.batch.entries.map(entry => entry.status), ['rolled-back', 'rolled-back']);
   assert.equal(storage.read('Sources/A.md'), first.content);
   assert.equal(storage.read('Sources/B.md'), second.content);
   assert.equal(storage.getFile('Sources/A.md').revision, 1);
 
-  const again = rollbackMigration(rolled.batch, storage, AUTH);
+  const again = rollbackMigration(rolled.batch, storage, AUTH, store);
   assert.equal(again.batch.status, 'rolled-back');
   assert.equal(storage.read('Sources/A.md'), first.content);
 });
@@ -97,10 +97,10 @@ test('rollback refuses to overwrite a post-migration user edit', () => {
   const { plan, storage, store } = setup();
   const result = executeMigration(plan, storage, AUTH, store);
   storage.setFile('Sources/A.md', `${storage.read('Sources/A.md')}\nuser note`, 2);
-  const preview = previewRollback(result.batch, { 'Sources/A.md': storage.read('Sources/A.md') });
+  const preview = previewRollback(result.batch, { 'Sources/A.md': storage.read('Sources/A.md') }, store);
   assert.equal(preview.results.find(item => item.path === 'Sources/A.md').status, 'conflict');
 
-  const rolled = rollbackMigration(result.batch, storage, AUTH);
+  const rolled = rollbackMigration(result.batch, storage, AUTH, store);
   assert.equal(rolled.batch.entries[0].status, 'conflict');
   assert.equal(rolled.batch.status, 'partially-rolled-back');
   assert.equal(storage.read('Sources/A.md').includes('user note'), true);
@@ -132,7 +132,7 @@ test('rollback write failures are reported without corrupting other files', () =
   const { plan, storage, store, first } = setup();
   const result = executeMigration(plan, storage, AUTH, store);
   storage.failNextWrite('Sources/A.md');
-  const rolled = rollbackMigration(result.batch, storage, AUTH);
+  const rolled = rollbackMigration(result.batch, storage, AUTH, store);
   assert.equal(rolled.batch.entries[0].status, 'failed');
   assert.equal(rolled.batch.entries[1].status, 'rolled-back');
   assert.equal(storage.read('Sources/B.md').includes('mf_ideal_due'), false);
@@ -179,7 +179,7 @@ test('a pending batch with intents is recognized as applied after a crash', () =
   assert.equal(reconciled.batch.status, 'applied');
   assert.deepEqual(reconciled.batch.entries.map(entry => entry.status), ['applied', 'applied']);
 
-  const rolled = rollbackMigration(pending, storage, AUTH);
+  const rolled = rollbackMigration(pending, storage, AUTH, store);
   assert.equal(rolled.batch.status, 'rolled-back');
   assert.equal(storage.read('Sources/A.md'), first.content);
   assert.equal(storage.read('Sources/B.md'), second.content);
@@ -197,7 +197,7 @@ test('a crash plus a user edit is a conflict, never overwritten', () => {
 
   const reconciled = reconcileMigrationBatch(pending, storage);
   assert.equal(reconciled.batch.entries[0].status, 'conflict');
-  const rolled = rollbackMigration(pending, storage, AUTH);
+  const rolled = rollbackMigration(pending, storage, AUTH, store);
   assert.equal(rolled.batch.entries[0].status, 'conflict');
   assert.equal(storage.read('Sources/A.md').includes('user edit'), true);
   assert.equal(storage.read('Sources/B.md').includes('mf_ideal_due'), false);
@@ -223,7 +223,7 @@ test('rollback verification failure is uncertain and the batch needs recovery', 
   const { plan, storage, store, first } = setup();
   const result = executeMigration(plan, storage, AUTH, store);
   storage.failNextVerifyAfterWrite('Sources/A.md');
-  const rolled = rollbackMigration(result.batch, storage, AUTH);
+  const rolled = rollbackMigration(result.batch, storage, AUTH, store);
   assert.equal(rolled.batch.entries[0].status, 'uncertain');
   assert.equal(rolled.writesPerformed, true, 'the second file was rolled back');
   assert.equal(rolled.writeOutcome, 'uncertain');
@@ -252,7 +252,7 @@ test('CRLF, BOM and body are preserved and restored exactly', () => {
   assert.equal(migrated.includes('unknown: keep'), true);
   assert.equal(migrated.endsWith('Body [[link]]\r\nline2\r\n'), true);
 
-  const rolled = rollbackMigration(result.batch, storage, { environment: 'memory', authorized: true, batchId: 'crlf' });
+  const rolled = rollbackMigration(result.batch, storage, { environment: 'memory', authorized: true, batchId: 'crlf' }, store);
   assert.equal(rolled.batch.status, 'rolled-back');
   assert.equal(storage.read('Sources/CRLF.md'), crlf);
 });
@@ -303,9 +303,9 @@ test('writesPerformed reflects real writes, not intent', () => {
   assert.equal(secondRepeat.writeOutcome, 'none');
   assert.equal(secondRepeat.counts.alreadyApplied, 2);
 
-  const rolled = rollbackMigration(partial.batch, storage2, AUTH);
+  const rolled = rollbackMigration(partial.batch, storage2, AUTH, store2);
   assert.equal(rolled.writesPerformed, true);
-  const rolledAgain = rollbackMigration(rolled.batch, storage2, AUTH);
+  const rolledAgain = rollbackMigration(rolled.batch, storage2, AUTH, store2);
   assert.equal(rolledAgain.writesPerformed, false);
 });
 
@@ -324,7 +324,96 @@ test('execute, rollback and reconcile reject forged storage before any access', 
   assert.deepEqual(calls, { getFile: 0, write: 0 });
 
   const result = executeMigration(plan, storage, auth, store);
-  assert.throws(() => rollbackMigration(result.batch, fake, auth), error => error.code === 'E_STORAGE_UNTRUSTED');
+  assert.throws(() => rollbackMigration(result.batch, fake, auth, store), error => error.code === 'E_STORAGE_UNTRUSTED');
   assert.throws(() => reconcileMigrationBatch(result.batch, fake), error => error.code === 'E_STORAGE_UNTRUSTED');
   assert.deepEqual(calls, { getFile: 0, write: 0 });
+});
+
+// ---- rollback source verification (review fix 1) -------------------------
+
+function executedSetup() {
+  const context = setup();
+  const result = executeMigration(context.plan, context.storage, AUTH, context.store);
+  return { ...context, result, frozen: context.storage.snapshot() };
+}
+
+test('rollback refuses tampered original content before writing', () => {
+  const { result, storage, store, frozen } = executedSetup();
+  const tampered = JSON.parse(JSON.stringify(result.batch));
+  tampered.entries[0].originalContent = 'tampered content';
+  assert.throws(() => rollbackMigration(tampered, storage, AUTH, store), error => error.code === 'E_BATCH_TAMPERED');
+  assert.deepEqual(storage.snapshot(), frozen);
+});
+
+test('rollback refuses a tampered beforeHash', () => {
+  const { result, storage, store, frozen } = executedSetup();
+  const tampered = JSON.parse(JSON.stringify(result.batch));
+  tampered.entries[0].beforeHash = '0'.repeat(64);
+  assert.throws(() => rollbackMigration(tampered, storage, AUTH, store), error => error.code === 'E_BACKUP_HASH_MISMATCH');
+  assert.deepEqual(storage.snapshot(), frozen);
+});
+
+test('rollback refuses an authorization that names another batch', () => {
+  const { result, storage, store, frozen } = executedSetup();
+  assert.throws(
+    () => rollbackMigration(result.batch, storage, { ...AUTH, batchId: 'other' }, store),
+    error => error.code === 'E_BATCH_MISMATCH'
+  );
+  assert.deepEqual(storage.snapshot(), frozen);
+});
+
+test('rollback refuses replaced operation ids or paths', () => {
+  const { result, storage, store, frozen } = executedSetup();
+
+  const wrongOperation = JSON.parse(JSON.stringify(result.batch));
+  wrongOperation.entries[0].operationId = 'forged:1';
+  assert.throws(() => rollbackMigration(wrongOperation, storage, AUTH, store), error => error.code === 'E_BACKUP_ENTRY_MISSING');
+
+  const wrongPath = JSON.parse(JSON.stringify(result.batch));
+  wrongPath.entries[0].path = 'Sources/Forged.md';
+  assert.throws(() => rollbackMigration(wrongPath, storage, AUTH, store), error => error.code === 'E_BACKUP_PATH_MISMATCH');
+
+  assert.deepEqual(storage.snapshot(), frozen);
+});
+
+test('rollback refuses a missing or corrupted backup', () => {
+  const { result, storage, store, frozen } = executedSetup();
+  store.remove('batch-1');
+  assert.throws(() => rollbackMigration(result.batch, storage, AUTH, store), error => error.code === 'E_BACKUP_MISSING');
+  assert.deepEqual(storage.snapshot(), frozen);
+
+  const second = setup();
+  const secondResult = executeMigration(second.plan, second.storage, AUTH, second.store);
+  second.store.corrupt('batch-1');
+  assert.throws(() => rollbackMigration(secondResult.batch, second.storage, AUTH, second.store), error => error.code === 'E_BACKUP_CORRUPT');
+});
+
+test('rollback refuses a revision change even when the content is unchanged', () => {
+  const { result, storage, store } = executedSetup();
+  const migrated = storage.read('Sources/A.md');
+  storage.setFile('Sources/A.md', migrated, 99); // content identical, revision not the expected +1
+  const rolled = rollbackMigration(result.batch, storage, AUTH, store);
+  assert.equal(rolled.batch.entries[0].status, 'conflict');
+  assert.equal(rolled.batch.entries[0].error.code, 'E_REVISION_MISMATCH');
+  assert.equal(storage.read('Sources/A.md'), migrated);
+});
+
+test('an LF+BOM file migrates and restores exactly', () => {
+  const lf = '\uFEFF---\ntype: source\nstatus: active\npriority: 50\ninterval: 8\na_factor: 2.0\nreview_count: 0\nnext_review: 24-11-2026\n---\nBody [[link]]\n';
+  const raw = {
+    type: 'source', status: 'active', priority: 50, interval: 8, a_factor: 2.0,
+    review_count: 0, next_review: '24-11-2026', path: 'Sources/LF.md', basename: 'LF',
+    mf_id: uuid(4), content: lf,
+  };
+  const plan = previewMigration([raw], CONTEXT);
+  const storage = new MemoryStorage({ 'Sources/LF.md': lf });
+  const store = new MemoryBackupStore();
+  createMigrationBackup(plan, storage, store, { batchId: 'lf' });
+  const result = executeMigration(plan, storage, { environment: 'memory', authorized: true, batchId: 'lf' }, store);
+  const migrated = storage.read('Sources/LF.md');
+  assert.equal(migrated.startsWith('\uFEFF---\n'), true);
+  assert.equal(migrated.includes('\r'), false);
+  const rolled = rollbackMigration(result.batch, storage, { environment: 'memory', authorized: true, batchId: 'lf' }, store);
+  assert.equal(rolled.batch.status, 'rolled-back');
+  assert.equal(storage.read('Sources/LF.md'), lf);
 });
