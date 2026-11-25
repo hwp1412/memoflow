@@ -48,6 +48,12 @@ function buildDashboardModel({ topics, today, queueConfig, mode, conditions = {}
       // Invalid topic fields are reported by the queue's invalid list instead.
     }
   }
+  const activeBacklog = details.filter(view => view.status === 'active' && compareDate(view.effectiveDue, today) < 0);
+  const idealBacklog = details.filter(view => view.status === 'active' && compareDate(view.idealDue, today) < 0);
+  const postponedOverdue = idealBacklog.filter(view => view.notBefore != null
+    && compareDate(view.notBefore, view.idealDue) > 0
+    && compareDate(view.notBefore, today) > 0);
+
   return {
     mode: evaluation.mode,
     authoritativeScheduler: evaluation.authoritativeScheduler,
@@ -67,7 +73,11 @@ function buildDashboardModel({ topics, today, queueConfig, mode, conditions = {}
       invalid: queue.invalid,
       budget: queue.budget,
       workload: queue.workload,
-      overdueCount: details.filter(view => compareDate(view.effectiveDue, today) < 0).length,
+      // Only active Source/Extract backlog counts here; done/dismissed, cards,
+      // invalid topics and future administrative postponements are excluded.
+      overdueCount: activeBacklog.length,
+      idealOverdueCount: idealBacklog.length,
+      postponedOverdueCount: postponedOverdue.length,
     },
     topics: details,
     cardsExcluded: cards,

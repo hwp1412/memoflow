@@ -14,6 +14,7 @@ const { renderContent } = require('../scheduling/unified-store-contract.js');
 const { isPersistentUuid } = require('../scheduling/legacy-identity.js');
 
 const DATE_FORMATS = Object.freeze(['DD-MM-YYYY', 'MM-DD-YYYY', 'YYYY-MM-DD', 'DD/MM/YYYY', 'MM/DD/YYYY']);
+const TRUSTED_ATOMIC_ADAPTERS = new WeakSet();
 
 function requireDateFormat(dateFormat) {
   if (typeof dateFormat !== 'string' || !DATE_FORMATS.includes(dateFormat)) {
@@ -103,6 +104,14 @@ function assertMfId(frontmatter, path) {
   return mfId;
 }
 
+// A writable migrated topic must carry a persisted UUID; the index may never
+// supply one. The stored casing is preserved, comparison is case-insensitive.
+function assertWritableSnapshot(snapshot) {
+  if (!snapshot) fail('E_FILE_MISSING', 'a snapshot is required');
+  if (!isPersistentUuid(snapshot.mfId)) fail('E_ID_NOT_PERSISTED', 'the topic has no persisted mf_id', { path: snapshot.path });
+  return snapshot;
+}
+
 function buildAdapter(vault, dateFormat, { atomic }) {
   requireDateFormat(dateFormat);
 
@@ -120,9 +129,11 @@ function buildAdapter(vault, dateFormat, { atomic }) {
 
     locateByTopicId(topicId) {
       if (!isPersistentUuid(topicId)) fail('E_TOPIC_ID_INVALID', 'topic id must be a persistent UUID');
+      const wanted = topicId.toLowerCase();
       const matches = vault.list().filter(path => {
         const entry = vault.read(path);
-        return entry && entry.frontmatter.mf_id === topicId;
+        const stored = entry && entry.frontmatter.mf_id;
+        return typeof stored === 'string' && stored.toLowerCase() === wanted;
       });
       if (matches.length === 0) return { snapshot: null, duplicates: [] };
       if (matches.length > 1) return { snapshot: null, duplicates: matches };
@@ -141,7 +152,7 @@ function buildAdapter(vault, dateFormat, { atomic }) {
     // Legacy-compatible write path. It verifies the snapshot, then does a
     // read-modify-write; the caller must understand the race is not closed.
     writeFrontMatterLegacy(path, expected, mutator) {
-      const snapshot = this.readSnapshot(path);
+      const snapshot = assertWritableSnapshot(this.readSnapshot(path));
       const verification = this.verifySnapshot(snapshot, expected);
       if (!verification.ok) return verification;
       const next = vault.processFrontMatter(path, mutator);
@@ -155,7 +166,7 @@ function buildAdapter(vault, dateFormat, { atomic }) {
 
   if (atomic) {
     adapter.compareAndSwap = (path, { expectedHash, expectedRevision, nextFrontmatter, nextBody, nextRevision }) => {
-      const snapshot = adapter.readSnapshot(path);
+      const snapshot = assertWritableSnapshot(adapter.readSnapshot(path));
       const verification = adapter.verifySnapshot(snapshot, { expectedHash, expectedRevision });
       if (!verification.ok) return verification;
       vault.setFile(path, {
@@ -167,6 +178,7 @@ function buildAdapter(vault, dateFormat, { atomic }) {
     };
   }
 
+  if (atomic) TRUSTED_ATOMIC_ADAPTERS.add(adapter);
   return adapter;
 }
 
@@ -182,8 +194,10 @@ function createFakeAtomicVaultAdapter({ vault, dateFormat }) {
 // adapter intentionally reports false, so unified writes fail closed there until
 // a reviewed adapter with genuine atomicity exists.
 function assertUnifiedStorageReady(adapter) {
-  if (!adapter || adapter.supportsAtomicCas !== true) {
-    fail('E_STORAGE_WITHOUT_CAS', 'unified writes require a storage with a real compare-and-swap contract', {
+  const trusted = Boolean(adapter && TRUSTED_ATOMIC_ADAPTERS.has(adapter));
+  const hasCas = Boolean(adapter && typeof adapter.compareAndSwap === 'function');
+  if (!trusted || adapter.supportsAtomicCas !== true || !hasCas) {
+    fail('E_STORAGE_WITHOUT_CAS', 'unified writes require a trusted storage with a real compare-and-swap contract', {
       adapter: adapter ? adapter.kind : null,
     });
   }

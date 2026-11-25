@@ -108,3 +108,50 @@ test('the atomic fake adapter supports a real CAS contract for tests', () => {
   });
   assert.equal(stale.ok, false);
 });
+
+// ---- case-insensitive identity and CAS forgery (review fix 3) ------------
+
+test('UUID comparison is case-insensitive and duplicate ids are reported', () => {
+  const vault = new FakeObsidianVault({
+    'Sources/Lower.md': topic(1),
+    'Sources/Upper.md': topic(2, { mf_id: uuid(1).toUpperCase() }),
+  });
+  const adapter = createFakeVaultAdapter({ vault, dateFormat: 'DD-MM-YYYY' });
+  const located = adapter.locateByTopicId(uuid(1).toLowerCase());
+  assert.equal(located.snapshot, null);
+  assert.equal(located.duplicates.length, 2);
+  // The stored UUID casing is never rewritten.
+  assert.equal(vault.read('Sources/Upper.md').frontmatter.mf_id, uuid(1).toUpperCase());
+});
+
+test('a rename keeps identity and the original UUID casing', () => {
+  const upper = uuid(1).toUpperCase();
+  const vault = new FakeObsidianVault({ 'Sources/A.md': topic(1, { mf_id: upper }) });
+  const adapter = createFakeVaultAdapter({ vault, dateFormat: 'DD-MM-YYYY' });
+  vault.rename('Sources/A.md', 'Sources/B.md');
+  const located = adapter.locateByTopicId(uuid(1));
+  assert.equal(located.snapshot.path, 'Sources/B.md');
+  assert.equal(located.snapshot.frontmatter.mf_id, upper);
+});
+
+test('a topic without persisted mf_id cannot be a write target', () => {
+  const vault = new FakeObsidianVault({ 'Sources/A.md': topic(1, { mf_id: undefined }) });
+  const adapter = createFakeVaultAdapter({ vault, dateFormat: 'DD-MM-YYYY' });
+  const snapshot = adapter.readSnapshot('Sources/A.md');
+  assert.equal(snapshot.mfId, null);
+  assert.throws(() => adapter.writeFrontMatterLegacy('Sources/A.md', {}, fm => { fm.next = 1; }),
+    error => error.code === 'E_ID_NOT_PERSISTED');
+});
+
+test('a forged CAS marker cannot pass the unified storage gate', () => {
+  for (const forged of [
+    { kind: 'forged', supportsAtomicCas: true },
+    { kind: 'forged', supportsAtomicCas: true, compareAndSwap() {} },
+  ]) {
+    assert.throws(() => assertUnifiedStorageReady(forged), error => error.code === 'E_STORAGE_WITHOUT_CAS');
+  }
+  const vault = new FakeObsidianVault({ 'Sources/A.md': topic(1) });
+  const fake = createFakeVaultAdapter({ vault, dateFormat: 'DD-MM-YYYY' });
+  const forgedCopy = { ...fake, supportsAtomicCas: true, compareAndSwap() {} };
+  assert.throws(() => assertUnifiedStorageReady(forgedCopy), error => error.code === 'E_STORAGE_WITHOUT_CAS');
+});

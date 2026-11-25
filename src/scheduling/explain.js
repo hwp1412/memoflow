@@ -6,17 +6,20 @@
 const { initialIntervalDays } = require('./initial.js');
 const { explainNextInterval } = require('./interval.js');
 const { effectiveDue } = require('./due.js');
+const { compareDate } = require('./dates.js');
 
 function explainSchedule(topic, config = undefined) {
   const initial = initialIntervalDays({ type: topic.type, priority: topic.priority }, config);
   const next = explainNextInterval({ mf_interval_days: topic.mf_interval_days, a_factor: topic.a_factor }, config);
   const effective = effectiveDue(topic);
-  const notBeforeApplies = topic.mf_not_before != null && topic.mf_not_before !== topic.mf_ideal_due;
+  // Only a not_before strictly later than the ideal due actually delays the
+  // effective date; earlier/equal administrative dates are neutral.
+  const notBeforeApplies = topic.mf_not_before != null && compareDate(topic.mf_not_before, topic.mf_ideal_due) > 0;
   return {
     text: [
       `首次排期：P${topic.priority} ${topic.type} 初始间隔 ${initial} 天（Priority 基准 × 类型系数，half-up 取整并钳制）。`,
       next.text,
-      `理想到期 ${topic.mf_ideal_due}；最早可展示 ${topic.mf_not_before ?? '无'}；Effective Due ${effective}${notBeforeApplies ? '（由行政延期决定）' : ''}。`,
+      `理想到期 ${topic.mf_ideal_due}；最早可展示 ${topic.mf_not_before ?? '无'}；Effective Due ${effective}${notBeforeApplies ? '（由行政延期决定）' : '（行政日期不晚于理想到期，不构成延期）'}。`,
       'Skip 只移动会话指针；Postpone 与 Mercy 属于行政延期，不计有效评阅。',
       '旧数据若 Interval 可能被历史行政操作改写，其真实学习间隔无法反推。',
     ].join('\n'),

@@ -55,3 +55,22 @@ test('legacy data limitations are disclosed', () => {
   assert.match(explanation.text, /旧数据/);
   assert.match(explanation.text, /无法反推/);
 });
+
+// ---- notBefore semantics (review fix 4) ---------------------------------
+
+test('an earlier or equal not_before does not claim an administrative delay', () => {
+  for (const notBefore of ['2026-11-10', '2026-11-20']) {
+    const explanation = explainSchedule({ ...TOPIC, mf_not_before: notBefore });
+    assert.equal(explanation.data.notBeforeApplies, false, notBefore);
+    assert.equal(explanation.data.effectiveDue, '2026-11-20', notBefore);
+    assert.doesNotMatch(explanation.text, /由行政延期决定/, notBefore);
+    assert.match(explanation.text, /不构成延期/, notBefore);
+  }
+});
+
+test('a later not_before does claim the delay', () => {
+  const explanation = explainSchedule({ ...TOPIC, mf_not_before: '2026-11-28' });
+  assert.equal(explanation.data.notBeforeApplies, true);
+  assert.equal(explanation.data.effectiveDue, '2026-11-28');
+  assert.match(explanation.text, /由行政延期决定/);
+});

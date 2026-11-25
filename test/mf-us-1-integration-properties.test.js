@@ -61,7 +61,7 @@ test('T18: cards stay out of the reading queue and never reach an SR mock', () =
   assert.equal(sr.graded, 0);
 });
 
-test('T19: shadow routing writes only through legacy and never through the comparison', () => {
+test('T19: shadow routing writes only through legacy and never through the comparison', async () => {
   const vault = new FakeObsidianVault({ 'Sources/A.md': vaultTopic(1) });
   const adapter = createFakeVaultAdapter({ vault, dateFormat: 'DD-MM-YYYY' });
   const before = vault.read('Sources/A.md').content;
@@ -85,7 +85,7 @@ test('T19: shadow routing writes only through legacy and never through the compa
       return { differences: [{ field: 'notBefore' }] };
     },
   });
-  const result = router.route({ action: 'postpone', days: 7 });
+  const result = await router.route({ action: 'postpone', days: 7 });
   assert.equal(result.route, 'shadow');
   assert.equal(legacyWrites, 1);
   assert.equal(shadowWrites, 0);
@@ -107,7 +107,7 @@ test('T20: a rename keeps the stable id and the queue order', () => {
   assert.deepEqual(afterQueue.selected.map(entry => entry.stableId), beforeQueue.selected.map(entry => entry.stableId));
 });
 
-test('unified routing keeps the legacy writer at zero calls', () => {
+test('unified routing keeps the legacy writer at zero calls', async () => {
   let legacy = 0;
   let unified = 0;
   const router = createReadingSchedulerRouter({
@@ -124,7 +124,8 @@ test('unified routing keeps the legacy writer at zero calls', () => {
     legacyScheduler: () => { legacy += 1; return { status: 'applied', writesPerformed: true }; },
     unifiedExecutor: () => { unified += 1; return { status: 'applied', writesPerformed: true }; },
   });
-  assert.equal(router.route({ action: 'grade.advanced' }).route, 'unified');
+  const routed = await router.route({ action: 'grade.advanced' });
+  assert.equal(routed.route, 'unified');
   assert.equal(legacy, 0);
   assert.equal(unified, 1);
 });

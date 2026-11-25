@@ -100,3 +100,85 @@ test('the action map is frozen and complete', () => {
   assert.equal(Object.isFrozen(ACTION_MAP), true);
   assert.equal(Object.keys(ACTION_MAP).length, 10);
 });
+
+// ---- event-id conflicts, failure retry and async in-flight (review fix 1) --
+
+function token(overrides = {}) {
+  return createActionToken({
+    eventId: uuid(10),
+    topicId: uuid(1),
+    expectedRevision: 1,
+    today: '2026-11-24',
+    calendarDate: '2026-11-24',
+    action: 'grade.advanced',
+    ...overrides,
+  });
+}
+
+test('the same event id with a different request is a conflict', () => {
+  const coordinator = new ReadingEventCoordinator(() => ({ status: 'applied', writesPerformed: true }));
+  coordinator.execute(token());
+  const conflicts = [
+    { topicId: uuid(2) },
+    { action: 'complete' },
+    { expectedRevision: 2 },
+    { today: '2026-11-25' },
+    { calendarDate: '2026-11-18' },
+    { dateFormat: 'YYYY-MM-DD' },
+  ];
+  for (const override of conflicts) {
+    assert.throws(() => coordinator.execute(token(override)),
+      error => error.code === 'E_EVENT_ID_CONFLICT', JSON.stringify(override));
+  }
+});
+
+test('postpone payload differences are a conflict', () => {
+  const coordinator = new ReadingEventCoordinator(() => ({ status: 'applied', writesPerformed: true }));
+  coordinator.execute(token({ action: 'postpone', days: 3 }));
+  assert.throws(() => coordinator.execute(token({ action: 'postpone', days: 7 })),
+    error => error.code === 'E_EVENT_ID_CONFLICT');
+});
+
+test('failed and uncertain results are retried, not cached as success', () => {
+  let attempts = 0;
+  const coordinator = new ReadingEventCoordinator(() => {
+    attempts += 1;
+    return attempts === 1
+      ? { status: 'failed', writesPerformed: false, reason: 'E_TRANSIENT' }
+      : { status: 'applied', writesPerformed: true };
+  });
+  assert.equal(coordinator.execute(token()).status, 'failed');
+  assert.equal(coordinator.execute(token()).status, 'applied');
+  assert.equal(attempts, 2);
+});
+
+test('an async dispatch is deduplicated while in flight', async () => {
+  let calls = 0;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const coordinator = new ReadingEventCoordinator(async () => {
+    calls += 1;
+    await gate;
+    return { status: 'applied', writesPerformed: true };
+  });
+  const first = coordinator.execute(token());
+  const second = coordinator.execute(token());
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(calls, 1);
+  assert.equal(a.status, 'applied');
+  assert.equal(b.duplicate, true);
+});
+
+test('E1 -> E2 -> E1 still yields one review per distinct event', () => {
+  const results = [];
+  const coordinator = new ReadingEventCoordinator(request => {
+    results.push(request);
+    return { status: 'applied', writesPerformed: true };
+  });
+  coordinator.execute(token({ eventId: uuid(11) }));
+  coordinator.execute(token({ eventId: uuid(12), expectedRevision: 2 }));
+  const replay = coordinator.execute(token({ eventId: uuid(11) }));
+  assert.equal(replay.duplicate, true);
+  assert.equal(results.length, 2);
+});

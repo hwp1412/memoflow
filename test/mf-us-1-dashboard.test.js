@@ -123,3 +123,25 @@ test('migration and recovery summaries are surfaced', () => {
   assert.equal(model.recovery.pendingCount, 2);
   assert.equal(model.mercy.summary.assignedCount, 4);
 });
+
+// ---- backlog accuracy (review fix 4) ------------------------------------
+
+test('done, dismissed and postponed topics are excluded from the current backlog', () => {
+  const topics = [
+    topic(1, { mf_ideal_due: '2026-11-10' }),
+    topic(2, { mf_ideal_due: '2026-11-10', status: 'done' }),
+    topic(3, { mf_ideal_due: '2026-11-10', status: 'dismissed' }),
+    topic(4, { mf_ideal_due: '2026-11-10', mf_not_before: '2026-12-01' }),
+  ];
+  const model = buildDashboardModel({ topics, today: TODAY, dateFormat: 'DD-MM-YYYY' });
+  assert.equal(model.queue.overdueCount, 1, 'only the active, non-postponed topic is overdue');
+  assert.equal(model.queue.idealOverdueCount, 2, 'ideal overdue includes the postponed one');
+  assert.equal(model.queue.postponedOverdueCount, 1);
+});
+
+test('a future administrative postponement is not counted as current backlog', () => {
+  const topics = [topic(1, { mf_ideal_due: '2026-11-01', mf_not_before: '2026-12-01' })];
+  const model = buildDashboardModel({ topics, today: TODAY, dateFormat: 'DD-MM-YYYY' });
+  assert.equal(model.queue.overdueCount, 0);
+  assert.equal(model.queue.postponedOverdueCount, 1);
+});

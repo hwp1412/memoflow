@@ -50,19 +50,22 @@
 | 模式 | Legacy 调用 | Shadow 对照 | Unified Executor | 失败行为 |
 |---|---|---|---|---|
 | legacy | 1 次 | 不调用 | 不调用 | 原样返回 |
-| shadow | 1 次 | 1 次（只读） | 不调用 | Shadow 异常隔离，不影响 Legacy 结果 |
-| unified | **0 次** | 不调用 | 1 次（全部条件满足时） | 条件不满足 → 拒绝，不回落 legacy |
+| shadow | 1 次 | 1 次（Legacy 完成后，只读） | 不调用 | Shadow 异常隔离，不影响 Legacy 结果 |
+| unified | **0 次** | 不调用 | 1 次（全部条件满足时） | 条件/执行失败 → 拒绝，不回落 legacy |
+
+`route()` 为 async：支持同步返回值与 Promise；同 `eventId` 并发调用共享一次 in-flight 执行，第二次标记 duplicate。
 
 ## 5. Fake Obsidian StorageAdapter 与并发限制
 
 `src/integration/obsidian-storage-adapter.js`：
 
-- `locateByTopicId` 按持久 `mf_id` 扫描（跟随重命名），重复 ID 返回列表；
+- `locateByTopicId` 按持久 `mf_id` 大小写无关扫描（跟随重命名），大小写变体也报告重复，不改写原始 UUID；
 - `readSnapshot` 返回 `{path, frontmatter, body, content, hash, revision, mfId}`，非法 ID 拒绝；
 - `verifySnapshot` 校验内容 hash + revision；
 - `writeFrontMatterLegacy` 明确标记 `atomic:false` 与 `NON_ATOMIC_FRONTMATTER_WRITE`；
 - **`supportsAtomicCas=false`**：`processFrontMatter()` 是 read-modify-write，不能冒充 CAS；
-- `assertUnifiedStorageReady()` 对无 CAS 存储 **fail-closed**（`E_STORAGE_WITHOUT_CAS`）；
+- `assertUnifiedStorageReady()` 只信任模块私有 WeakSet 注册、且实际具备 `compareAndSwap` 的 Atomic Adapter；伪造 `supportsAtomicCas=true` 字段/方法被 fail-closed（`E_STORAGE_WITHOUT_CAS`）；
+- 缺失/非法 `mf_id` 的 Topic 不能作为写入目标（`E_ID_NOT_PERSISTED`）；
 - 仅测试用 `createFakeAtomicVaultAdapter` 提供真实 CAS 契约。
 
 **结论**：真实 Obsidian 存储无法保证跨进程原子性；Unified 必须保持关闭，直到有独立审核的串行化/恢复方案（PR-12 实机验证）。
@@ -79,7 +82,7 @@
 
 ## 7. 阅读动作映射与去重
 
-`mapReadingAction` 覆盖 10 类事件；`source.open` / `pdf.scroll` / `pdf.locate` / `extract.create` / `extract.refine` 明确**不是**调度事件。`ReadingEventCoordinator` 以 `eventId` 去重：UI 重试只返回首次结果，不产生第二次评阅。
+`mapReadingAction` 覆盖 10 类事件；`source.open` / `pdf.scroll` / `pdf.locate` / `extract.create` / `extract.refine` 明确**不是**调度事件。`ReadingEventCoordinator` 复用 PR-09 指纹：同 eventId 且语义相同才 duplicate；topicId/type/payload/expectedRevision/today/calendarDate/dateFormat 任一不同 → `E_EVENT_ID_CONFLICT`。仅 `applied/duplicate/no-op` 进入缓存；failed/uncertain/pending 可安全重试；异步 in-flight 共享一次提交。
 
 ## 8. 创建初始化
 
@@ -90,10 +93,12 @@
 `buildDashboardModel`：
 
 - `selectDailyQueue` + 预算；区分 selected/deferred/postponed/notYetDue/invalid；
+- 积压口径：`overdueCount` 只统计 active 且 Effective Due 已过；done/dismissed、Card、非法 Topic、未来行政延期不计入；另给出 `idealOverdueCount` 与 `postponedOverdueCount` 区分“理想已过但尚未到可展示日”；
 - Topic 详情分别展示 Priority/Interval/A-Factor/Ideal Due/Not Before/Effective Due/Mode/身份；
 - 卡片排除、`writeEnabled:false`（真实写入始终关闭）；
 - 迁移/恢复/Mercy 摘要；
 - 未知日期格式 → `projectionWarning`，不猜测。
+- `explainSchedule` 仅当 `mf_not_before > mf_ideal_due` 时才说明行政延期决定 Effective Due；早于或等于时明确“不构成延期”。
 
 `explainSchedule(topic)` 复用已验收的 `initialIntervalDays` / `explainNextInterval` / `effectiveDue`：解释首次排期、后续 `I×A`、行政延期、Skip/Postpone/Mercy 不计评阅、旧数据限制。
 
@@ -127,7 +132,7 @@ node --test test/mf-us-1-runtime-mode.test.js test/mf-us-1-runtime-router.test.j
   test/mf-us-1-obsidian-adapter.test.js test/mf-us-1-reading-integration.test.js \
   test/mf-us-1-explain.test.js test/mf-us-1-dashboard.test.js \
   test/mf-us-1-integration-properties.test.js
-  tests 44  pass 44  fail 0
+  tests 59  pass 59  fail 0
 ```
 
 ## 14. 交付矩阵
