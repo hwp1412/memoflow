@@ -368,3 +368,60 @@ test('the same eventId with a different valid payload is a conflict', () => {
   );
   assert.equal(first.topic.mf_not_before, '2026-12-01');
 });
+
+// ---- cross-day processing and retry (owner review: date separation) -------
+
+test('a queued event applied on a later day keeps its eventId and counts once', () => {
+  const topic = makeTopic();
+  const event = ev(41, 'ADVANCED', { calendarDate: '2026-11-24' });
+  const applied = applyEventWithLedger(createEventLedger(), topic, event, SPEC_CONFIG, '2026-11-27');
+
+  assert.equal(applied.result.applied, true);
+  assert.equal(applied.topic.review_count, 1);
+  assert.equal(applied.topic.last_reviewed, '2026-11-27'); // execution day, existing rule
+  assert.equal(applied.topic.mf_ideal_due, '2026-12-02'); // 27 + 5
+  assert.equal(applied.result.event.eventDate, '2026-11-24'); // occurrence day
+  assert.equal(applied.result.explain.data.processedOnDifferentDay, true);
+
+  // Replaying the same event later that day is a duplicate, not a second review.
+  const retry = applyEventWithLedger(applied.ledger, applied.topic, event, SPEC_CONFIG, '2026-11-27');
+  assert.equal(retry.duplicate, true);
+  assert.equal(retry.topic.review_count, 1);
+  assert.equal(retry.topic.mf_revision, 1);
+});
+
+test('a duplicate event is recognised even when retried on a different day', () => {
+  const topic = makeTopic();
+  const event = ev(42, 'ADVANCED', { calendarDate: '2026-11-24' });
+  const first = applyEventWithLedger(createEventLedger(), topic, event, SPEC_CONFIG, '2026-11-24');
+
+  // Days later the same eventId is retried; the ledger answers before any date
+  // or revision check, so no review is counted twice and no new id is needed.
+  const retry = applyEventWithLedger(first.ledger, first.topic, event, SPEC_CONFIG, '2026-12-01');
+  assert.equal(retry.duplicate, true);
+  assert.equal(retry.result.reviewApplied, false);
+  assert.equal(retry.topic.review_count, 1);
+  assert.equal(retry.topic.mf_revision, 1);
+  assert.equal(retry.topic.mf_last_event_id, event.eventId);
+});
+
+test('a UTC-only event works through the ledger without inferring a local date', () => {
+  const topic = makeTopic();
+  const event = {
+    eventId: eventId(43),
+    topicId: UUID,
+    type: 'HOLD',
+    expectedRevision: 0,
+    algorithmVersion: 1,
+    createdAt: '2026-11-20T22:15:00Z',
+  };
+  const first = applyEventWithLedger(createEventLedger(), topic, event, SPEC_CONFIG, '2026-11-25');
+  assert.equal(first.result.applied, true);
+  assert.equal(first.result.event.eventDate, null);
+  assert.equal(first.result.event.eventDateSource, 'utc-timestamp');
+  assert.equal(first.topic.last_reviewed, '2026-11-25');
+
+  const retry = applyEventWithLedger(first.ledger, first.topic, event, SPEC_CONFIG, '2026-11-30');
+  assert.equal(retry.duplicate, true);
+  assert.equal(retry.topic.review_count, 1);
+});

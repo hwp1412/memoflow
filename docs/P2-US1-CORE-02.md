@@ -32,7 +32,7 @@
 | `src/scheduling/index.js` | 导出新模块 | 修改 |
 | `test/mf-us-1-events.test.js` | 40 项事件、时间契约与 payload 测试 | 新增 |
 | `test/mf-us-1-due.test.js` | 10 项到期语义测试 | 新增 |
-| `test/mf-us-1-idempotency.test.js` | 19 项幂等/身份/指纹/重放测试 | 新增 |
+| `test/mf-us-1-idempotency.test.js` | 22 项幂等/身份/指纹/跨日重放测试 | 新增 |
 | `docs/MF-US-1-DELIVERY-MATRIX.md` | 状态更新 | 修改 |
 | `docs/P2-US1-CORE-02.md` | 本说明 | 新增 |
 
@@ -123,13 +123,33 @@ eventFingerprint(event) -> string                        // 确定性内容指�
 6. **A-Factor 恒定**（Q13）：事件不写 `a_factor`，也不复用 Toolkit 的 progress-aware/quality 公式。
 7. **COMPLETE/DISMISS 保留 `mf_not_before`**（Q7）：规范只要求保留间隔与日期历史；保留行政限制有利于撤销后恢复，且不产生评阅。
 8. **`last_reviewed` 采用 ISO 日期**：与 `mf_*` 一致；旧库的 Vault 日期格式由 PR-06 适配器归一化后再进入核心。
-9. **事件时间契约（A8，审查修复 1）**：事件必须携带 `calendarDate` 或 `createdAt`，否则 `E_EVENT_TIME_REQUIRED`。
-   - `calendarDate`：严格 ISO 本地日期，必须等于显式 `today`；
-   - `createdAt`：必须带显式偏移（`+HH:MM` 或 `Z`），格式与时钟字段严格校验；带数字偏移时其字面日期即本地日期，必须等于 `today`；
-   - `Z`（UTC）时间戳**不能**单独确定本地日期：必须另附 `calendarDate`（两者一致），否则 `E_EVENT_TIME_INVALID`；核心从不做时区换算；
-   - 事件是**当日事件**：跨日未应用的事件必须以新 `eventId` 重建；已应用事件的跨日重试仍由账本按重复处理（不重新校验日期）。
+9. **事件时间契约（A8，最终审查修复）**：事件必须携带 `calendarDate` 或 `createdAt`，否则 `E_EVENT_TIME_REQUIRED`。三种日期严格区分：
+   - `createdAt`：事件发生时刻，必须带显式偏移（`+HH:MM` 或 `Z`），格式、日期、时钟、偏移逐项校验；核心**从不做时区换算**；
+   - `calendarDate`：事件的本地日历日（调用方已知时提供），严格 ISO 日期；
+   - `today`：显式传入的**执行日**，仅用于调度计算。
+   事件**不要求**在发生当日处理：跨日应用合法，`eventId` 无需重新生成。两者同时存在且 `createdAt` 带数字偏移时，必须描述同一本地日，否则 `E_EVENT_DATE_MISMATCH`；`Z` 时间戳不含本地日，因此不与 `calendarDate` 比较。仅 `Z` 时间戳也可单独满足 A8，此时本地日未知（`eventDate: null`, `eventDateSource: 'utc-timestamp'`），核心**不推断**用户本地日。
 10. **Payload 白名单（审查修复 3）**：每类事件只允许固定键（`POSTPONE.days`、`MANUAL_SCHEDULE.idealDue/reason`、`SET_PRIORITY.priority`、`REACTIVATE.idealDue`，其余为空）。未知键、`NaN`/`Infinity`/`undefined` 一律 `E_EVENT_PAYLOAD_INVALID`，不依赖 JSON 隐式转换。
 11. **重复事件必须校验 Topic 身份（审查修复 2）**：账本命中时同时要求 `topic.mf_id === 账本.topicId === event.topicId`，否则 `E_EVENT_TOPIC_CONFLICT`，绝不把 Topic A 的事件当作 Topic B 的重复。
+12. **指纹为类型标注的规范编码**：字符串 `s"…"`、数字 `d…`、布尔、`null`、数组、排序键对象；`NaN`/`Infinity`/`undefined`/函数等 → `E_EVENT_PAYLOAD_INVALID`，不依赖 JSON 隐式转换。
+
+### 7.1 事件发生日 vs 调度计算日（语义空白，需产品裁决）
+
+规范 A4.2 只写“记录 `last_reviewed = today`”“下次理想日期 = 今天 + 新间隔”，**未区分事件发生日与执行日**。当前实现（本 PR 未改变）：
+
+| 概念 | 来源 | 用途 |
+|---|---|---|
+| `createdAt` | 事件对象 | 审计，不参与计算 |
+| `calendarDate` | 事件对象 | 审计；可解析出 `eventDate` |
+| `today` | 调用方显式参数 | **全部调度计算**：`last_reviewed`、`ideal_due`、逾期判定 |
+
+即：跨日处理的评阅事件，`last_reviewed` 与下次到期按**执行日**计算；事件发生日只出现在 `event.eventDate` / `explain.data.eventDate` 与 `processedOnDifferentDay` 标记中。
+
+**需要裁决**：若用户隔天才补记昨天的阅读，学习日期应取事件日还是执行日？
+- (a) 保持现状（执行日）——实现简单，但补记会让间隔基准后移；
+- (b) 用可确定的 `eventDate`（仅 `calendarDate` 或带偏移的 `createdAt`；UTC-only 不可确定）；
+- (c) 用 `eventDate` 但保留 `today` 作为审计与逾期计算的参考日。
+
+本 PR **不改变**学习日期规则；若裁决为 (b)/(c)，需先修订规范 A4.2，再单独实现、测试与迁移。
 
 ## 8. 幂等模型与已明确的局限
 
@@ -156,8 +176,8 @@ eventFingerprint(event) -> string                        // 确定性内容指�
 ## 10. 测试证据
 
 ```
-node --test test/mf-us-1-*.test.js     tests 135  pass 135  fail 0   （PR-01 66 + PR-02 69）
-node --test test/*.test.js             tests 515  pass 515  fail 0
+node --test test/mf-us-1-*.test.js     tests 138  pass 138  fail 0   （PR-01 66 + PR-02 72）
+node --test test/*.test.js             tests 518  pass 518  fail 0
 node --test $(排除 mf-us-1-)            tests 380  pass 380  fail 0   （243b14c 基线未变）
 node scripts/validate-release.mjs      valid
 node scripts/build.mjs --dry-run       no files written

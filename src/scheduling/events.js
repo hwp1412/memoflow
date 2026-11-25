@@ -134,7 +134,18 @@ function parseCreatedAt(value) {
   return { date: datePart, offset };
 }
 
-function validateEventTime(event, today) {
+// The three dates are distinct (SPEC A8, owner review):
+//   createdAt     when the user acted; may be UTC or offset-bearing
+//   calendarDate  the event's local calendar day, when the caller knows it
+//   today         the explicit day this event is being APPLIED on
+//
+// An event may be applied on a later day than it happened. Only structural
+// validity is enforced here; no comparison with `today` is made, so a queued
+// event stays processable and its eventId does not need to be regenerated.
+// When calendarDate and a numeric-offset createdAt disagree the event is
+// self-contradictory and is rejected; a UTC createdAt carries no local day and
+// is therefore not comparable.
+function validateEventTime(event) {
   const hasCalendarDate = event.calendarDate != null;
   const hasCreatedAt = event.createdAt != null;
   if (!hasCalendarDate && !hasCreatedAt) {
@@ -144,42 +155,33 @@ function validateEventTime(event, today) {
   let calendarDate = null;
   if (hasCalendarDate) {
     calendarDate = assertDateString(event.calendarDate, 'calendarDate');
-    if (calendarDate !== today) {
-      fail('E_EVENT_DATE_MISMATCH', 'event.calendarDate does not match the supplied today', {
-        field: 'calendarDate',
-        value: event.calendarDate,
-        today,
-      });
-    }
   }
 
+  let createdAt = null;
   if (hasCreatedAt) {
-    const parsed = parseCreatedAt(event.createdAt);
-    if (parsed.offset === 'Z') {
-      // Refuse to infer a local date from UTC; the caller must say which day it is.
-      if (!hasCalendarDate) {
-        fail('E_EVENT_TIME_INVALID', 'a UTC createdAt cannot determine the local calendar date; also supply calendarDate', {
-          field: 'createdAt',
-          value: event.createdAt,
-        });
-      }
-      return;
-    }
-    if (parsed.date !== today) {
-      fail('E_EVENT_DATE_MISMATCH', 'event.createdAt does not fall on the supplied today', {
-        field: 'createdAt',
-        value: event.createdAt,
-        today,
-      });
-    }
-    if (hasCalendarDate && parsed.date !== calendarDate) {
-      fail('E_EVENT_DATE_MISMATCH', 'event.createdAt and event.calendarDate disagree', {
+    createdAt = parseCreatedAt(event.createdAt);
+    if (hasCalendarDate && createdAt.offset !== 'Z' && createdAt.date !== calendarDate) {
+      fail('E_EVENT_DATE_MISMATCH', 'event.createdAt and event.calendarDate describe different local days', {
         field: 'createdAt',
         value: event.createdAt,
         calendarDate,
       });
     }
   }
+
+  return { calendarDate, createdAt };
+}
+
+// Best-effort local day of the event, without ever converting time zones.
+// Returns null when only a UTC timestamp is available: the local day is then
+// genuinely unknown and must not be guessed.
+function resolveEventDate(event) {
+  const info = validateEventTime(event);
+  if (info.calendarDate != null) return { date: info.calendarDate, source: 'calendarDate' };
+  if (info.createdAt != null && info.createdAt.offset !== 'Z') {
+    return { date: info.createdAt.date, source: 'createdAt-offset' };
+  }
+  return { date: null, source: info.createdAt != null ? 'utc-timestamp' : null };
 }
 
 function validatePayloadSchema(type, payload) {
@@ -229,7 +231,7 @@ function validateEvent(event, topic, today, field = 'event') {
     });
   }
   validateRevision(event.expectedRevision, 'expectedRevision');
-  validateEventTime(event, today);
+  validateEventTime(event);
   validatePayloadSchema(event.type, event.payload);
   return event;
 }
@@ -547,6 +549,8 @@ function applyEvent(topic, event, config = SPEC_CONFIG, today = undefined) {
   }
 
   const reviewApplied = transition.reviewApplied && applied;
+  const eventDate = resolveEventDate(event);
+  const processedOnDifferentDay = eventDate.date != null && eventDate.date !== today;
   assertTransitionInvariants(topic, after, {
     eventType: event.type,
     eventId: event.eventId,
@@ -577,6 +581,9 @@ function applyEvent(topic, event, config = SPEC_CONFIG, today = undefined) {
         reviewApplied,
         reason,
         changes: diff,
+        eventDate: eventDate.date,
+        eventDateSource: eventDate.source,
+        processedOnDifferentDay,
         ...(transition.meta || {}),
       },
     },
@@ -586,6 +593,8 @@ function applyEvent(topic, event, config = SPEC_CONFIG, today = undefined) {
       topicId: event.topicId,
       type: event.type,
       expectedRevision: event.expectedRevision,
+      eventDate: eventDate.date,
+      eventDateSource: eventDate.source,
     },
   };
 }
@@ -601,6 +610,7 @@ module.exports = {
   isReviewEvent,
   parseCreatedAt,
   validateEventTime,
+  resolveEventDate,
   validatePayloadSchema,
   validateEvent,
   applyEvent,

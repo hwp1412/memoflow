@@ -19,7 +19,7 @@
 
 const { fail } = require('./errors.js');
 const { assertPlainObject, validateUuid } = require('./schema.js');
-const { applyEvent, EVENT_TYPES } = require('./events.js');
+const { applyEvent, EVENT_TYPES, resolveEventDate } = require('./events.js');
 
 const LEDGER_VERSION = 1;
 
@@ -83,6 +83,7 @@ function lookupEvent(ledger, eventId) {
 }
 
 function duplicateResult(topic, event, entry) {
+  const eventDate = resolveEventDate(event);
   return {
     topic: { ...topic },
     applied: false,
@@ -101,6 +102,8 @@ function duplicateResult(topic, event, entry) {
         originalStatus: entry.status,
         originalRevisionAfter: entry.revisionAfterProcessing,
         recordedOn: entry.recordedOn,
+        eventDate: eventDate.date,
+        eventDateSource: eventDate.source,
       },
     },
     algorithmVersion: entry.algorithmVersion,

@@ -353,12 +353,19 @@ test('event objects are validated field by field', () => {
   expectCode(() => applyEvent(topic, { ...good, payload: [] }, SPEC_CONFIG, TODAY), 'E_OBJECT_REQUIRED');
 });
 
-test('a mismatched calendarDate is rejected', () => {
+test('an event may be applied on a later day than it happened', () => {
   const topic = makeTopic();
   const event = ev('ADVANCED', { today: '2026-11-25' });
-  expectCode(() => applyEvent(topic, event, SPEC_CONFIG, TODAY), 'E_EVENT_DATE_MISMATCH');
-  const aligned = ev('ADVANCED', { today: TODAY });
-  assert.equal(applyEvent(topic, aligned, SPEC_CONFIG, TODAY).applied, true);
+  const result = applyEvent(topic, event, SPEC_CONFIG, '2026-11-28');
+  assert.equal(result.applied, true);
+  assert.equal(result.topic.last_reviewed, '2026-11-28'); // execution day (unchanged rule)
+  assert.equal(result.topic.mf_ideal_due, '2026-12-03'); // today + 5
+  assert.equal(result.event.eventDate, '2026-11-25'); // occurrence day
+  assert.equal(result.explain.data.eventDateSource, 'calendarDate');
+  assert.equal(result.explain.data.processedOnDifferentDay, true);
+
+  const sameDay = applyEvent(topic, ev('ADVANCED', { today: TODAY }), SPEC_CONFIG, TODAY);
+  assert.equal(sameDay.explain.data.processedOnDifferentDay, false);
 });
 
 test('topic validation is strict about MF-US-1 fields', () => {
@@ -472,11 +479,13 @@ test('an event must carry calendarDate or createdAt (A8)', () => {
   expectCode(() => applyEvent(topic, ev('SKIP', { today: null }), SPEC_CONFIG, TODAY), 'E_EVENT_TIME_REQUIRED');
 });
 
-test('calendarDate is a strict local date and must match today', () => {
+test('calendarDate is a strict local date but need not equal today', () => {
   const topic = makeTopic();
   expectCode(() => applyEvent(topic, ev('ADVANCED', { today: '2026-02-30' }), SPEC_CONFIG, TODAY), 'E_DATE_INVALID');
   expectCode(() => applyEvent(topic, ev('ADVANCED', { today: '2026-1-1' }), SPEC_CONFIG, TODAY), 'E_DATE_FORMAT');
-  expectCode(() => applyEvent(topic, ev('ADVANCED', { today: '2026-11-25' }), SPEC_CONFIG, TODAY), 'E_EVENT_DATE_MISMATCH');
+  const crossDay = applyEvent(topic, ev('ADVANCED', { today: '2026-11-25' }), SPEC_CONFIG, TODAY);
+  assert.equal(crossDay.applied, true);
+  assert.equal(crossDay.event.eventDate, '2026-11-25');
 });
 
 test('createdAt with an explicit offset is a valid alternative to calendarDate', () => {
@@ -526,14 +535,15 @@ test('createdAt is validated without converting time zones', () => {
     () => applyEvent(topic, { ...base, createdAt: '2026-02-30T09:30:00+08:00' }, SPEC_CONFIG, TODAY),
     'E_DATE_INVALID'
   );
-  // The literal local date must be today.
-  expectCode(
-    () => applyEvent(topic, { ...base, createdAt: '2026-11-23T23:59:00+08:00' }, SPEC_CONFIG, TODAY),
-    'E_EVENT_DATE_MISMATCH'
-  );
+  // A different event day is legal: scheduling still uses the explicit today.
+  const crossDay = applyEvent(topic, { ...base, createdAt: '2026-11-23T23:59:00+08:00' }, SPEC_CONFIG, TODAY);
+  assert.equal(crossDay.applied, true);
+  assert.equal(crossDay.topic.last_reviewed, TODAY);
+  assert.equal(crossDay.event.eventDate, '2026-11-23');
+  assert.equal(crossDay.event.eventDateSource, 'createdAt-offset');
 });
 
-test('a UTC createdAt cannot define the local calendar date on its own', () => {
+test('a UTC createdAt alone satisfies the event time requirement', () => {
   const topic = makeTopic();
   const base = {
     eventId: eventId(703),
@@ -543,17 +553,21 @@ test('a UTC createdAt cannot define the local calendar date on its own', () => {
     algorithmVersion: 1,
     createdAt: '2026-11-24T01:30:00Z',
   };
-  expectCode(() => applyEvent(topic, base, SPEC_CONFIG, TODAY), 'E_EVENT_TIME_INVALID');
-  // With an explicit local date the UTC timestamp is audit-only.
-  const withDate = applyEvent(topic, { ...base, calendarDate: TODAY }, SPEC_CONFIG, TODAY);
+  const result = applyEvent(topic, base, SPEC_CONFIG, TODAY);
+  assert.equal(result.applied, true);
+  // No local day is inferred from a UTC timestamp.
+  assert.equal(result.event.eventDate, null);
+  assert.equal(result.event.eventDateSource, 'utc-timestamp');
+  assert.equal(result.explain.data.processedOnDifferentDay, false);
+
+  // An explicit calendarDate still wins; UTC carries no local day to compare.
+  const withDate = applyEvent(topic, { ...base, calendarDate: '2026-11-23' }, SPEC_CONFIG, TODAY);
   assert.equal(withDate.applied, true);
-  expectCode(
-    () => applyEvent(topic, { ...base, calendarDate: '2026-11-23' }, SPEC_CONFIG, TODAY),
-    'E_EVENT_DATE_MISMATCH'
-  );
+  assert.equal(withDate.event.eventDate, '2026-11-23');
+  assert.equal(withDate.event.eventDateSource, 'calendarDate');
 });
 
-test('createdAt and calendarDate must describe the same local day', () => {
+test('a numeric-offset createdAt must agree with calendarDate', () => {
   const topic = makeTopic();
   const event = {
     eventId: eventId(704),
@@ -565,6 +579,12 @@ test('createdAt and calendarDate must describe the same local day', () => {
     createdAt: '2026-11-23T12:00:00+08:00',
   };
   expectCode(() => applyEvent(topic, event, SPEC_CONFIG, TODAY), 'E_EVENT_DATE_MISMATCH');
+
+  // A UTC timestamp has no local day, so it cannot contradict calendarDate.
+  const utc = { ...event, createdAt: '2026-11-23T16:00:00Z' };
+  const result = applyEvent(topic, utc, SPEC_CONFIG, TODAY);
+  assert.equal(result.applied, true);
+  assert.equal(result.event.eventDate, TODAY);
 });
 
 // ---- payload schema (owner review fix 3) ----------------------------------
