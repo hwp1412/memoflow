@@ -64,7 +64,10 @@ function simulateLegacy({ topics, days, startDate, dailyBudgetMinutes = 30, comp
   const processed = [];
   const daily = [];
   const processedIds = new Set();
+  const initialIds = new Set(state.map(topic => topic.stableId));
   let completions = 0;
+  let completedInitialTopics = 0;
+  let completedAddedTopics = 0;
 
   for (let offset = 0; offset < days; offset += 1) {
     const date = addCalendarDays(startDate, offset);
@@ -91,6 +94,8 @@ function simulateLegacy({ topics, days, startDate, dailyBudgetMinutes = 30, comp
       if (topic.reviewCount >= completionReviews) {
         topic.status = 'done';
         completions += 1;
+        if (initialIds.has(topic.stableId)) completedInitialTopics += 1;
+        else completedAddedTopics += 1;
       }
     }
 
@@ -116,6 +121,8 @@ function simulateLegacy({ topics, days, startDate, dailyBudgetMinutes = 30, comp
     outstandingAtEnd,
     daily,
     completions,
+    completedInitialTopics,
+    completedAddedTopics,
     topicsProcessed: processedIds.size,
     initialTopics: topics.length,
     totalTopics: state.length,
@@ -142,6 +149,9 @@ function simulateLegacy({ topics, days, startDate, dailyBudgetMinutes = 30, comp
     neverProcessed,
     outstandingAtEnd,
     unresolved: outstandingAtEnd,
+    completions,
+    completedInitialTopics,
+    completedAddedTopics,
     metrics,
   };
 }

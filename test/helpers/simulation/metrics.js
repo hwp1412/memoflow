@@ -42,7 +42,9 @@ function computeMetrics({
   neverProcessed = [],
   outstandingAtEnd = [],
   daily,
-  completions,
+  completions = 0,
+  completedInitialTopics,
+  completedAddedTopics,
   topicsProcessed,
   initialTopics,
   totalTopics,
@@ -51,6 +53,16 @@ function computeMetrics({
   startDate,
   endDate,
 }) {
+  // Completion must be split by the group the topic belonged to. A COMPLETE on
+  // a topic added during the run can never enter the initial-population rate.
+  const addedCompleted = completedAddedTopics == null ? 0 : completedAddedTopics;
+  const initialCompleted = completedInitialTopics == null
+    ? completions - addedCompleted
+    : completedInitialTopics;
+  const totalCompleted = initialCompleted + addedCompleted;
+  if (completions != null && completions !== totalCompleted) {
+    throw new Error(`completion split mismatch: completions=${completions}, initial=${initialCompleted}, added=${addedCompleted}`);
+  }
   const waits = processed.map(record => record.waitDays);
   const highWaits = processed.filter(record => record.priority <= 20).map(record => record.waitDays);
   const lowProcessed = processed.filter(record => record.priority >= 80);
@@ -114,15 +126,17 @@ function computeMetrics({
     m06Completion: {
       reviewEvents: processed.length,
       topicsProcessedAtLeastOnce: topicsProcessed,
-      completedTopics: completions,
+      completedTopics: totalCompleted,
+      completedInitialTopics: initialCompleted,
+      completedAddedTopics: addedCompleted,
       neverProcessedCount: neverProcessed.length,
       outstandingAtEndCount: outstandingAtEnd.length,
       initialTopics,
       totalTopics,
-      completionRateOfInitial: initialTopics ? round(completions / initialTopics, 3) : 0,
-      completionRateOfAllTopics: totalTopics ? round(completions / totalTopics, 3) : 0,
-      completionRateOfProcessed: topicsProcessed ? round(completions / topicsProcessed, 3) : 0,
-      note: 'initialTopics excludes topics added during the run; totalTopics includes them. The three counts and rates are never merged',
+      completionRateOfInitial: initialTopics ? round(initialCompleted / initialTopics, 3) : 0,
+      completionRateOfAllTopics: totalTopics ? round(totalCompleted / totalTopics, 3) : 0,
+      completionRateOfProcessed: topicsProcessed ? round(totalCompleted / topicsProcessed, 3) : 0,
+      note: 'completionRateOfInitial uses only COMPLETE events on topics that existed at the start; completionRateOfAllTopics uses initial + added topics',
     },
     m07Interventions: {
       source: 'simulated strategy actions (not real user behaviour)',

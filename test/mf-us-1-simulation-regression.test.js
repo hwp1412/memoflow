@@ -7,6 +7,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { SCENARIOS, scenarioS02, scenarioS05, scenarioS07 } = require('./helpers/simulation/scenarios.js');
+const { simulate } = require('./helpers/simulation/runner.js');
+const { makeTopic } = require('./helpers/simulation/fixtures.js');
 const { computeMetrics, percentile, mean, round } = require('./helpers/simulation/metrics.js');
 const { legacyFirstInterval, legacyNextInterval, LEGACY_A_FACTOR } = require('./helpers/simulation/legacy-reference.js');
 
@@ -48,6 +50,8 @@ test('completion metrics keep the three definitions apart', () => {
   assert.equal(metrics.m06Completion.reviewEvents, 3);
   assert.equal(metrics.m06Completion.topicsProcessedAtLeastOnce, 2);
   assert.equal(metrics.m06Completion.completedTopics, 1);
+  assert.equal(metrics.m06Completion.completedInitialTopics, 1, 'only-completions callers default to the initial group');
+  assert.equal(metrics.m06Completion.completedAddedTopics, 0);
   assert.equal(metrics.m06Completion.completionRateOfInitial, 0.1);
   assert.equal(metrics.m06Completion.completionRateOfAllTopics, round(1 / 12, 3));
   assert.equal(metrics.m06Completion.completionRateOfProcessed, 0.5);
@@ -131,13 +135,47 @@ test('the oldest low-priority backlog ignores higher-priority topics', () => {
 });
 
 test('completion rates use the correct denominator for growing populations', () => {
-  const run = scenarioS02({ days: 10 });
+  const run = scenarioS02({ days: 60 });
   const metrics = run.result.metrics.m06Completion;
   assert.equal(metrics.initialTopics, 101); // 100 mixed + 1 parent
-  assert.equal(metrics.totalTopics, 101 + 10 * 20);
-  assert.equal(metrics.completionRateOfInitial, round(metrics.completedTopics / metrics.initialTopics, 3));
+  assert.equal(metrics.totalTopics, 101 + 60 * 20);
+  // COMPLETE events are split by the group the topic belonged to.
+  assert.equal(metrics.completedTopics, metrics.completedInitialTopics + metrics.completedAddedTopics);
+  assert.equal(metrics.completedInitialTopics, 19);
+  assert.equal(metrics.completedAddedTopics, 58);
+  assert.equal(metrics.completionRateOfInitial, round(metrics.completedInitialTopics / metrics.initialTopics, 3));
   assert.equal(metrics.completionRateOfAllTopics, round(metrics.completedTopics / metrics.totalTopics, 3));
-  assert.notEqual(metrics.completionRateOfInitial, metrics.completionRateOfAllTopics);
+  assert.equal(metrics.completionRateOfInitial, 0.188);
+  assert.equal(metrics.completionRateOfAllTopics, 0.059);
+});
+
+test('a COMPLETE on a newly added topic never enters the initial completion rate', () => {
+  const done = makeTopic({ seq: 980001, type: 'extract', priority: 50, today: '2026-01-05', idealDue: '2026-01-05', status: 'done' });
+  let sequence = 980010;
+  const run = simulate({
+    seed: 9,
+    topics: [done],
+    days: 3,
+    startDate: '2026-01-05',
+    completionReviews: 1,
+    dailyAdd: ({ offset, date }) => {
+      if (offset !== 0) return [];
+      sequence += 1;
+      const first = makeTopic({ seq: sequence, type: 'extract', priority: 10, today: date, idealDue: date });
+      sequence += 1;
+      const second = makeTopic({ seq: sequence, type: 'extract', priority: 20, today: date, idealDue: date });
+      return [first, second];
+    },
+  });
+
+  const metrics = run.metrics.m06Completion;
+  assert.equal(metrics.initialTopics, 1);
+  assert.equal(metrics.totalTopics, 3);
+  assert.equal(metrics.completedInitialTopics, 0, 'the initial topic never completed');
+  assert.equal(metrics.completedAddedTopics, 2);
+  assert.equal(metrics.completedTopics, 2);
+  assert.equal(metrics.completionRateOfInitial, 0, '0/1, not 2/1 or 2/2');
+  assert.equal(metrics.completionRateOfAllTopics, round(2 / 3, 3));
 });
 
 test('M08 separates unique anomaly identities from occurrence counts', () => {

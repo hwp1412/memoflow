@@ -75,9 +75,14 @@ function simulate(options) {
   const eventCounts = {};
   const errors = createErrorCollector();
   const processedIds = new Set();
+  // Capture the initial population by stable id so COMPLETE can be attributed
+  // to the group it actually belongs to (initial vs added during the run).
+  const initialIds = new Set(topics.map(topic => topic.mf_id));
   const initialCount = topics.length;
   let eventSeq = 0;
   let completions = 0;
+  let completedInitialTopics = 0;
+  let completedAddedTopics = 0;
 
   for (let offset = 0; offset < days; offset += 1) {
     const date = addCalendarDays(startDate, offset);
@@ -142,6 +147,8 @@ function simulate(options) {
           state[position] = done.topic;
           eventCounts.COMPLETE = (eventCounts.COMPLETE || 0) + 1;
           completions += 1;
+          if (initialIds.has(state[position].mf_id)) completedInitialTopics += 1;
+          else completedAddedTopics += 1;
         }
       }
     }
@@ -191,6 +198,8 @@ function simulate(options) {
     outstandingAtEnd,
     daily,
     completions,
+    completedInitialTopics,
+    completedAddedTopics,
     topicsProcessed: processedIds.size,
     initialTopics: initialCount,
     totalTopics: state.length,
@@ -216,6 +225,8 @@ function simulate(options) {
     errors: errorResult,
     eventCounts,
     completions,
+    completedInitialTopics,
+    completedAddedTopics,
     metrics,
   };
 }

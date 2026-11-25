@@ -61,7 +61,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
 | 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→05 | T01–T16 PASS；T17 仅纯对象层；T18/T19/T20 待 11/07/06（见 §2） |
 | 38 | TEST-02 | 性质测试（9 条） | A13.1 | `TESTED` | 01→05 | 8/9 在纯算法层通过；迁移前后 Effective Due 待 08（见 §3） |
-| 39 | TEST-03 | 离线模拟（8 场景、8 指标） | A13.2 | `TESTED` | 05 | S01–S08 + M01–M08 + 对照；对照为 **Legacy proxy**（见 docs/P2-US1-SIM-01.md） |
+| 39 | TEST-03 | 离线模拟（8 场景、8 指标） | A13.2 | `TESTED` | 05 | S01–S08 + M01–M08 + 对照；M06 按初始/新增群体拆分；对照为 **Legacy proxy**（见 docs/P2-US1-SIM-01.md） |
 | 40 | TEST-04 | 性能基准（10k Topic 队列 < 500ms） | A14 | `TESTED` | 05 | 本机 Apple M4：10k 中位 53.15ms（P95 65.88ms）；见 docs/MF-US-1-BENCHMARK.md |
 | 41 | ACC-01 | 隔离 Vault 实机验收与发布门槛 | A14 | `NOT_STARTED` | 12 | 禁碰 `MemoFlow-Test` |
 
