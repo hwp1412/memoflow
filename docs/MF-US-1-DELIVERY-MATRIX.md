@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-WRITE-01（持久事件账本、并发控制、单一可信写入核心）
+> 最后更新：P2-US1-INTEGRATION-01（运行时路由、Fake Obsidian 适配、Dashboard、解释）
 
 ## 0. 状态定义
 
@@ -32,7 +32,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 7 | INIT-02 | 类型系数 K、half-up 取整、I0 钳制 1..30 | A3.1, A3.3 | `TESTED` | 01 | r2：B(P) 与 K 以精确有理数计算，无浮点路径 |
 | 8 | INIT-03 | 初始 A-Factor（Source 1.50 / Extract 1.80） | A3.1 | `TESTED` | 01 | |
 | 9 | INIT-04 | 新建 Topic 字段初始化（active、`mf_not_before=null`、`review_count=0`、version=1） | A3.3, A8 | `TESTED` | 01 | 不生成 ID、不读时钟；r2：非 active/非法历史一律显式报错 |
-| 10 | INIT-05 | 父子继承与创建语义（只继承 Priority 数值；不改父节点） | A3.4 | `IN_PROGRESS` | 06 | 关系解析含祖先链持久性/重复路径不绑定；真实创建集成待后续 |
+| 10 | INIT-05 | 父子继承与创建语义（只继承 Priority 数值；不改父节点） | A3.4 | `IN_PROGRESS` | 06/10 | Fake 创建初始化 + 父不变证据；真实创建入口待批准 |
 | 11 | REV-01 | 后续间隔 `clamp(roundHalfUp(I×A),1,3650)` 与“不重新初始化”保护 | A4.1, A13 T11 | `TESTED` | 01 | 与 Priority 无关；r2：I×A 精确十进制，无容差吸附 |
 | 12 | EVT-01 | ADVANCED / HOLD / SOON 评阅 | A4.2 | `TESTED` | 02 | T05–T07；清行政延期、count+1、revision+1 |
 | 13 | EVT-02 | COMPLETE / DISMISS | A4.3, A8 | `TESTED` | 02 | T12；保留间隔/日期/评阅历史，不级联删除 |
@@ -51,12 +51,12 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 26 | MERCY-01 | Mercy 分配（明天起 W 槽、预算、超载标记） | A7.2 | `TESTED` | 04 | 原始 Priority 排序；无槽可容纳时取最少负载槽并标超载；不提前既有延期 |
 | 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `TESTED` | 04 | 只读、确定性；含 batchId、类型与有效成本快照；预览按日绑定，过期需重生成 |
 | 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `TESTED` | 04/09 | T16；digest 确认 + intent 冻结 + next_review 同步投影 + 可信 undo；真实 UI 待 10 |
-| 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→09 | 增加 Unified 写入/恢复接口；`explainSchedule` 待后续 |
-| 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09 | 纯模式 + Shadow + Unified 单写入门禁；真实入口未接线 |
+| 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→10 | `explainSchedule` 已补齐；真实入口接线待批准 |
+| 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09/10 | 运行时门禁 + 单写入者路由（合成）；真实入口未接线 |
 | 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；现代/旧关系与事件字段冲突检测；writesPerformed=false |
 | 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `TESTED` | 08 | 私有存储 + 意图重算 + 计划/备份双向对应 + 引号键 add-only；真实 Vault 待 09/12 |
 | 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `TESTED` | 06/08 | 固定 UUID 批次清单 + 冲突检测 + 重试幂等；真实落盘待 09 |
-| 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `TESTED` | 09 | Frontmatter 身份/revision 强校验 + 配置绑定账本 + 恢复；真实 Obsidian 待 10 |
+| 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `TESTED` | 09/10 | 真实 StorageAdapter 无 CAS → fail-closed；真实写入待 12 |
 | 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |
 | 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
 | 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→08 | T01–T16 PASS；T17/T20 纯层证据含 5 级链；T19 PASS（PR-07）；T18 仍缺真实验收 |
