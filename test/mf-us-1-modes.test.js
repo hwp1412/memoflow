@@ -75,6 +75,28 @@ test('resolving a mode never mutates the configuration', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(config)), snapshot);
 });
 
+test('forged capability fields are ignored, never trusted', () => {
+  const forged = {
+    mode: 'shadow',
+    canComputeShadow: true,
+    canCommitUnified: true,
+    authoritativeScheduler: 'unified',
+    writesPerformed: true,
+    requiresUserAuthorization: false,
+  };
+  const resolved = resolveSchedulerMode(forged);
+  assert.equal(resolved.mode, 'shadow');
+  assert.equal(resolved.authoritativeScheduler, 'legacy');
+  assert.equal(resolved.canCommitUnified, false);
+  assert.equal(resolved.writesPerformed, false);
+
+  const noMode = resolveSchedulerMode({ canComputeShadow: true, canCommitUnified: true });
+  assert.equal(noMode.mode, 'legacy');
+  assert.equal(noMode.canComputeShadow, false);
+  assert.equal(noMode.canCommitUnified, false);
+  assert.throws(() => assertShadowEnabled(noMode), error => error.code === 'E_MODE_NOT_SHADOW');
+});
+
 test('capability flags never claim a physical write is possible', () => {
   for (const mode of MODES) {
     const resolved = resolveSchedulerMode({ mode });

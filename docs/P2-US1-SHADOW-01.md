@@ -22,6 +22,7 @@
 | `unified` | legacy（本 PR 未启用） | false | false | false | `requiresMigration` + `requiresUserAuthorization`，诊断 `E_UNIFIED_NOT_AUTHORIZED` |
 
 - 缺失配置 → `legacy`；显式非法模式（`nope`、`''`、非字符串、非对象配置）→ `E_MODE_INVALID`，绝不自动切换模式。
+- 能力字段始终由 `resolveSchedulerMode()` 重新计算：调用方传入伪造的 `canCommitUnified=true`、`authoritativeScheduler='unified'`、`writesPerformed=true` 一律被忽略。
 - `assertUnifiedWriteAuthorized()` 在 PR-07 恒定抛 `E_UNIFIED_NOT_AUTHORIZED`，不存在隐藏参数或测试开关可绕过。
 - 能力布尔值只描述契约意图，不等于物理写入已被阻止；本 PR 不含任何真实写入调用路径。
 
@@ -46,9 +47,17 @@ previewShadowEvent(snapshot, event, options) // 返回 proposedState，绝不写
 
 不会编造 Legacy Interval/Due/A-Factor；`administrative: true` 的观察值（旧 POSTPONE/Mercy 影响）标记 `LEGACY_ADMINISTRATIVE_CONTAMINATION` 并拒绝直接比较。
 
+观察值唯一性与有效性：
+
+- 同一 ID 多条观察值 → `LEGACY_OBSERVATION_DUPLICATE`，逐项 `not-comparable`，与数组顺序无关，不取第一条；
+- 实际参与比较的 Priority/Interval/A-Factor/日期先做类型与范围校验（1–100、1–3650、1.10–3.00、严格 ISO）；**已提供但非法**的字段产生 `INVALID_LEGACY_*` 诊断，不按缺失字段处理；
+- 没有任何有效可比较字段 → `NO_COMPARABLE_LEGACY_FIELDS`，绝不返回 match；
+- 部分字段缺失时只比较已提供字段，并在 `missingFields` 中列出；
+- 来源可信度是调用方提供的证据声明（caveat `LEGACY_TRUST_IS_CALLER_CLAIM`），纯核心不声称已独立验证真实 Toolkit 执行。
+
 ## 5. 差异比较
 
-每条结果包含：id 与身份类型、adapter 状态、模式/算法版本、比较日期、Legacy 来源与可信度、候选 Priority/Interval/A-Factor/Ideal Due/Effective Due/status/schedulable、Legacy 各值、差值、`differences[]`、`nextReviewComparison`、`causes[]`、`reasons[]`、`caveats[]`、`explanation`、`writesPerformed: false`。
+每条结果包含：id 与身份类型、adapter 状态、`schedulable`（复用 PR-06 `isSchedulableCandidate()`）、模式/算法版本、比较日期、Legacy 来源与可信度、候选 Priority/Interval/A-Factor/Ideal Due/Effective Due/status/schedulable、Legacy 各值、差值、`differences[]`、`nextReviewComparison`、`causes[]`、`reasons[]`、`caveats[]`、`explanation`、`writesPerformed: false`。
 
 比较字段与原因：
 
@@ -63,13 +72,14 @@ previewShadowEvent(snapshot, event, options) // 返回 proposedState，绝不写
 - `legacy.next_review` **不**等同于 Ideal Due：只进入 `nextReviewComparison`，`equivalent: false`，原因 `LEGACY_NEXT_REVIEW_MAY_INCLUDE_ADMINISTRATIVE_CHANGE`，不参与 match/mismatch 判定。
 - 所有日期/天数差使用既有纯日期模块；不修改任何历史 interval。
 - 分类：`match` / `mismatch` / `not-comparable`（含 unavailable 原因）。
+- `done`/`dismissed` 可只读比较但 `schedulable=false`；`invalid`/`conflict`/`ambiguous`/`unsupported` 永不返回可靠 match/mismatch。
 
 ## 6. 事件预览边界
 
 - 事件必须显式提供；候选新状态只在 `proposedState` 返回，原始快照逐字节不变。
 - `committedLegacyState` 仅在调用方提供真实已执行快照时原样返回，并记录 `committedSource`；不会用 proxy 冒充。
 - ADVANCED/HOLD/SOON 增加“建议的”review_count；SKIP/POSTPONE 的 `reviewApplied = false`，不描述为有效评阅。
-- 临时身份拒绝提案（`read-only-limited`），不生成 UUID；卡片 `unsupported`；事件非法 → `status: 'error'` + 诊断，不抛出到旧调度。
+- 临时身份拒绝提案（`read-only-limited`），不生成 UUID；`done`/`dismissed`/`conflict`/关系未验证等不满足 PR-06 门禁的记录返回 `not-schedulable` + 具体诊断（`TOPIC_NOT_ACTIVE`、`FIELD_CONFLICT:*`、`RELATION_UNVERIFIED` 等），`proposedState = null`；卡片 `unsupported`；事件非法 → `status: 'error'` + 诊断，不抛出到旧调度。
 - 同一事件重复预览结果一致，不产生重复真实事件。
 
 ## 7. 故障隔离
@@ -87,7 +97,7 @@ previewShadowEvent(snapshot, event, options) // 返回 proposedState，绝不写
 
 ## 9. 性能（初步观测，非 A14）
 
-10,000 个合成 Source、10,000 条观察值：`compareShadowBatch` 约 **49ms**（本机）。该数字仅用于观察 Shadow 对照开销，不与 A14 的 10k 纯队列 500ms 目标混淆，也不构成发布性能承诺。
+10,000 个合成 Source、10,000 条观察值：`compareShadowBatch` 约 **49–66ms**（本机重复观测）。该数字仅用于观察 Shadow 对照开销，不与 A14 的 10k 纯队列 500ms 目标混淆，也不构成发布性能承诺。
 
 ## 10. 交付矩阵更新
 

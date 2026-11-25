@@ -384,3 +384,136 @@ test('a 10k synthetic comparison completes without changing the inputs', () => {
   assert.equal(snapshots[0].mf_id, uuid(1));
   console.log(`[shadow] 10k comparison ${elapsed.toFixed(0)}ms`);
 });
+
+// ---- observation uniqueness and validity (review fix 2) -------------------
+
+test('duplicate observations for one topic are reported, never first-wins', () => {
+  const observations = [observation({ interval: 5 }), observation({ interval: 9 })];
+  const forward = compare([rawSource()], { observations });
+  const backward = compare([rawSource()], { observations: observations.slice().reverse() });
+  for (const report of [forward, backward]) {
+    const result = report.results[0];
+    assert.equal(result.status, 'not-comparable');
+    assert.ok(result.reasons.includes('LEGACY_OBSERVATION_DUPLICATE'));
+    assert.equal(result.observationTrust, 'conflict');
+  }
+});
+
+test('illegal observation fields are diagnostics, not silent gaps', () => {
+  const cases = [
+    ['interval', '8', 'INVALID_LEGACY_INTERVAL'],
+    ['interval', 0, 'INVALID_LEGACY_INTERVAL'],
+    ['interval', 4000, 'INVALID_LEGACY_INTERVAL'],
+    ['priority', 0, 'INVALID_LEGACY_PRIORITY'],
+    ['priority', '50', 'INVALID_LEGACY_PRIORITY'],
+    ['aFactor', 5, 'INVALID_LEGACY_AFACTOR'],
+    ['aFactor', 1.05, 'INVALID_LEGACY_AFACTOR'],
+    ['idealDue', '2026-02-30', 'INVALID_LEGACY_DATE'],
+    ['nextReview', '24/11/2026', 'INVALID_LEGACY_DATE'],
+  ];
+  for (const [field, value, code] of cases) {
+    const result = compare([rawSource()], {
+      observations: [observation({ [field]: value })],
+    }).results[0];
+    assert.equal(result.status, 'not-comparable', `${field}=${value}`);
+    assert.ok(result.reasons.includes(code), `${field}=${value} -> ${code}`);
+  }
+});
+
+test('an observation without any comparable field never produces a match', () => {
+  const result = compare([rawSource()], {
+    observations: [{ id: UUID, source: 'legacy-executed' }],
+  }).results[0];
+  assert.equal(result.status, 'not-comparable');
+  assert.ok(result.reasons.includes('NO_COMPARABLE_LEGACY_FIELDS'));
+});
+
+test('a partially provided observation compares only the supplied fields', () => {
+  const result = compare([rawSource()], {
+    observations: [{ id: UUID, source: 'legacy-executed', priority: 50 }],
+  }).results[0];
+  assert.equal(result.status, 'match');
+  assert.deepEqual(result.missingFields.sort(), ['aFactor', 'effectiveDue', 'idealDue', 'interval'].sort());
+});
+
+// ---- adapter gate inside shadow (review fix 3) ----------------------------
+
+test('schedulable follows the PR-06 gate for done and dismissed topics', () => {
+  const active = compare([rawSource()], { observations: [observation()] }).results[0];
+  assert.equal(active.candidate.schedulable, true);
+  assert.equal(active.schedulable, true);
+
+  for (const status of ['done', 'dismissed']) {
+    const result = compare([rawSource({ status })], { observations: [observation()] }).results[0];
+    assert.equal(result.status, 'match');
+    assert.equal(result.candidate.schedulable, false, status);
+    assert.equal(result.schedulable, false, status);
+    assert.ok(result.reasons.includes('CANDIDATE_NOT_SCHEDULABLE'));
+  }
+});
+
+test('cycles and duplicate ids never yield a reliable comparison', () => {
+  const extract = (id, name, parent) => ({
+    type: 'extract', status: 'active', priority: 40, interval: 5, a_factor: 2.0,
+    review_count: 1, next_review: '24-11-2026', mf_id: id,
+    path: `Extracts/${name}.md`, basename: name, parent: `[[${parent}]]`,
+  });
+  const cycle = compare([
+    extract(UUID, 'A', 'B'),
+    extract(UUID2, 'B', 'A'),
+  ], { observations: [observation(), observation({ id: UUID2 })] });
+  for (const result of cycle.results) {
+    assert.equal(result.status, 'not-comparable');
+    assert.ok(result.reasons.includes('E_RELATION_CYCLE'));
+  }
+
+  const duplicate = compare([
+    rawSource(),
+    rawSource({ path: 'Sources/B.md', basename: 'B' }),
+  ], { observations: [observation()] });
+  for (const result of duplicate.results) {
+    assert.equal(result.status, 'not-comparable');
+    assert.ok(result.reasons.includes('E_DUPLICATE_ID'));
+  }
+});
+
+test('an unverified modern relation is comparable but not schedulable', () => {
+  const extract = {
+    type: 'extract', status: 'active', priority: 40, interval: 5, a_factor: 2.0,
+    review_count: 1, next_review: '24-11-2026', mf_id: UUID2,
+    path: 'Extracts/E.md', basename: 'E', mf_parent_id: UUID,
+  };
+  const report = compare([rawSource(), extract], {
+    observations: [observation(), observation({ id: UUID2, priority: 40, interval: 5 })],
+  });
+  const result = report.results[1];
+  assert.equal(result.status, 'match');
+  assert.equal(result.candidate.schedulable, false);
+  assert.ok(result.reasons.includes('CANDIDATE_READ_ONLY_LIMITED'));
+  assert.ok(result.reasons.includes('CANDIDATE_NOT_SCHEDULABLE'));
+});
+
+test('event preview refuses non-schedulable records with diagnostics', () => {
+  const options = { mode: SHADOW, context: CONTEXT, today: TODAY };
+
+  const done = previewShadowEvent(rawSource({ status: 'done' }), event('ADVANCED'), options);
+  assert.equal(done.status, 'not-schedulable');
+  assert.equal(done.proposedState, null);
+  assert.ok(done.diagnostics.includes('TOPIC_NOT_ACTIVE'));
+
+  const dismissed = previewShadowEvent(rawSource({ status: 'dismissed' }), event('ADVANCED'), options);
+  assert.equal(dismissed.status, 'not-schedulable');
+  assert.ok(dismissed.diagnostics.includes('TOPIC_NOT_ACTIVE'));
+
+  const conflict = previewShadowEvent(rawSource({ mf_ideal_due: '2026-11-25' }), event('ADVANCED'), options);
+  assert.equal(conflict.status, 'not-schedulable');
+  assert.ok(conflict.diagnostics.includes('FIELD_CONFLICT:mf_ideal_due'));
+
+  const orphan = previewShadowEvent({
+    type: 'extract', status: 'active', priority: 40, interval: 5, a_factor: 2.0,
+    review_count: 1, next_review: '24-11-2026', mf_id: UUID2,
+    path: 'Extracts/E.md', basename: 'E', parent: '[[Missing]]',
+  }, event('ADVANCED', { topicId: UUID2 }), options);
+  assert.equal(orphan.status, 'not-schedulable');
+  assert.ok(orphan.diagnostics.includes('RELATION_UNVERIFIED'));
+});

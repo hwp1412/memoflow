@@ -52,7 +52,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `TESTED` | 04 | 只读、确定性；含 batchId、类型与有效成本快照；预览按日绑定，过期需重生成 |
 | 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `TESTED` | 04 | T16；可续撤销（already-undone/pendingCount）；重复身份与过期预览拒绝；持久化批次记录待 09（Q10） |
 | 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→07 | 已交付初始化/事件/队列/Mercy + mode/shadow 只读接口；`explainSchedule` 待后续 |
-| 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09 | 纯模式策略 + Shadow 只读；真实入口未接线，不标 INTEGRATED |
+| 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09 | 纯模式策略 + Shadow 只读；能力字段不可伪造、观察值唯一性校验、门禁复用；真实入口未接线 |
 | 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；现代/旧关系与事件字段冲突检测；writesPerformed=false |
 | 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `NOT_STARTED` | 08 | 写库需单独授权 |
 | 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `IN_PROGRESS` | 06 | 临时 ID + 大小写不敏感冲突检测 + Q8 方案；UUID 持久化待 08 |
