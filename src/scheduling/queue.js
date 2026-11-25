@@ -57,20 +57,36 @@ function invalidFromError(error, index) {
 
 // Classify one input. Errors become per-topic diagnostics, never a thrown
 // batch failure, so one broken note cannot hide the rest of the queue.
+//
+// Identity is resolved BEFORE the business fields (owner review): a Source /
+// Extract whose Priority, dates or estimated cost are illegal still has a
+// perfectly readable stable id, so it must take part in duplicate detection.
+// Only a record whose identity itself cannot be read is excluded from it.
 function analyzeTopic(topic, index, config, today) {
+  let identity = null;
   try {
     if (!isPlainObject(topic)) {
       fail('E_OBJECT_REQUIRED', 'topic must be a plain object', { index });
     }
+    // validateTopicType rejects cards and unknown types, so they never obtain
+    // an MF-US-1 identity and can never block a Source/Extract.
     const type = validateTopicType(topic.type);
+    identity = { stableId: resolveStableId(topic), type };
+  } catch (error) {
+    return { invalid: invalidFromError(error, index) };
+  }
+
+  try {
+    const type = identity.type;
+    const stableId = identity.stableId;
     const status = validateStatus(topic.status);
-    const stableId = resolveStableId(topic);
 
     if (EXCLUDED_STATUSES.includes(status)) {
-      return { excluded: { index, stableId, type, status, reason: 'STATUS_NOT_ACTIVE' } };
+      return { identity, excluded: { index, stableId, type, status, reason: 'STATUS_NOT_ACTIVE' } };
     }
     if (LEGACY_STATUSES.includes(status)) {
       return {
+        identity,
         unsupported: {
           index,
           stableId,
@@ -111,11 +127,14 @@ function analyzeTopic(topic, index, config, today) {
       createdDate,
     };
 
-    if (due.available) return { entry, bucket: 'candidate' };
-    if (due.postponedOnly) return { entry, bucket: 'postponed' };
-    return { entry, bucket: 'notYetDue' };
+    if (due.available) return { identity, entry, bucket: 'candidate' };
+    if (due.postponedOnly) return { identity, entry, bucket: 'postponed' };
+    return { identity, entry, bucket: 'notYetDue' };
   } catch (error) {
-    return { invalid: invalidFromError(error, index) };
+    const invalid = invalidFromError(error, index);
+    // Keep the resolved identity so the duplicate check still sees this record.
+    invalid.stableId = identity.stableId;
+    return { identity, invalid };
   }
 }
 
@@ -253,9 +272,13 @@ function selectDailyQueue(topics, config = undefined, today = undefined) {
   const excluded = [];
   const unsupported = [];
   const invalid = [];
+  const identities = [];
 
   topics.forEach((topic, index) => {
     const analysis = analyzeTopic(topic, index, cfg, today);
+    if (analysis.identity) {
+      identities.push({ stableId: analysis.identity.stableId, index });
+    }
     if (analysis.invalid) invalid.push(analysis.invalid);
     else if (analysis.excluded) excluded.push(analysis.excluded);
     else if (analysis.unsupported) unsupported.push(analysis.unsupported);
@@ -267,20 +290,18 @@ function selectDailyQueue(topics, config = undefined, today = undefined) {
   // spans every topic whose id could be resolved (accepted + excluded +
   // unsupported), reports each occurrence, and removes all of them. Topics with
   // an unresolvable id stay ordinary invalid records and never influence others.
-  const identified = [
-    ...accepted.map(item => ({ stableId: item.entry.stableId, index: item.entry.index })),
-    ...excluded.map(item => ({ stableId: item.stableId, index: item.index })),
-    ...unsupported.map(item => ({ stableId: item.stableId, index: item.index })),
-  ];
+  // Every record whose identity could be read takes part — including records
+  // that are invalid for other reasons. The duplicate check therefore cannot be
+  // bypassed by making the colliding twin's Priority/date/cost illegal.
   const idCounts = new Map();
-  for (const record of identified) {
+  for (const record of identities) {
     idCounts.set(record.stableId, (idCounts.get(record.stableId) || 0) + 1);
   }
   const duplicatedIds = new Set();
   for (const [stableId, count] of idCounts) {
     if (count > 1) duplicatedIds.add(stableId);
   }
-  for (const record of identified) {
+  for (const record of identities) {
     if (!duplicatedIds.has(record.stableId)) continue;
     invalid.push({
       index: record.index,

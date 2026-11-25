@@ -32,7 +32,7 @@ Mercy、离线模拟/正式性能验收、Legacy 适配/迁移、Shadow/Unified�
 | `src/scheduling/due.js` | 兼容扩展：`dueStateFromDates` / `effectiveDueFromDates`（原函数行为不变） | 修改 |
 | `src/scheduling/schema.js` | 新增 `validateEstimatedMinutes` / `validateStableId`（纯新增） | 修改 |
 | `src/scheduling/index.js` | 导出新模块 | 修改 |
-| `test/mf-us-1-queue.test.js` | 37 项候选/优先级/排序/预算/解释/重复身份测试 | 新增 |
+| `test/mf-us-1-queue.test.js` | 41 项候选/优先级/排序/预算/解释/重复身份测试 | 新增 |
 | `test/mf-us-1-workload.test.js` | 15 项七日负荷（含逾期积压）测试 | 新增 |
 | `test/mf-us-1-queue-properties.test.js` | 8 项性质 + 10k 性能测试 | 新增 |
 | `docs/MF-US-1-DELIVERY-MATRIX.md` | 状态更新 | 修改 |
@@ -122,7 +122,10 @@ effectivePriority = max(1, P - ageBonus)
 确定性与边界：
 
 - 输入数组顺序、随机数、系统时间都不参与决胜；
-- 重复 `stableId` 在 **所有可解析身份的状态之间** 检测（active + done/dismissed + inbox/pending/container 一并参与）→ 每个出现都判 `invalid`（`E_DUPLICATE_ID`），同时从原桶移除，不任选其一；身份不可解析的非法记录不参与该检测，因此不会阻塞其他 Topic；
+- **身份解析先于业务字段校验**：Source/Extract 的 `stableId` 在 Priority、日期、成本校验之前解析；因此即使某个 Topic 的 Priority/日期/成本非法，它仍会以可读身份参与重复检测，合法 Topic 无法借“对方已非法”绕过身份保护；
+- 重复 `stableId` 在 **所有可解析身份的 Source/Extract 之间** 检测（active、done/dismissed、inbox/pending/container，以及因业务字段非法而 invalid 的记录一并参与）→ 每个出现都判 `invalid`（`E_DUPLICATE_ID`），同时从原桶移除，不任选其一；业务字段的原错误诊断同时保留（如 `E_PRIORITY_RANGE`），不静默修复；
+- 身份本身不可解析的记录（无 `mf_id`/`stable_id`、或 `stable_id` 非法）不参与该检测，因此不会阻塞无关 Topic；
+- Card 不参与 MF-US-1 身份检测（属于 SR），与 Source 同 ID 也不会被当成 Topic 重复；
 - 无 `mf_id` 时接受调用方提供的只读 `stable_id`；两者都没有 → `E_QUEUE_ID_REQUIRED`；
 - **绝不生成 UUID / 持久身份**；不写回任何 Topic。
 
@@ -170,16 +173,16 @@ effectivePriority = max(1, P - ageBonus)
 
 ```
 node --test test/mf-us-1-queue.test.js test/mf-us-1-workload.test.js test/mf-us-1-queue-properties.test.js
-  tests 60  pass 60  fail 0
+  tests 64  pass 64  fail 0
 [perf] 10,000 topics: 46-62ms, selected 3
 ```
 
-覆盖：P1/P50/P80/P100、逾期 0/6/7/14/140/2000、`ageBonus` 上限、`effectivePriority` 下限与 1–100 性质、原始 Priority 不变、五级键逐级决胜、输入乱序不变、缺创建日期排最后、code-unit 排序、重复 ID（active+done/dismissed/inbox/pending/container 跨状态、三重复）判非法且不阻塞其他 Topic、Card/历史状态拒绝、预算默认与自定义（1/120）、刚好放满、超大任务跳过后续补位、全部放不下、非法成本、预算 1–1440、确定性 100 次、输入不可变、月末/闰年/跨年/DST、七日窗口边界（today+6 计入、+7 不计）、Ideal/Effective 分轴、逾期积压进入今日负荷、行政延期保留 ideal 积压不计今日负荷、积压只计一次不摊未来、混合负荷与超载。
+覆盖：P1/P50/P80/P100、逾期 0/6/7/14/140/2000、`ageBonus` 上限、`effectivePriority` 下限与 1–100 性质、原始 Priority 不变、五级键逐级决胜、输入乱序不变、缺创建日期排最后、code-unit 排序、重复 ID（active+done/dismissed/inbox/pending/container 跨状态、三重复、**业务字段非法但身份可读**、Priority/日期/成本三类反例、乱序一致性）判非法且不阻塞无关 Topic、身份不可解析的记录不阻塞他人、Card 不参与身份检测、Card/历史状态拒绝、预算默认与自定义（1/120）、刚好放满、超大任务跳过后续补位、全部放不下、非法成本、预算 1–1440、确定性 100 次、输入不可变、月末/闰年/跨年/DST、七日窗口边界（today+6 计入、+7 不计）、Ideal/Effective 分轴、逾期积压进入今日负荷、行政延期保留 ideal 积压不计今日负荷、积压只计一次不摊未来、混合负荷与超载。
 
 完整回归：
 
 ```
-node --test test/*.test.js            tests 578  pass 578  fail 0
+node --test test/*.test.js            tests 582  pass 582  fail 0
 node --test $(排除 mf-us-1-)           tests 380  pass 380  fail 0
 node scripts/validate-release.mjs     valid
 node scripts/build.mjs --dry-run      no files written

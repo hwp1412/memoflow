@@ -525,3 +525,72 @@ test('the queue workload exposes overdue backlog in today\'s load', () => {
   assert.equal(result.workload.days[0].overloadMinutes, 70);
   assert.equal(result.workload.totals.idealBacklogCount, 10);
 });
+
+// ---- identity outranks business-field validity (owner review) -------------
+
+test('an invalid business field cannot hide a duplicate identity', () => {
+  const cases = [
+    ['priority', { priority: 0 }, 'E_PRIORITY_RANGE'],
+    ['date', { mf_ideal_due: '2026-02-30' }, 'E_DATE_INVALID'],
+    ['cost', { estimated_minutes: 0 }, 'E_ESTIMATED_MINUTES_INVALID'],
+  ];
+  for (const [label, overrides, code] of cases) {
+    const result = selectDailyQueue([
+      topic({ id: 1 }),
+      topic({ id: 1, ...overrides }),
+    ], undefined, TODAY);
+
+    assert.equal(result.selected.length, 0, label);
+    assert.equal(result.budget.usedMinutes, 0, label);
+    // The broken field keeps its own explicit diagnostic (nothing is repaired)…
+    assert.ok(result.invalid.some(item => item.code === code), `${label}: ${code}`);
+    // …and both occurrences of the id are still reported as duplicate.
+    assert.equal(result.invalid.filter(item => item.code === 'E_DUPLICATE_ID').length, 2, label);
+    // The illegal field is never silently normalised.
+    assert.equal(result.invalid.some(item => item.code === 'E_DUPLICATE_ID' && item.details.stableId === uuid(1)), true, label);
+  }
+});
+
+test('a record without a readable identity does not block unrelated topics', () => {
+  const result = selectDailyQueue([
+    { type: 'source', status: 'active', priority: 0, mf_ideal_due: TODAY }, // no id at all
+    topic({ id: 2 }),
+  ], undefined, TODAY);
+  assert.deepEqual(ids(result.selected), [uuid(2)]);
+  assert.equal(result.invalid.length, 1);
+  assert.equal(result.invalid[0].code, 'E_QUEUE_ID_REQUIRED');
+
+  const badStableId = selectDailyQueue([
+    { type: 'source', status: 'active', priority: 50, mf_ideal_due: TODAY, stable_id: '  ' },
+    { type: 'source', status: 'active', priority: 50, mf_ideal_due: TODAY, stable_id: 'ok-id' },
+  ], undefined, TODAY);
+  assert.deepEqual(badStableId.selected.map(entry => entry.stableId), ['ok-id']);
+  assert.equal(badStableId.invalid[0].code, 'E_STABLE_ID_INVALID');
+});
+
+test('duplicate detection is independent of input order', () => {
+  const pool = [
+    topic({ id: 1 }),
+    topic({ id: 1, priority: 0 }),
+    topic({ id: 2 }),
+  ];
+  for (const order of [[0, 1, 2], [2, 0, 1], [1, 2, 0]]) {
+    const result = selectDailyQueue(order.map(index => pool[index]), undefined, TODAY);
+    assert.deepEqual(ids(result.selected), [uuid(2)]);
+    assert.deepEqual(
+      result.invalid.map(item => item.code).sort(),
+      ['E_DUPLICATE_ID', 'E_DUPLICATE_ID', 'E_PRIORITY_RANGE']
+    );
+  }
+});
+
+test('a Card never takes part in MF-US-1 identity checks', () => {
+  const result = selectDailyQueue([
+    topic({ id: 1 }),
+    topic({ id: 1, type: 'card' }),
+  ], undefined, TODAY);
+  assert.deepEqual(ids(result.selected), [uuid(1)]);
+  assert.equal(result.invalid.length, 1);
+  assert.equal(result.invalid[0].code, 'E_TOPIC_TYPE');
+  assert.equal(result.invalid.filter(item => item.code === 'E_DUPLICATE_ID').length, 0);
+});
