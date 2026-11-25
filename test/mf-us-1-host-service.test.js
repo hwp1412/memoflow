@@ -101,3 +101,67 @@ test('identical concurrent host requests execute once', async () => {
   assert.equal(b.duplicate, true);
   assert.equal(a.result.writesPerformed, true);
 });
+
+// ---- observation validity and live mode refresh (review fixes 4/5) -------
+
+test('failed, no-op and void legacy results never produce a shadow match', async () => {
+  for (const legacyResult of [
+    { status: 'failed', writesPerformed: false },
+    { status: 'no-op', writesPerformed: false },
+    { status: 'uncertain', writesPerformed: true },
+    undefined,
+  ]) {
+    let compared = 0;
+    const service = createHostSchedulerService({
+      mode: 'shadow',
+      shadowObserver: () => { compared += 1; return { differences: [] }; },
+    });
+    const outcome = await service.execute({ action: 'ADVANCED' }, async () => legacyResult);
+    assert.equal(compared, 0);
+    assert.equal(outcome.shadow.status, 'not-comparable');
+    assert.equal(outcome.shadow.reason, 'LEGACY_OBSERVATION_UNAVAILABLE');
+  }
+});
+
+test('a legacy exception is uncertain and preserves the original error', async () => {
+  const service = createHostSchedulerService({ mode: 'legacy' });
+  const error = Object.assign(new Error('after write'), { code: 'E_CONFIRM_FAILED' });
+  const outcome = await service.execute({ action: 'ADVANCED' }, async () => { throw error; });
+  assert.equal(outcome.status, 'uncertain');
+  assert.equal(outcome.writesPerformed, null);
+  assert.equal(outcome.writeOutcome, 'uncertain');
+  assert.equal(outcome.requiresManualRecovery, true);
+  assert.equal(outcome.reason, 'E_CONFIRM_FAILED');
+  assert.equal(outcome.error, error);
+});
+
+test('a mode change is observed on the next call without rebuilding', async () => {
+  let setting = 'legacy';
+  let legacyCalls = 0;
+  const service = createHostSchedulerService({ getMode: () => setting });
+  const first = await service.execute({ action: 'COMPLETE' }, async () => {
+    legacyCalls += 1;
+    return { status: 'applied', writesPerformed: true };
+  });
+  assert.equal(first.route, 'legacy');
+
+  setting = 'unified';
+  await assert.rejects(
+    service.execute({ action: 'COMPLETE' }, async () => { legacyCalls += 1; return { writesPerformed: true }; }),
+    error => error.code === 'E_UNIFIED_NOT_AUTHORIZED'
+  );
+  assert.equal(legacyCalls, 1, 'legacy must not run after switching to unified');
+});
+
+test('switching to shadow keeps the read-only observation contract', async () => {
+  let setting = 'legacy';
+  const events = [];
+  const service = createHostSchedulerService({
+    getMode: () => setting,
+    shadowObserver: (descriptor, result) => { events.push(['observe', result.status]); },
+  });
+  await service.execute({ action: 'ADVANCED' }, async () => { events.push(['legacy']); return { status: 'applied', writesPerformed: true }; });
+  setting = 'shadow';
+  await service.execute({ action: 'ADVANCED' }, async () => { events.push(['legacy']); return { status: 'applied', writesPerformed: true }; });
+  assert.deepEqual(events, [['legacy'], ['legacy'], ['observe', 'applied']]);
+});

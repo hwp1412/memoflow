@@ -3738,7 +3738,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (!this._mfUs1HostInstance) {
       const { createHostSchedulerService } = require('./src/integration/host-scheduler-service.js');
       this._mfUs1HostInstance = createHostSchedulerService({
-        mode: this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy',
+        getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
       });
     }
     return this._mfUs1HostInstance;
@@ -3750,6 +3750,7 @@ class IncrementalReadingPlugin extends Plugin {
 
   async _mfUs1RunLegacy(descriptor, legacy) {
     const outcome = await this._mfUs1Run(descriptor, legacy);
+    if (outcome && outcome.error) throw outcome.error;
     return outcome.result;
   }
 

@@ -51,9 +51,20 @@
 - `schedulerDashboardModel()` 连接 PR-10 Dashboard 模型（只读）；
 - 静态验证：`test/mf-us-1-host-wiring.test.js` 断言每个入口都经过门面、默认模式为 legacy、宿主不存在 unified 授权路径。
 
+## 4.1 首轮审查修复（本轮）
+
+| 问题 | 修复 |
+|---|---|
+| Frontmatter 重写破坏用户数据 | 改为**逐行字节保真编辑**：只替换目标键的值，未知字段/引号/注释/BOM/CRLF/正文逐字节保留；不支持结构零写入拒绝 |
+| 路径字符串冒充 TFile | 适配器只接受 `resolveFile(topicId)` 返回的 TFile；Fake Vault 校验对象归属/未过期/存在，重命名后旧 TFile 失效 |
+| CAS 前置条件不足 | `expectedHash`（64 hex）、`expectedRevision`（整数且等于持久值）、mf_id/version/type/status 全部在 `Vault.process` 回调内校验；仅允许白名单字段且必须已存在；回调内生成新内容 |
+| 账本未映射 Obsidian API | 新增 `createObsidianPluginDataStore(plugin)`：使用 `loadData()`/`saveData(data)` 且命名空间合并，保留 settings/Refine；损坏记录 → `healthy=false` + `blockedTopicIds`；预期缺失 → `E_LEDGER_MISSING`；put/delete 标脏 |
+| 宿主模式缓存过期 | 门面改用 `getMode()` 每次读取设置；切换到 unified 后立即 `E_UNIFIED_NOT_AUTHORIZED`，legacy 不再执行；无需重建门面 |
+| Shadow 观察不合格 | 仅 `status==='applied'` 交给 observer；failed/no-op/uncertain/void 一律 `not-comparable`；Legacy 异常返回 uncertain（不报 false）并保留原错误；host 包装重抛原错误 |
+
 ## 5. Vault.process / processFrontMatter 并发分析
 
-- `Vault.process(file, fn)` 的回调接收**最新完整内容**，被官方描述为单文件原子读改写；本适配器把 hash、mf_id、revision、字段更新全部放在回调**内部**，回调外预读不作为 CAS；
+- `Vault.process(file, fn)` 的回调接收**最新完整内容**，被官方描述为单文件原子读改写；本适配器把 hash、mf_id、revision、字段更新全部放在回调**内部**，回调外预读不作为 CAS；写入使用保真编辑，只改目标行；
 - `FileManager.processFrontMatter` 同样在单文件回调内，但只提供 Frontmatter 对象，无法在同一回调内证明完整正文 hash，因此不作为本方案的写入原语；
 - 同进程串行化可避免插件内并发；其他插件调用、外部同步软件（iCloud/Syncthing）仍可能在两次调用之间修改文件；Obsidian 不提供跨文件事务；
 - 写后回读失败返回 `E_WRITE_UNVERIFIED`（uncertain），不适配为成功；
@@ -102,11 +113,11 @@ Legacy 保留原行为；Unified 一律拒绝（`E_UNIFIED_NOT_AUTHORIZED`）。
 ## 13. 测试
 
 ```
-node --test test/mf-us-1-host*.test.js   tests 24  pass 24  fail 0
-node --test test/*.test.js               tests 1076 pass 1076 fail 0
+node --test test/mf-us-1-host*.test.js   tests 35  pass 35  fail 0
+node --test test/*.test.js               tests 1087 pass 1087 fail 0
 ```
 
-覆盖：门面 legacy/shadow/unified fail-closed、in-flight 冲突、Vault.process 回调内校验/外部编辑/revision/身份/YAML/回读、账本版本/损坏/保存失败/重载/恢复、宿主入口静态接线。
+覆盖：门面 legacy/shadow/unified fail-closed、模式热切换、Shadow 观察有效性、in-flight 冲突、Vault.process 回调内校验/外部编辑/revision/身份/YAML/回读、TFile 归属/重命名、账本 Plugin API/设置保留/损坏阻塞/保存失败/重载/恢复、宿主入口静态接线。另对实际构建产物做 Mock Obsidian 模块加载验证（bundle 包含 host 代码且无未解析相对 require）。
 
 ## 14. 交付矩阵
 

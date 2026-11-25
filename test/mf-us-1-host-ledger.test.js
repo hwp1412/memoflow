@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 
 const {
   openPluginDataLedger,
+  createObsidianPluginDataStore,
   validateSnapshot,
   LEDGER_FORMAT_VERSION,
 } = require('../src/integration/plugin-data-ledger-store.js');
@@ -51,30 +52,90 @@ function depsFor(topic, ledger) {
   };
 }
 
+function validRecord(eventId = 'e1') {
+  return { eventId, topicId: uuid(9), fingerprint: 'a'.repeat(64), status: 'applied' };
+}
+
 test('the ledger snapshot is versioned, serializable and reloadable', async () => {
   const dataStore = new FakeDataStore();
   const opened = await openPluginDataLedger({ dataStore, key: 'ledger' });
   assert.deepEqual(opened.diagnostics, []);
-  opened.store.put('e1', { eventId: 'e1', status: 'applied' });
+  opened.store.put('e1', validRecord());
+  assert.equal(opened.isDirty(), true);
   assert.deepEqual(await opened.flush(), { ok: true });
+  assert.equal(opened.isDirty(), false);
   assert.equal(dataStore.data.ledger.version, LEDGER_FORMAT_VERSION);
 
   const reloaded = await openPluginDataLedger({ dataStore, key: 'ledger' });
   assert.equal(reloaded.store.get('e1').status, 'applied');
+  assert.equal(reloaded.healthy, true);
 });
 
 test('a corrupt version or record is diagnosed', () => {
   assert.throws(() => validateSnapshot({ version: 99, records: {} }), error => error.code === 'E_LEDGER_VERSION_UNSUPPORTED');
-  const result = validateSnapshot({ version: 1, records: { e1: { status: 'applied' }, e2: { eventId: 'e2' } } });
-  assert.equal(Object.keys(result.records).length, 1);
+  const result = validateSnapshot({
+    version: 1,
+    records: {
+      e1: { eventId: 'e1', status: 'applied' },
+      e2: { eventId: 'e2' },
+      e3: validRecord('e3'),
+    },
+  });
+  assert.deepEqual(Object.keys(result.records), ['e3']);
+  assert.equal(result.diagnostics.length, 2);
   assert.equal(result.diagnostics[0].code, 'E_LEDGER_RECORD_CORRUPT');
 });
 
-test('a failed flush is reported instead of claimed durable', async () => {
+test('a failed flush is reported instead of claimed durable and stays dirty', async () => {
   const dataStore = new FakeDataStore();
   const opened = await openPluginDataLedger({ dataStore });
+  opened.store.put('e1', validRecord());
   dataStore.failSave = true;
   assert.deepEqual(await opened.flush(), { ok: false, code: 'E_LEDGER_SAVE_FAILED', message: 'disk full' });
+  assert.equal(opened.isDirty(), true);
+});
+
+test('an expected ledger missing on startup is refused', async () => {
+  const dataStore = new FakeDataStore();
+  await assert.rejects(openPluginDataLedger({ dataStore, expectExisting: true }),
+    error => error.code === 'E_LEDGER_MISSING');
+});
+
+test('a corrupt ledger is unhealthy and blocks its topics', async () => {
+  const dataStore = new FakeDataStore({
+    ledger: {
+      version: 1,
+      records: {
+        broken: { eventId: 'broken' },
+        pending: { eventId: 'pending', topicId: uuid(10), fingerprint: 'b'.repeat(64), status: 'prepared' },
+      },
+    },
+  });
+  const opened = await openPluginDataLedger({ dataStore, key: 'ledger' });
+  assert.equal(opened.healthy, false);
+  assert.ok(opened.diagnostics.some(diagnostic => diagnostic.eventId === 'broken'));
+  assert.deepEqual(opened.blockedTopicIds, [uuid(10)]);
+});
+
+test('the Obsidian Plugin API adapter preserves unrelated settings and namespaces the ledger', async () => {
+  const pluginData = {
+    settings: { dateFormat: 'DD-MM-YYYY', keep: true },
+    refine: { history: ['keep-me'] },
+  };
+  const plugin = {
+    async loadData() { return JSON.parse(JSON.stringify(pluginData)); },
+    async saveData(data) { Object.keys(pluginData).forEach(key => delete pluginData[key]); Object.assign(pluginData, JSON.parse(JSON.stringify(data))); },
+  };
+  const dataStore = createObsidianPluginDataStore(plugin, { key: 'mfUs1Ledger' });
+  const opened = await openPluginDataLedger({ dataStore, key: 'mfUs1Ledger' });
+  opened.store.put('e1', validRecord());
+  assert.deepEqual(await opened.flush(), { ok: true });
+  assert.deepEqual(pluginData.settings, { dateFormat: 'DD-MM-YYYY', keep: true });
+  assert.deepEqual(pluginData.refine, { history: ['keep-me'] });
+  assert.equal(pluginData.mfUs1Ledger.version, 1);
+
+  const reloaded = await openPluginDataLedger({ dataStore, key: 'mfUs1Ledger' });
+  assert.equal(reloaded.store.get('e1').status, 'applied');
 });
 
 test('E1 -> E2 -> E1 stays idempotent across a ledger reload', async () => {

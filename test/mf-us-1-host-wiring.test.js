@@ -39,7 +39,7 @@ test('reading-page extraction and mercy routing delegate in src/main.js', () => 
 });
 
 test('the default host mode remains legacy and unified has no authorization path', () => {
-  assert.match(mainSource, /mf_us1_mode \? this\.settings\.mf_us1_mode : 'legacy'/);
+  assert.match(mainSource, /getMode: \(\) => \(this\.settings && this\.settings\.mf_us1_mode \? this\.settings\.mf_us1_mode : 'legacy'\)/);
   assert.equal(/issueSyntheticRuntimeAuthorization/.test(mainSource), false);
   assert.equal(/mode: 'unified'/.test(mainSource), false);
 });
