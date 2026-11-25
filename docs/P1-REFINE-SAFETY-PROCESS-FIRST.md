@@ -44,7 +44,7 @@ fresh plan / trusted checks
 
 - 原有 974 基线保留；
 - 新增/改写 process 条件提交、冲突、Editor 同步失败；
-- 全量 **976/976**；
+- 全量 **1054/1054**；
 - check/verify 通过。
 
 ## 5. 实机
