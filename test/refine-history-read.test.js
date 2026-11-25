@@ -104,3 +104,28 @@ test('history-view source uses safe text rendering concepts, not HTML injection'
   const modal = fs.readFileSync(require.resolve('../src/views/refine-history-modal.js'), 'utf8');
   assert.equal(/innerHTML|insertAdjacentHTML|document\.write/.test(modal), false);
 });
+
+test('pending restore, corrupt entries and orphan paths are explicit diagnostics', async () => {
+  const op = await refine(A, 'Hi');
+  const restore = await createRestoreOperation({
+    operationId: crypto.randomUUID(),
+    latestOperation: op,
+    currentContent: '---\ntype: extract\npriority: 50\n---\nHi beta\n',
+    currentNotePath: NOTE,
+  });
+  const view = buildHistoryView({
+    entries: [entry(op, 'verified'), entry(restore, 'verified')],
+    currentContent: B,
+    currentPath: NOTE,
+    errors: [{ operationId: 'bad-op', code: 'HISTORY_CORRUPT' }],
+    orphanPaths: ['Old/History.md'],
+    trust: { ok: false, code: 'CURRENT_BODY_NOT_TRUSTED' },
+    currentDirty: true,
+  });
+  assert.equal(view.pending, 1);
+  assert.equal(view.unresolved, 1);
+  assert.equal(view.errors.length, 1);
+  assert.deepEqual(view.orphanPaths, ['Old/History.md']);
+  assert.equal(view.trust.ok, false);
+  assert.equal(view.events[1].statusLabel, '待收尾');
+});

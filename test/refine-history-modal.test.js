@@ -137,3 +137,19 @@ test('restore action is disabled for dirty current body and for no-op target', a
   noop.onOpen();
   assert.equal(noop._restoreButton.disabled, true);
 });
+
+test('history diagnostics disable restore for untrusted current body and corrupt history', async () => {
+  const model = await view();
+  model.trust = { ok: false, code: 'CURRENT_BODY_NOT_TRUSTED' };
+  const modal = new RefineHistoryModal({}, { path: NOTE, model, onRestore: async () => {} });
+  modal.onOpen();
+  assert.equal(modal._restoreButton.disabled, true);
+  assert.match(modal._restoreHint.textContent, /可信历史/);
+
+  const corrupt = await view();
+  corrupt.errors = [{ operationId: 'bad-op', code: 'HISTORY_CORRUPT' }];
+  const second = new RefineHistoryModal({}, { path: NOTE, model: corrupt, onRestore: async () => {} });
+  second.onOpen();
+  assert.equal(second._restoreButton.disabled, true);
+  assert.match(JSON.stringify(second.contentEl), /无法完整读取/);
+});

@@ -297,6 +297,66 @@ class RefineHistoryStore {
     return readback;
   }
 
+  async listEntriesDetailed(notePath) {
+    const files = await this.listFiles();
+    const entries = [];
+    const errors = [];
+    const orphanPaths = new Set();
+    for (const file of files) {
+      const operationId = file.slice(0, -5);
+      let operation;
+      try {
+        operation = await this.readOperation(operationId);
+      } catch (error) {
+        errors.push({ operationId, code: error.code || 'HISTORY_CORRUPT', message: error.message || 'history is corrupt' });
+        continue;
+      }
+      if (operation.note.path !== notePath) {
+        if (String(operation.note.path).split('/').pop() === String(notePath).split('/').pop()) {
+          orphanPaths.add(operation.note.path);
+        }
+        continue;
+      }
+      let state;
+      let stateError = null;
+      try {
+        state = await this.readState(operationId);
+      } catch (error) {
+        stateError = error.code || 'STATE_CORRUPT';
+        state = { operationId, status: 'conflict', updatedAt: this.now(), recovery: [], missingState: true };
+        errors.push({ operationId, code: stateError, message: error.message || 'state is corrupt' });
+      }
+      let bytes = 0;
+      const opPath = this.operationPath(operationId);
+      try {
+        const stat = typeof this.adapter.stat === 'function' ? await this.adapter.stat(opPath) : null;
+        if (stat && Number.isFinite(Number(stat.size))) bytes += Number(stat.size);
+        else bytes += utf8Bytes(JSON.stringify(operation));
+      } catch (error) {
+        bytes += utf8Bytes(JSON.stringify(operation));
+      }
+      for (const stateFile of await this.listStateFiles(operationId)) {
+        const statePath = joinPath(this.root, stateFile.name);
+        try {
+          const stat = typeof this.adapter.stat === 'function' ? await this.adapter.stat(statePath) : null;
+          if (stat && Number.isFinite(Number(stat.size))) bytes += Number(stat.size);
+          else bytes += utf8Bytes(await this.adapter.read(statePath));
+        } catch (error) {
+          bytes += utf8Bytes(JSON.stringify(state));
+        }
+      }
+      entries.push({ operation, state, bytes, stateError });
+    }
+    entries.sort((a, b) => {
+      const byCreated = String(a.operation.createdAt).localeCompare(String(b.operation.createdAt));
+      if (byCreated !== 0) return byCreated;
+      const byState = String(a.state.updatedAt).localeCompare(String(b.state.updatedAt));
+      if (byState !== 0) return byState;
+      return String(a.operation.operationId).localeCompare(String(b.operation.operationId));
+    });
+    return { entries, errors, orphanPaths: [...orphanPaths], bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0) };
+  }
+
   async listEntries(notePath) {
     const files = await this.listFiles();
     const entries = [];

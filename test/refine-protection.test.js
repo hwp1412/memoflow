@@ -56,3 +56,35 @@ test('same signature is stable and ambiguous fences are rejected', () => {
     error => error.code === 'PROTECTED_STRUCTURE_AMBIGUOUS',
   );
 });
+
+test('reference-style links and definitions are protected by exact target', () => {
+  const current = '[text][ref]\n\n[ref]: https://a.example\n';
+  assert.equal(assertProtectedStructureUnchanged(current, current.replace('normal', 'normal')), true);
+  assert.throws(
+    () => assertProtectedStructureUnchanged(current, '[text][ref]\n\n[ref]: https://b.example\n'),
+    error => error.code === 'PROTECTED_STRUCTURE_CHANGED',
+  );
+  assert.throws(
+    () => assertProtectedStructureUnchanged(current, '[other][ref]\n\n[ref]: https://a.example\n'),
+    error => error.code === 'PROTECTED_STRUCTURE_CHANGED',
+  );
+});
+
+test('autolinks and HTML href/src changes are rejected', () => {
+  assert.throws(
+    () => assertProtectedStructureUnchanged('<https://a.example>\n', '<https://b.example>\n'),
+    error => error.code === 'PROTECTED_STRUCTURE_CHANGED',
+  );
+  assert.throws(
+    () => assertProtectedStructureUnchanged('<a href="https://a.example">x</a>\n', '<a href="https://b.example">x</a>\n'),
+    error => error.code === 'PROTECTED_STRUCTURE_CHANGED',
+  );
+});
+
+test('escaped wiki/link text remains protected and unclosed wiki is ambiguous', () => {
+  assert.equal(assertProtectedStructureUnchanged('[[A\\]B]]\n', '[[A\\]B]]\n'), true);
+  assert.throws(
+    () => assertProtectedStructureUnchanged('[[unclosed\n', '[[unclosed\n'),
+    error => error.code === 'PROTECTED_STRUCTURE_AMBIGUOUS',
+  );
+});

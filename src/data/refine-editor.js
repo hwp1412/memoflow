@@ -180,14 +180,19 @@ function unclosedBlockMath(text) {
 function linkRanges(text) {
   const source = String(text || '');
   const patterns = [
-    /!?\[\[[^\]]+\]\]/g,
-    /!?\[[^\]\n]*\]\([^)\n]+\)/g,
+    /!?\[\[(?:\\.|[^\]\n])+\]\]/g,
+    /!?\[(?:\\.|[^\]\n])*\]\((?:\\.|[^)\n])+\)/g,
+    /!?\[(?:\\.|[^\]\n])*\]\[(?:\\.|[^\]\n])*\]/g,
+    /^\s*\[(?:\\.|[^\]\n])+\]:\s*\S.*$/gm,
+    /<(?:https?|mailto|ftp):[^>\s]+>/gi,
+    /\b(?:href|src)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
   ];
   const ranges = [];
   for (const pattern of patterns) {
     pattern.lastIndex = 0;
     let match;
     while ((match = pattern.exec(source))) {
+      if (match[0].length === 0) { pattern.lastIndex++; continue; }
       ranges.push({ start: match.index, end: match.index + match[0].length });
     }
   }
@@ -234,6 +239,11 @@ function structureSignature(text, settings = {}) {
   const source = String(text || '');
   if (unclosedFence(source) || unclosedBlockMath(source)) {
     throw new RefineFlowError('PROTECTED_STRUCTURE_AMBIGUOUS', '正文包含未闭合的代码块或块级公式，已安全拒绝');
+  }
+  const wikiOpens = (source.match(/(?<!\\)\[\[/g) || []).length;
+  const wikiCloses = (source.match(/(?<!\\)\]\]/g) || []).length;
+  if (wikiOpens !== wikiCloses) {
+    throw new RefineFlowError('PROTECTED_STRUCTURE_AMBIGUOUS', '正文包含未闭合的 wiki 链接/嵌入，已安全拒绝');
   }
   return JSON.stringify(protectedStructureSegments(source, settings).map(segment => segment.text));
 }

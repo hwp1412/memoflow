@@ -77,10 +77,25 @@ class RefineHistoryModal extends Modal {
       return;
     }
 
-    if (this.model?.unresolved) {
+    if (this.model?.errors?.length) {
+      const count = this.model.errors.length;
+      const names = this.model.errors.slice(0, 3).map(error => error.operationId?.slice(0, 8) || error.code).join('、');
       contentEl.createDiv({
         cls: 'mf-refine-history-alert',
-        text: `有 ${this.model.unresolved} 条历史未完成（prepared/applied/failed/conflict）。仍可只读查看已核验内容；本版本不提供恢复或自动修复。`,
+        text: `有 ${count} 条历史文件无法完整读取（${names}${count > 3 ? ' 等' : ''}）。有效条目仍可只读查看；恢复和自动修复已禁用。请先备份 Vault，不要手工改写或删除历史文件，待确认损坏范围后再处理。`,
+      });
+    }
+    if (this.model?.orphanPaths?.length) {
+      contentEl.createDiv({
+        cls: 'mf-refine-history-alert',
+        text: `检测到 ${this.model.orphanPaths.length} 个同名的旧路径历史。不会自动关联；如笔记曾重命名/移动，请先备份并确认路径，不要自动复制或删除旧历史。`,
+      });
+    }
+    if (this.model?.unresolved) {
+      const pending = Number(this.model.pending) || 0;
+      contentEl.createDiv({
+        cls: 'mf-refine-history-alert',
+        text: `有 ${this.model.unresolved} 条历史未完成${pending ? `（其中 ${pending} 条恢复待收尾）` : ''}。仍可只读查看已核验内容；本版本不提供自动修复或状态写入。请先备份 Vault，保留诊断信息，不要手工伪造 state。`,
       });
     }
     if (this.model?.softLimitExceeded) {
@@ -122,10 +137,10 @@ class RefineHistoryModal extends Modal {
       const rowCopy = row.createDiv({ cls: 'mf-refine-history-row-copy' });
       const rowTitle = rowCopy.createDiv({ cls: 'mf-refine-history-row-title' });
       rowTitle.createDiv({ cls: 'mf-refine-history-row-label', text: event.type });
-      const pill = rowTitle.createSpan({ cls: `mf-history-pill is-${statusTone(event.status)}`, text: statusText(event.status) });
+      const pill = rowTitle.createSpan({ cls: `mf-history-pill is-${statusTone(event.pending ? 'prepared' : event.status)}`, text: event.pending ? '待收尾' : statusText(event.status) });
       rowCopy.createDiv({
         cls: 'mf-refine-history-row-meta',
-        text: `${formatTime(event.createdAt)} · ${event.before.text.length}→${event.after.text.length} 字`,
+        text: `${formatTime(event.createdAt)} · ${event.before.text.length}→${event.after.text.length} 字 · ${String(event.operationId).slice(0, 8)}`,
       });
       row.addEventListener('click', () => {
         this.baseId = this.model.current.id;
@@ -239,7 +254,7 @@ class RefineHistoryModal extends Modal {
   }
 
   _restoreTarget() {
-    if (!this.onRestore || this.error || !this.model) return null;
+    if (!this.onRestore || this.error || !this.model || this.model.errors?.length) return null;
     const target = this._snapshot(this.targetId);
     if (!target || !target.operationId || target.id === 'current') return null;
     const event = this.model.events.find(item => item.operationId === target.operationId);
@@ -259,15 +274,19 @@ class RefineHistoryModal extends Modal {
     const info = this._restoreTarget();
     let reason = '';
     if (!this.onRestore) reason = '历史恢复不可用';
+    else if (this.model?.errors?.length) reason = '历史文件损坏，恢复已禁用';
     else if (this.model?.unresolved) reason = '存在未完成历史，暂不能恢复';
     else if (this.model?.current?.dirty) reason = 'Editor 有未保存修改，请先保存';
+    else if (this.model?.trust && this.model.trust.ok === false) reason = `当前正文不在可信历史链上（${this.model.trust.code}）`;
     else if (!info) {
       const target = this._snapshot(this.targetId);
       if (!target || !target.operationId || target.id === 'current') reason = '当前正文不是可恢复的历史快照';
       else if (target.text === this.model?.current?.text) reason = '当前正文与目标快照相同';
       else reason = '该历史状态不可恢复';
     }
-    this._restoreButton.disabled = !info;
+    const blocked = Boolean(this.model?.errors?.length || this.model?.unresolved
+      || this.model?.current?.dirty || (this.model?.trust && this.model.trust.ok === false));
+    this._restoreButton.disabled = !info || blocked;
     if (reason) this._restoreButton.setAttribute('title', reason);
     else this._restoreButton.removeAttribute?.('title');
     if (this._restoreHint) this._restoreHint.setText(reason);
