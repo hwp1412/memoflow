@@ -32,6 +32,9 @@ function buildHistoryView({
   currentContent,
   currentPath = null,
   currentDirty = false,
+  errors = [],
+  orphanPaths = [],
+  trust = null,
 } = {}) {
   requireCurrentExtractType(currentContent);
   const split = splitContent(currentContent);
@@ -48,18 +51,23 @@ function buildHistoryView({
   const snapshots = [current];
   let bytes = 0;
   let unresolved = 0;
+  let pending = 0;
   entries.forEach((entry, index) => {
     const operation = entry.operation;
     const status = entry.state?.status || 'conflict';
     const before = snapshotBase(index + 1, operation, 'before');
     const after = snapshotBase(index + 1, operation, 'after');
     const type = eventLabel(operation);
+    const pendingRestore = Boolean(operation.restoreOf && status === 'verified');
+    if (pendingRestore) pending++;
     events.push({
       operationId: operation.operationId,
       index: index + 1,
       type,
       typeCode: operation.restoreOf ? 'restore' : 'refine',
       status,
+      pending: pendingRestore,
+      statusLabel: pendingRestore ? '待收尾' : status,
       createdAt: operation.createdAt,
       before,
       after,
@@ -68,9 +76,8 @@ function buildHistoryView({
       replacementText: operation.selection?.replacementText || '',
     });
     snapshots.push(before, after);
-    bytes += Number(operation.before?.bodyBytes) || 0;
-    bytes += Number(operation.after?.bodyBytes) || 0;
-    if (isUnresolvedStatus(status) || entry.state?.missingState) unresolved++;
+    bytes += Number(entry.bytes) || (Number(operation.before?.bodyBytes) || 0) + (Number(operation.after?.bodyBytes) || 0);
+    if (isUnresolvedStatus(status) || entry.state?.missingState || pendingRestore) unresolved++;
   });
   return {
     current,
@@ -80,6 +87,10 @@ function buildHistoryView({
     historyBytes: bytes,
     softLimitExceeded: events.length > SOFT_OPERATION_LIMIT,
     unresolved,
+    pending,
+    errors: Array.isArray(errors) ? errors : [],
+    orphanPaths: Array.isArray(orphanPaths) ? orphanPaths : [],
+    trust,
   };
 }
 

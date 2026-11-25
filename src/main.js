@@ -18,6 +18,7 @@ const { RefinePreviewModal } = require('./views/refine-modal.js');
 const { RefineHistoryModal, formatTime } = require('./views/refine-history-modal.js');
 const { RefineRestoreModal } = require('./views/refine-restore-modal.js');
 const { buildHistoryView } = require('./data/refine-history-read.js');
+const { assertCurrentTrustedState } = require('./data/refine-history.js');
 const { RefineHistoryStore } = require('./data/refine-store.js');
 const { RefineEditorController } = require('./data/refine-editor.js');
 const { ConfirmActionModal } = require('./views/confirm-modal.js');
@@ -1210,12 +1211,27 @@ class MemoFlowPlugin extends BasePlugin {
       let model = null;
       let error = null;
       try {
-        const entries = await this._getRefineStore().listEntries(file.path);
+        const detailed = await this._getRefineStore().listEntriesDetailed(file.path);
+        let trust = null;
+        try {
+          await assertCurrentTrustedState({
+            entries: detailed.entries,
+            notePath: file.path,
+            currentContent,
+            editorContent: view?.editor ? currentContent : null,
+          });
+          trust = { ok: true };
+        } catch (trustError) {
+          trust = { ok: false, code: trustError.code || 'UNTRUSTED', message: trustError.message || '当前正文不在可信历史链上' };
+        }
         model = buildHistoryView({
-          entries,
+          entries: detailed.entries,
           currentContent,
           currentPath: file.path,
           currentDirty,
+          errors: detailed.errors,
+          orphanPaths: detailed.orphanPaths,
+          trust,
         });
       } catch (readError) {
         error = readError;
