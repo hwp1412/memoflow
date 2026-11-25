@@ -30,6 +30,10 @@ const migrationStorage = require('./migration-storage.js');
 const migrationFrontmatter = require('./migration-frontmatter.js');
 const migrationBackup = require('./migration-backup.js');
 const migrationExecute = require('./migration-execute.js');
+const unifiedStoreContract = require('./unified-store-contract.js');
+const persistentEventLedger = require('./persistent-event-ledger.js');
+const unifiedWriter = require('./unified-writer.js');
+const unifiedMercyWriter = require('./unified-mercy-writer.js');
 
 module.exports = {
   ...errors,
@@ -57,6 +61,10 @@ module.exports = {
   ...migrationFrontmatter,
   ...migrationBackup,
   ...migrationExecute,
+  ...unifiedStoreContract,
+  ...persistentEventLedger,
+  ...unifiedWriter,
+  ...unifiedMercyWriter,
   // Namespaced access for callers that prefer explicit module grouping.
   schema,
   dates,
@@ -81,4 +89,8 @@ module.exports = {
   migrationFrontmatter,
   migrationBackup,
   migrationExecute,
+  unifiedStoreContract,
+  persistentEventLedger,
+  unifiedWriter,
+  unifiedMercyWriter,
 };
