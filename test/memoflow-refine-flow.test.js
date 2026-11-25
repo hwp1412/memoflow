@@ -55,6 +55,7 @@ class FakeEditor {
     this.autoSave = null;
   }
   getValue() { return this.text; }
+  setValue(value) { this.text = String(value); this.from = { line: 0, ch: 0 }; this.to = { ...this.from }; this.autoSave?.(); }
   getSelection() {
     const a = this.posToOffset(this.from);
     const b = this.posToOffset(this.to);
@@ -122,6 +123,12 @@ function setup(t, {
         if (!app.disk.has(file.path)) throw new Error('missing note');
         return app.disk.get(file.path);
       },
+      async process(file, fn) {
+        const current = app.disk.get(file.path);
+        const next = await fn(current);
+        app.disk.set(file.path, next);
+        return next;
+      },
     },
   };
   const file = { path: NOTE_PATH, extension: 'md', basename: 'Refine' };
@@ -180,7 +187,7 @@ test('normal refine writes history first, replaces only the body, saves and veri
   assert.ok(result);
   assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi world\n');
   assert.equal(app.disk.get(NOTE_PATH), editor.text);
-  assert.equal(view.saves, 1);
+  assert.equal(view.saves, 0);
   assert.equal((await files(adapter)).length, 1);
   assert.equal((await store.latestVerified(NOTE_PATH)).state.status, 'verified');
   assert.match(app.notices.at(-1).message, /完成/);
@@ -269,21 +276,18 @@ test('history write failure leaves editor and disk untouched', async (t) => {
   assert.match(app.notices.at(-1).message, /历史已保留|操作/);
 });
 
-test('save failure leaves applied history and does not claim verified', async (t) => {
-  const { app, adapter, editor, view, store, controller } = setup(t);
-  view.saveError = new Error('disk full');
+test('process failure leaves original body and conflict history', async (t) => {
+  const { app, editor, store, controller } = setup(t);
+  app.vault.process = async () => { throw new Error('process unavailable'); };
   assert.equal(await controller.refineActive(), null);
-  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi world\n');
+  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHello world\n');
   assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nHello world\n');
-  assert.equal((await files(adapter)).length, 1);
-  const entry = (await store.listEntries(NOTE_PATH))[0];
-  assert.equal(entry.state.status, 'applied');
-  await assert.rejects(() => store.latestVerified(NOTE_PATH), error => error.code === 'UNRESOLVED_HISTORY');
-  assert.match(app.notices.at(-1).message, /历史已保留/);
-});
+  assert.equal((await store.listEntries(NOTE_PATH))[0].state.status, 'conflict');
+  assert.doesNotMatch(app.notices.at(-1).message, /已完成/);
+})
 
-test('status applied failure leaves prepared history and does not save body', async (t) => {
-  const { app, adapter, editor, view, store, controller } = setup(t);
+test('applied status failure leaves committed body and conflict history', async (t) => {
+  const { app, editor, store, controller } = setup(t);
   const original = store.setStatus.bind(store);
   store.setStatus = async (id, status, options) => {
     if (status === 'applied') throw new Error('status write failed');
@@ -291,34 +295,34 @@ test('status applied failure leaves prepared history and does not save body', as
   };
   assert.equal(await controller.refineActive(), null);
   assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi world\n');
-  assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nHello world\n');
-  const entry = (await store.listEntries(NOTE_PATH))[0];
-  assert.equal(entry.state.status, 'prepared');
-  assert.equal(view.saves, 0);
-  assert.match(app.notices.at(-1).message, /历史已保留/);
-});
+  assert.equal(app.disk.get(NOTE_PATH), editor.text);
+  assert.equal((await store.listEntries(NOTE_PATH))[0].state.status, 'conflict');
+  assert.doesNotMatch(app.notices.at(-1).message, /已完成/);
+})
 
-test('markVerified failure leaves applied history and keeps disk content', async (t) => {
-  const { app, adapter, editor, store, controller } = setup(t);
+test('markVerified failure leaves conflict and does not claim success', async (t) => {
+  const { app, editor, store, controller } = setup(t);
   store.markVerified = async () => { throw new Error('verify unavailable'); };
   assert.equal(await controller.refineActive(), null);
   assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi world\n');
   assert.equal(app.disk.get(NOTE_PATH), editor.text);
-  const entry = (await store.listEntries(NOTE_PATH))[0];
-  assert.equal(entry.state.status, 'applied');
-  assert.equal((await files(adapter)).length, 1);
-  assert.match(app.notices.at(-1).message, /历史已保留/);
-});
+  assert.equal((await store.listEntries(NOTE_PATH))[0].state.status, 'conflict');
+  assert.doesNotMatch(app.notices.at(-1).message, /已完成/);
+})
 
-test('saved disk content mismatch marks conflict and never verifies', async (t) => {
-  const { app, editor, view, store, controller } = setup(t);
-  view.diskAfterSave = '---\ntype: extract\npriority: 50\n---\nWrong\n';
+test('process disk mismatch marks conflict and never verifies', async (t) => {
+  const { app, editor, store, controller } = setup(t);
+  app.vault.process = async (file, fn) => {
+    const current = app.disk.get(file.path);
+    await fn(current);
+    app.disk.set(file.path, '---\ntype: extract\npriority: 50\n---\nWrong\n');
+  };
   assert.equal(await controller.refineActive(), null);
-  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi world\n');
+  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHello world\n');
   assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nWrong\n');
-  const entry = (await store.listEntries(NOTE_PATH))[0];
-  assert.equal(entry.state.status, 'conflict');
-});
+  assert.equal((await store.listEntries(NOTE_PATH))[0].state.status, 'conflict');
+  assert.doesNotMatch(app.notices.at(-1).message, /已完成/);
+})
 
 test('protected SR/card/readpoint/code/table selections and unsafe replacements are rejected', async (t) => {
   const cases = [
@@ -353,7 +357,7 @@ test('CRLF and Unicode selection/refine preserve exact bytes around the body edi
   assert.ok(result);
   assert.equal(editor.text, '---\r\ntype: extract\r\n---\r\nHi 😀 world\r\n');
   assert.equal(app.disk.get(NOTE_PATH), editor.text);
-  assert.equal(view.saves, 1);
+  assert.equal(view.saves, 0);
 });
 
 test('autosave before explicit save still validates the exact full file', async (t) => {
@@ -362,7 +366,7 @@ test('autosave before explicit save still validates the exact full file', async 
   const result = await controller.refineActive();
   assert.ok(result);
   assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nHi world\n');
-  assert.equal(view.saves, 1);
+  assert.equal(view.saves, 0);
 });
 
 test('disk changes during preview are rejected before history', async (t) => {
@@ -385,7 +389,7 @@ test('restore latest refinement preserves current Frontmatter and becomes restor
   assert.ok(restore);
   assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHello world\n');
   assert.equal(app.disk.get(NOTE_PATH), editor.text);
-  assert.equal(view.saves, 2);
+  assert.equal(view.saves, 0);
   const entries = await store.listEntries(NOTE_PATH);
   assert.equal(entries.at(-1).state.status, 'restored');
   await assert.rejects(() => store.latestRestorable(NOTE_PATH), error => error.code === 'ALREADY_RESTORED');
@@ -401,7 +405,7 @@ test('restore preserves a Frontmatter change that happened after refinement', as
   assert.ok(result);
   assert.equal(editor.text, '---\ntype: extract\npriority: 99\n---\nHello world\n');
   assert.equal(app.disk.get(NOTE_PATH), editor.text);
-  assert.equal(view.saves, 2);
+  assert.equal(view.saves, 0);
 });
 
 test('restore refuses a body changed after refinement', async (t) => {
@@ -428,16 +432,18 @@ test('second restore is refused and does not rewrite the body', async (t) => {
   assert.match(app.notices.at(-1).message, /already been restored|已恢复/);
 });
 
-test('no vault.process or Frontmatter writer is used by refine/restore', async (t) => {
-  const { app, editor, view, controller } = setup(t);
-  app.vault.process = async () => { throw new Error('vault.process must not be used'); };
+test('conditional process is used and Frontmatter writer is not', async (t) => {
+  const { app, adapter, editor, controller } = setup(t);
+  let calls = 0;
+  const original = app.vault.process.bind(app.vault);
+  app.vault.process = async (file, fn) => { calls++; return original(file, fn); };
   app.fileManager = { processFrontMatter: async () => { throw new Error('processFrontMatter must not be used'); } };
   await controller.refineActive();
   await controller.restoreActive();
+  assert.equal(calls, 2);
   assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nHello world\n');
-  assert.equal(view.saves, 2);
-});
-
+  assert.equal([...adapter.files.keys()].filter(path => path.includes('.json')).length > 0, true);
+})
 
 test('invalid configured inline Card regex safely rejects refinement', async (t) => {
   const { app, adapter, editor, controller } = setup(t, {
@@ -464,24 +470,19 @@ test('no-outer-pipe Markdown table selection is rejected, including an interior 
   assert.match(app.notices.at(-1).message, /表格/);
 });
 
-test('autosave plus applied-status failure reports actual editor/disk state', async (t) => {
-  const { app, adapter, editor, store, controller } = setup(t);
-  editor.autoSave = () => { app.disk.set(NOTE_PATH, editor.text); };
+test('process plus applied-status failure reports committed editor/disk state', async (t) => {
+  const { app, editor, store, controller } = setup(t);
   const original = store.setStatus.bind(store);
   store.setStatus = async (id, status, options) => {
-    if (status === 'applied') throw new Error('status write failed after autosave');
+    if (status === 'applied') throw new Error('status write failed');
     return original(id, status, options);
   };
   assert.equal(await controller.refineActive(), null);
   assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHi world\n');
   assert.equal(app.disk.get(NOTE_PATH), editor.text);
-  assert.equal((await store.listEntries(NOTE_PATH))[0].state.status, 'prepared');
-  const message = app.notices.at(-1).message;
-  assert.match(message, /历史状态=prepared/);
-  assert.match(message, /Editor=matches/);
-  assert.match(message, /磁盘=matches/);
-  assert.doesNotMatch(message, /正文未保存/);
-});
+  assert.equal((await store.listEntries(NOTE_PATH))[0].state.status, 'conflict');
+  assert.doesNotMatch(app.notices.at(-1).message, /已完成/);
+})
 
 test('history snapshot write failure with state initialization failure is diagnostic, not a no-op claim', async (t) => {
   const { app, adapter, editor, controller } = setup(t);
@@ -641,4 +642,34 @@ test('legacy restore rejects current file changes after prepared', async (t) => 
   assert.match(editor.text, /external-after-prepared$/);
   assert.equal(app.disk.get(NOTE_PATH), editor.text);
   assert.equal((await store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+});
+
+test('process callback detects D1 after preflight and leaves Editor free of target body', async (t) => {
+  const { app, editor, store, controller } = setup(t);
+  const D1 = '---\ntype: extract\npriority: 50\n---\nexternal-d1\n';
+  const original = app.vault.process.bind(app.vault);
+  app.vault.process = async (file, fn) => {
+    app.disk.set(file.path, D1);
+    return original(file, fn);
+  };
+  const result = await controller.refineActive();
+  assert.equal(result, null);
+  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHello world\n');
+  assert.equal(app.disk.get(NOTE_PATH), D1);
+  assert.equal((await store.listEntries(NOTE_PATH))[0].state.status, 'conflict');
+  // Simulate a later Editor autosave: there is no target buffer to write.
+  await editor.autoSave?.();
+  assert.equal(app.disk.get(NOTE_PATH), D1);
+  assert.doesNotMatch(app.notices.at(-1).message, /已完成/);
+});
+
+test('process success followed by Editor sync failure is a diagnostic conflict', async (t) => {
+  const { app, editor, store, controller } = setup(t);
+  editor.setValue = () => { throw new Error('editor sync failed'); };
+  const result = await controller.refineActive();
+  assert.equal(result, null);
+  assert.equal(editor.text, '---\ntype: extract\npriority: 50\n---\nHello world\n');
+  assert.equal(app.disk.get(NOTE_PATH), '---\ntype: extract\npriority: 50\n---\nHi world\n');
+  assert.equal((await store.listEntries(NOTE_PATH))[0].state.status, 'conflict');
+  assert.doesNotMatch(app.notices.at(-1).message, /已完成/);
 });
