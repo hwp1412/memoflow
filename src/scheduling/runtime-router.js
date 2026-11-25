@@ -12,6 +12,31 @@ const { evaluateRuntimeMode } = require('./runtime-mode-guard.js');
 const { mapReadingAction } = require('./reading-integration.js');
 const { requestFingerprint } = require('./persistent-event-ledger.js');
 
+// Only an object explicitly registered by integration code can prove that a
+// failure happened before any write. A plain error, an error name or a caller
+// boolean cannot provide that proof.
+const PRE_WRITE_FAILURES = new WeakSet();
+
+function markPreWriteFailure(error) {
+  if (!error || typeof error !== 'object') return error;
+  PRE_WRITE_FAILURES.add(error);
+  return error;
+}
+
+function isProvenPreWriteFailure(error) {
+  return Boolean(error && typeof error === 'object' && PRE_WRITE_FAILURES.has(error));
+}
+
+// An exception after a write may have happened leaves the outcome unknown. A
+// resolved failed result is a trusted statement and stays failed.
+function failureOutcome(route, error, fallbackCode) {
+  const reason = codeOf(error, fallbackCode);
+  if (isProvenPreWriteFailure(error)) {
+    return { route, status: 'failed', reason, writesPerformed: false, writeOutcome: 'none', requiresManualRecovery: false };
+  }
+  return { route, status: 'uncertain', reason, writesPerformed: null, writeOutcome: 'uncertain', requiresManualRecovery: true };
+}
+
 function codeOf(error, fallback) {
   return error && error.code ? error.code : fallback;
 }
@@ -72,7 +97,9 @@ function createReadingSchedulerRouter({ config, conditions = {}, legacyScheduler
           requiresManualRecovery: needsRecovery(result),
         };
       } catch (error) {
-        return { route: 'unified', status: 'failed', reason: codeOf(error, 'E_UNIFIED_FAILED'), writesPerformed: false, writeOutcome: 'none' };
+        // A unified write may have happened before the exception; PR-09's ledger
+        // remains responsible for recovery, never a legacy fallback.
+        return failureOutcome('unified', error, 'E_UNIFIED_FAILED');
       }
     }
 
@@ -83,7 +110,11 @@ function createReadingSchedulerRouter({ config, conditions = {}, legacyScheduler
     try {
       legacyResult = await legacyScheduler(action);
     } catch (error) {
-      return { route: evaluation.mode, status: 'failed', reason: codeOf(error, 'E_LEGACY_FAILED'), writesPerformed: false, writeOutcome: 'none' };
+      const outcome = failureOutcome(evaluation.mode === 'shadow' ? 'shadow' : 'legacy', error, 'E_LEGACY_FAILED');
+      if (evaluation.mode === 'shadow') {
+        outcome.shadow = { status: 'not-comparable', reason: 'LEGACY_OUTCOME_UNCERTAIN' };
+      }
+      return outcome;
     }
 
     const base = {
@@ -149,4 +180,4 @@ function createReadingSchedulerRouter({ config, conditions = {}, legacyScheduler
   return { evaluation, route };
 }
 
-module.exports = { createReadingSchedulerRouter };
+module.exports = { createReadingSchedulerRouter, markPreWriteFailure };

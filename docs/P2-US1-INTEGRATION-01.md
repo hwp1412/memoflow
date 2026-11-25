@@ -55,6 +55,8 @@
 
 `route()` 为 async：支持同步返回值与 Promise；同 `eventId` 的并发调用只有在**请求指纹一致**时才共享一次 in-flight 执行（第二次标记 duplicate）；topicId/操作类型/payload/revision/today/calendarDate/dateFormat 任一不同 → `E_EVENT_ID_CONFLICT`，冲突请求不触发任何写入，也不收到首个请求的结果。
 
+**异常后的写入状态**：Legacy/Unified 抛出或 reject 时，默认返回 `status:'uncertain'`、`writesPerformed:null`、`writeOutcome:'uncertain'`、`requiresManualRecovery:true`，并保留原始错误码。只有通过 `markPreWriteFailure()` 由集成代码显式登记（不可伪造）的错误才可报告 `failed / writesPerformed:false / none`；普通错误名或调用方布尔字段不被信任。已 resolve 的 `failed` 结果仍为失败。
+
 Shadow 只接受 `status === 'applied'` 的 Legacy 观察；failed/rejected/conflict/uncertain/no-op/duplicate 一律 `not-comparable`，Comparator 不执行。Legacy 写入后状态不明（`uncertain`）时，Router 传播 `writeOutcome:'uncertain'` 与 `requiresManualRecovery`，`writesPerformed` 仅在确证 true 时为 true，否则为 null，绝不武断报 false。
 
 ## 5. Fake Obsidian StorageAdapter 与并发限制
@@ -134,7 +136,7 @@ node --test test/mf-us-1-runtime-mode.test.js test/mf-us-1-runtime-router.test.j
   test/mf-us-1-obsidian-adapter.test.js test/mf-us-1-reading-integration.test.js \
   test/mf-us-1-explain.test.js test/mf-us-1-dashboard.test.js \
   test/mf-us-1-integration-properties.test.js
-  tests 72  pass 72  fail 0
+  tests 78  pass 78  fail 0
 ```
 
 ## 14. 交付矩阵

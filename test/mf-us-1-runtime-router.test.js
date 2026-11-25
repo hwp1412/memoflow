@@ -5,7 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createReadingSchedulerRouter, issueSyntheticRuntimeAuthorization } = require('../src/scheduling/index.js');
+const { createReadingSchedulerRouter, issueSyntheticRuntimeAuthorization, markPreWriteFailure } = require('../src/scheduling/index.js');
 
 function readyConditions() {
   return {
@@ -43,9 +43,11 @@ test('an async legacy failure is not reported as a success', async () => {
   const legacy = async () => { throw Object.assign(new Error('nope'), { code: 'E_LEGACY_REJECTED' }); };
   const router = createReadingSchedulerRouter({ config: undefined, legacyScheduler: legacy });
   const result = await router.route({ action: 'grade.advanced' });
-  assert.equal(result.status, 'failed');
+  assert.equal(result.status, 'uncertain');
   assert.equal(result.reason, 'E_LEGACY_REJECTED');
-  assert.equal(result.writesPerformed, false);
+  assert.equal(result.writesPerformed, null);
+  assert.equal(result.writeOutcome, 'uncertain');
+  assert.equal(result.requiresManualRecovery, true);
 });
 
 test('async shadow waits for the legacy result and passes it to the comparator', async () => {
@@ -105,8 +107,9 @@ test('async unified failure still leaves legacy at zero calls', async () => {
     unifiedExecutor: async () => { throw Object.assign(new Error('x'), { code: 'E_UNIFIED_REJECTED' }); },
   });
   const result = await router.route({ action: 'grade.advanced' });
-  assert.equal(result.status, 'failed');
-  assert.equal(result.writesPerformed, false);
+  assert.equal(result.status, 'uncertain');
+  assert.equal(result.writesPerformed, null);
+  assert.equal(result.writeOutcome, 'uncertain');
   assert.equal(legacy.calls.length, 0);
 });
 
@@ -304,8 +307,10 @@ test('a rejected legacy promise performs no shadow comparison', async () => {
     shadowComparator: () => { compared += 1; },
   });
   const result = await router.route(action(E1));
-  assert.equal(result.status, 'failed');
-  assert.equal(result.writesPerformed, false);
+  assert.equal(result.status, 'uncertain');
+  assert.equal(result.writesPerformed, null);
+  assert.equal(result.shadow.status, 'not-comparable');
+  assert.equal(result.shadow.reason, 'LEGACY_OUTCOME_UNCERTAIN');
   assert.equal(compared, 0);
 });
 
@@ -349,4 +354,115 @@ test('a shadow comparator rejection leaves legacy at one call', async () => {
   assert.equal(calls, 1);
   assert.equal(result.shadowError, 'E_SHADOW_FAILED');
   assert.equal(result.shadow.status, 'not-comparable');
+});
+
+// ---- post-exception write state is conservative (final review) -----------
+
+test('a legacy side effect followed by a rejection is uncertain, not "no write"', async () => {
+  let sideEffects = 0;
+  const router = createReadingSchedulerRouter({
+    config: undefined,
+    legacyScheduler: async () => {
+      sideEffects += 1; // write happened, then the confirmation failed
+      throw Object.assign(new Error('confirmation failed'), { code: 'E_CONFIRM_FAILED' });
+    },
+  });
+  const result = await router.route(action(E1));
+  assert.equal(sideEffects, 1);
+  assert.equal(result.status, 'uncertain');
+  assert.equal(result.writesPerformed, null);
+  assert.equal(result.writeOutcome, 'uncertain');
+  assert.equal(result.requiresManualRecovery, true);
+  assert.equal(result.reason, 'E_CONFIRM_FAILED');
+});
+
+test('a shadow legacy side effect followed by a rejection never compares', async () => {
+  let sideEffects = 0;
+  let compared = 0;
+  const router = createReadingSchedulerRouter({
+    config: { mode: 'shadow' },
+    legacyScheduler: async () => {
+      sideEffects += 1;
+      throw Object.assign(new Error('confirm'), { code: 'E_CONFIRM_FAILED' });
+    },
+    shadowComparator: () => { compared += 1; },
+  });
+  const result = await router.route(action(E1));
+  assert.equal(sideEffects, 1);
+  assert.equal(compared, 0);
+  assert.equal(result.status, 'uncertain');
+  assert.equal(result.shadow.status, 'not-comparable');
+  assert.equal(result.shadow.reason, 'LEGACY_OUTCOME_UNCERTAIN');
+});
+
+test('a unified side effect followed by a rejection stays unified and uncertain', async () => {
+  let sideEffects = 0;
+  let legacyCalls = 0;
+  const router = createReadingSchedulerRouter({
+    config: { mode: 'unified' },
+    conditions: readyConditions(),
+    legacyScheduler: async () => { legacyCalls += 1; return { status: 'applied', writesPerformed: true }; },
+    unifiedExecutor: async () => {
+      sideEffects += 1;
+      throw Object.assign(new Error('confirm'), { code: 'E_UNIFIED_CONFIRM_FAILED' });
+    },
+  });
+  const result = await router.route(action(E1));
+  assert.equal(sideEffects, 1);
+  assert.equal(legacyCalls, 0);
+  assert.equal(result.route, 'unified');
+  assert.equal(result.status, 'uncertain');
+  assert.equal(result.writesPerformed, null);
+  assert.equal(result.writeOutcome, 'uncertain');
+  assert.equal(result.requiresManualRecovery, true);
+});
+
+test('a trusted pre-write failure may report a definite no-write', async () => {
+  const error = markPreWriteFailure(Object.assign(new Error('validation'), { code: 'E_PRE_WRITE_INVALID' }));
+  const router = createReadingSchedulerRouter({
+    config: undefined,
+    legacyScheduler: async () => { throw error; },
+  });
+  const result = await router.route(action(E1));
+  assert.equal(result.status, 'failed');
+  assert.equal(result.writesPerformed, false);
+  assert.equal(result.writeOutcome, 'none');
+  assert.equal(result.requiresManualRecovery, false);
+});
+
+test('a forged pre-write marker is not trusted', async () => {
+  const router = createReadingSchedulerRouter({
+    config: undefined,
+    legacyScheduler: async () => { throw { code: 'E_PRE_WRITE_INVALID', preWrite: true, noWrite: true }; },
+  });
+  const result = await router.route(action(E1));
+  assert.equal(result.status, 'uncertain');
+  assert.equal(result.writesPerformed, null);
+});
+
+test('a resolved failed result remains failed, while applied and no-op are unchanged', async () => {
+  const failed = createReadingSchedulerRouter({
+    config: undefined,
+    legacyScheduler: async () => ({ status: 'failed', writesPerformed: false }),
+  });
+  const failedResult = await failed.route(action(E1));
+  assert.equal(failedResult.status, 'failed');
+  assert.equal(failedResult.writesPerformed, false);
+  assert.equal(failedResult.writeOutcome, 'none');
+
+  const applied = createReadingSchedulerRouter({
+    config: undefined,
+    legacyScheduler: async () => ({ status: 'applied', writesPerformed: true }),
+  });
+  const appliedResult = await applied.route(action(E1));
+  assert.equal(appliedResult.status, 'applied');
+  assert.equal(appliedResult.writesPerformed, true);
+
+  const noop = createReadingSchedulerRouter({
+    config: undefined,
+    legacyScheduler: async () => ({ status: 'no-op', writesPerformed: false }),
+  });
+  const noopResult = await noop.route(action(E1));
+  assert.equal(noopResult.status, 'no-op');
+  assert.equal(noopResult.writesPerformed, false);
 });
