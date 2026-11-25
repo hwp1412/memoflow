@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-SR-01（SR Card 边界审计与 Dashboard Card 计数修复）
+> 最后更新：P2-US1-1.0-CLOSURE（合成 host runtime、账本生命周期、模式模型；生产接线仍有阻塞）
 
 ## 0. 状态定义
 
@@ -52,11 +52,11 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `TESTED` | 04 | 只读、确定性；含 batchId、类型与有效成本快照；预览按日绑定，过期需重生成 |
 | 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `TESTED` | 04/09 | T16；digest 确认 + intent 冻结 + next_review 同步投影 + 可信 undo；真实 UI 待 10 |
 | 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→10 | `explainSchedule` 已补齐；真实入口接线待批准 |
-| 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09/10B | 宿主门面热读模式 + Unified 无条件拒绝；真实启用未授权 |
+| 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `TESTED` | 07/09/10B/12 | 合成 host runtime + 模式视图；真实 Unified 永久锁定 |
 | 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `TESTED` | 06 | 六类结果 + 逐项隔离；现代/旧关系与事件字段冲突检测；writesPerformed=false |
 | 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `TESTED` | 08 | 私有存储 + 意图重算 + 计划/备份双向对应 + 引号键 add-only；真实 Vault 待 09/12 |
 | 33 | MIG-03 | 稳定 ID 初始化（确定性临时 ID → UUID） | A6.2, A10.2 | `TESTED` | 06/08 | 固定 UUID 批次清单 + 冲突检测 + 重试幂等；真实落盘待 09 |
-| 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `TESTED` | 09/10B | TFile + 字节保真 process 编辑 + Plugin Data 账本边界（Mock）；真实写入待 12 |
+| 34 | WRITE-01 | 单一可信写入、前后快照、失败恢复、审计日志 | A11 | `TESTED` | 09/10B/12 | 合成 runtime 账本生命周期 + E2E；真实写入/恢复接线阻塞 |
 | 35 | UI-01 | 阅读 UI / Dashboard / 命令入口接入与旧算法退场审计 | A1.1 | `NOT_STARTED` | 10 | 必须审计全部 Source/Extract 入口 |
 | 36 | SR-01 | SR 边界（Card 不进入 MF-US-1，不改 SR 历史） | A1.2, A13 T18 | `NOT_STARTED` | 11 | 核心层已拒绝 `type: card` |
 | 37 | TEST-01 | 规范测试 T01–T20 | A13 | `IN_PROGRESS` | 01→08 | T01–T16 PASS；T17/T20 纯层证据含 5 级链；T19 PASS（PR-07）；T18 仍缺真实验收 |

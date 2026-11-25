@@ -54,6 +54,11 @@ function createHostSchedulerService({ mode = 'legacy', getMode = null, condition
 
     const promise = (async () => {
       if (evaluation.mode === 'unified') {
+        if (descriptor.action === 'RESET_CURRENT') {
+          // Legacy reset semantics are not equivalent to any MF-US-1 event; do
+          // not silently remap it to MANUAL_SCHEDULE.
+          fail('E_RESET_CURRENT_UNDECIDED', 'resetCurrent has no accepted Unified event semantics yet');
+        }
         fail('E_UNIFIED_NOT_AUTHORIZED', 'real Unified writes are not authorized for the host runtime', {
           blockers: evaluation.blockers.map(blocker => blocker.code),
         });

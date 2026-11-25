@@ -57,6 +57,11 @@ class PluginDataLedgerStore {
     if (this.onChange) this.onChange();
   }
 
+  replace(records = {}) {
+    this.records = new Map(Object.entries(records).map(([eventId, record]) => [eventId, JSON.parse(JSON.stringify(record))]));
+    if (this.onChange) this.onChange();
+  }
+
   delete(eventId) {
     const deleted = this.records.delete(eventId);
     if (deleted && this.onChange) this.onChange();
