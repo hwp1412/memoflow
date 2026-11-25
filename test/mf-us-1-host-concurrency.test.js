@@ -343,3 +343,97 @@ test('recovery clears the runtime block for the resolved Topic', async () => {
   assert.deepEqual(runtime.view().blockedTopicIds, []);
   assert.equal(fmOf(app, file).review_count, 1);
 });
+
+// ---- E. Startup recovery vs execute --------------------------------------
+
+async function reopenRuntime(context, overrides = {}) {
+  const reopened = await openPluginDataLedger({ dataStore: context.dataStore, key: 'mfUs1Ledger' });
+  const ledger = new PersistentEventLedger(new MemoryLedgerStore(reopened.store.dump()));
+  const runtime = createAsyncHostRuntime({
+    mode: 'unified',
+    conditions: CONDITIONS,
+    authorization: issueSyntheticHostAuthorization(),
+    storage: createObsidianAsyncTopicStorage({
+      app: context.app,
+      resolveFile: createVaultTopicResolver({ app: context.app }),
+      dateFormat: FORMAT,
+    }),
+    ledger,
+    capability: issueSyntheticUnifiedCapability(),
+    dateFormat: FORMAT,
+    persist: async records => { reopened.store.replace(records); return reopened.flush(); },
+    ...overrides,
+  });
+  return { reopened, ledger, runtime };
+}
+
+// A prepared record survives in the durable ledger, but its result never did.
+async function preparedState() {
+  const context = await setup({ saveHook: count => (count === 2 ? { ok: false, code: 'E_LEDGER_SAVE_FAILED' } : null) });
+  const topicId = uuid(20);
+  const file = addTopic(context.app, 'Sources/R.md', topicId);
+  const first = await context.runtime.execute(advance(topicId, uuid(201)));
+  assert.equal(first.status, 'uncertain');
+  return { ...context, topicId, file };
+}
+
+test('a pending durable record blocks a different eventId before any recovery', async () => {
+  const context = await preparedState();
+  const { runtime } = await reopenRuntime(context);
+  const before = content(context.app, context.file);
+  const result = await runtime.execute(advance(context.topicId, uuid(202), { expectedRevision: 0 }));
+  assert.equal(result.status, 'requires-manual-recovery');
+  assert.equal(result.reason, 'E_RECOVERY_PENDING');
+  assert.equal(content(context.app, context.file), before);
+  assert.deepEqual(runtime.view().blockedTopicIds, [context.topicId]);
+});
+
+test('recover and execute for the same Topic never interleave', async () => {
+  const context = await preparedState();
+  const { runtime } = await reopenRuntime(context);
+  const originalRead = context.app.vault.read.bind(context.app.vault);
+  let armed = true;
+  let releaseRead;
+  const gate = new Promise(resolve => { releaseRead = resolve; });
+  context.app.vault.read = async file => {
+    if (armed) { armed = false; await gate; }
+    return originalRead(file);
+  };
+  const recovering = runtime.recover();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const pending = runtime.execute(advance(context.topicId, uuid(203), { expectedRevision: 0 }));
+  let settled = false;
+  pending.then(() => { settled = true; }).catch(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(settled, false, 'execute must wait for the in-flight recovery of the same Topic');
+  releaseRead();
+  const [recovery, result] = await Promise.all([recovering, pending]);
+  assert.equal(recovery.recovered.length, 1);
+  // The write had already landed, so recovery both applied it and released the
+  // Topic; the waiting event then sees the newer revision instead of writing.
+  assert.equal(recovery.recovered[0].status, 'applied');
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.reason, 'E_REVISION_MISMATCH');
+  assert.equal(fmOf(context.app, context.file).review_count, 1);
+});
+
+test('a failed recovery keeps blocking while other Topics stay usable', async () => {
+  const context = await preparedState();
+  const before = content(context.app, context.file);
+  // The topic changed outside the ledger: reconciliation cannot classify it.
+  await context.app.vault.process(context.file, () => before.replace('Keep this paragraph exactly.', 'Externally edited body.'));
+  const { runtime } = await reopenRuntime(context);
+  const recovery = await runtime.recover();
+  assert.equal(recovery.recovered.length, 1);
+  assert.equal(recovery.recovered[0].status, 'requires-manual-recovery');
+  assert.deepEqual(runtime.view().blockedTopicIds, [context.topicId]);
+
+  const blocked = await runtime.execute(advance(context.topicId, uuid(204), { expectedRevision: 0 }));
+  assert.equal(blocked.status, 'requires-manual-recovery');
+
+  const otherTopic = uuid(21);
+  const otherFile = addTopic(context.app, 'Sources/S.md', otherTopic);
+  const free = await runtime.execute(advance(otherTopic, uuid(205)));
+  assert.equal(free.status, 'applied');
+  assert.equal(fmOf(context.app, otherFile).review_count, 1);
+});

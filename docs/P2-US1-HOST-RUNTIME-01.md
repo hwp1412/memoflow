@@ -164,3 +164,63 @@ test/mf-us-1-host-concurrency.test.js   16 pass
 test/mf-us-1-host-runtime.test.js       15 pass
 test/*.test.js                        1190 pass
 ```
+
+---
+
+## 最终闭合：Recovery ↔ Execute 与 data.json 边界
+
+### A. Recovery/Execute 串行契约
+
+| 要求 | 实现 |
+|---|---|
+| 同 Topic 的 recover 与 execute 不交错 | `recover()` 的每条记录都在 `withTopicLock(record.topicId, …)` 内执行；execute 使用同一条链 |
+| 内存锁未建立也不能绕过 | 构造运行时即从持久账本读出 `prepared/uncertain/…`，按 Topic 预置 `topicLocks`（`E_LEDGER_PENDING_RECOVERY`） |
+| 启动恢复未完成禁止新写入 | `recoveryComplete=false` 时 execute 直接返回 `requires-manual-recovery / E_RECOVERY_PENDING`；若 `recover()` 正在进行则等待其结束再判定 |
+| 恢复成功解除阻断 | reconcile 为 `applied` 且结果持久化成功 → 删除该 Topic 的锁并记入 `confirmed` |
+| 仍不确定继续阻断 | `requires-manual-recovery / uncertain / retryable / 结果未持久化` → 保留锁（`unknown=true`） |
+| 不同 Topic 独立 | 恢复完成后，其他 Topic 的 execute 不受该 Topic 锁影响（有测试） |
+
+时序：`execute` 先过启动门 → 取 Topic 链 → 再取 `unresolved()` 判定 → 执行 → 按结果加/解锁。
+`recover()` 先占 `recoveryPromise`（并发调用复用同一次恢复），逐条走 Topic 链，结束后置
+`recoveryComplete=true` 并释放 `recoveryPromise`。
+
+### B. Plugin Data 持久化边界（审计结论）
+
+Unified Ledger 的保存经 `createObsidianPluginDataStore` → **串行化队列** → 合并最新
+`data.json` 快照后写入单一 key。但仓库仍存在**绕过 adapter 的直接写入**：
+
+| 位置 | 调用 |
+|---|---|
+| `main.js:2936` | `await this.saveData(this.settings)` |
+| `main.js:3029` | `this.saveData(this.settings)`（会话持久化） |
+| `main.js:3387` | `await this.saveData(this.settings)` |
+| `main.js:3598` | `this.saveData(this.settings)` |
+| `main.js:2860` | `await this.loadData()`（读取，不写） |
+
+这些路径写的是**整个 `data.json`**，不经过 adapter 队列，因此与账本保存并发时存在
+丢失更新的窗口。**结论（不夸大）**：adapter 的串行化只覆盖“经 adapter 的键”，
+**不是全插件事务保证**。
+
+因此将以下事项列为 **Unified 生产激活的硬性前置条件**（不是本 PR 的改动范围）：
+
+1. 设置、Refine History、Unified Ledger 共用同一持久化协调器（单一写入队列 + 按键合并）；
+2. 或把账本迁出 `data.json`，使用独立文件/独立同步边界；
+3. 激活前需有并发写压力测试证明任一键都不会被静默覆盖。
+
+### C. MetadataCache 扫描的完整性限制
+
+直接读取回退最多覆盖 **500 个 Markdown 文件**（`MAX_SCAN_FILES`），且按
+`vault.getMarkdownFiles()` 顺序截断。**超过该规模时不能保证找到未索引的重建/新建笔记**：
+此时返回 `E_TOPIC_NOT_FOUND`（失败关闭，不会误写）。生产准入阶段必须改为完整索引
+或等效的全库稳定 ID 唯一性校验（含重复 `mf_id` 检测），不能依赖该有界扫描。
+
+### D. 测试计数更正
+
+先前文档写 1190，为补入 “注释/引号保留”测试之前的数字。当前实际：
+
+```
+test/mf-us-1-host-concurrency.test.js   19 pass
+test/mf-us-1-host-runtime.test.js       15 pass
+test/mf-us-1-creation-host.test.js      19 pass
+test/*.test.js                        1194 pass
+```

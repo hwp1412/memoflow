@@ -41,6 +41,24 @@ function createAsyncHostRuntime({
     .filter(record => record && record.status === 'applied')
     .map(record => record.eventId));
   const topicLocks = new Map();
+  // Pending records loaded from the durable ledger block their Topic BEFORE any
+  // in-memory lock exists. Without this, a fresh process could accept a new
+  // event for a Topic whose previous event is still prepared/uncertain.
+  const startupPending = Object.values(persisted.store.dump())
+    .filter(record => record && BLOCKING_STATUSES.has(record.status));
+  for (const record of startupPending) {
+    if (!topicLocks.has(record.topicId)) {
+      topicLocks.set(record.topicId, {
+        eventId: record.eventId,
+        reason: 'E_LEDGER_PENDING_RECOVERY',
+        unknown: true,
+      });
+    }
+  }
+  // Startup recovery gate: no new unified write is accepted until recover() has
+  // attempted every pending record.
+  let recoveryComplete = startupPending.length === 0;
+  let recoveryPromise = null;
   // One execution chain per Topic. Two different events for the same Topic must
   // not interleave: the second one has to observe the first one's result (and
   // therefore usually fails on its stale expectedRevision) instead of racing it.
@@ -126,6 +144,22 @@ function createAsyncHostRuntime({
       error.code = 'E_LEDGER_PERSIST_REQUIRED';
       throw error;
     }
+    if (!recoveryComplete) {
+      if (!recoveryPromise) {
+        return {
+          status: 'requires-manual-recovery', duplicate: false, writesPerformed: false,
+          reason: 'E_RECOVERY_PENDING', blockedTopicIds: [...topicLocks.keys()],
+        };
+      }
+      // A recovery is explicitly in flight: wait for it, then re-evaluate.
+      await recoveryPromise.catch(() => {});
+      if (!recoveryComplete) {
+        return {
+          status: 'requires-manual-recovery', duplicate: false, writesPerformed: false,
+          reason: 'E_RECOVERY_PENDING', blockedTopicIds: [...topicLocks.keys()],
+        };
+      }
+    }
     return withTopicLock(request.topicId, async () => {
       // Re-checked after waiting: an earlier event for this Topic may have left
       // an unresolved intent, an uncertain write or a newer revision behind.
@@ -160,14 +194,18 @@ function createAsyncHostRuntime({
   }
 
   async function recover() {
+    if (recoveryPromise) return recoveryPromise;
+    recoveryPromise = (async () => {
     const recovered = [];
     for (const record of Object.values(persisted.store.dump())) {
       if (!record || (record.status !== 'prepared' && record.status !== 'uncertain')) continue;
-      const result = await reconcileUnifiedEventAsync(record.eventId, {
+      // Same per-Topic execution chain as execute(): recovery must not
+      // interleave with an in-flight event for the same Topic.
+      const result = await withTopicLock(record.topicId, () => reconcileUnifiedEventAsync(record.eventId, {
         storage,
         ledger: persisted,
         persistResult: () => save(),
-      });
+      }));
       recovered.push({
         eventId: record.eventId,
         status: result.status,
@@ -176,19 +214,32 @@ function createAsyncHostRuntime({
       });
       if (result.status === 'applied' && result.persisted !== false) {
         confirmed.add(record.eventId);
-        // A resolved event must not keep blocking its Topic forever.
+        // A confirmed recovery must release its Topic.
         const lock = topicLocks.get(record.topicId);
         if (lock && lock.eventId === record.eventId) topicLocks.delete(record.topicId);
       }
-      if (result.status === 'requires-manual-recovery') {
+      if (result.status === 'requires-manual-recovery' || result.status === 'uncertain' || result.persisted === false) {
         lockTopic(record.topicId, record.eventId, result.reason || 'E_MANUAL_RECOVERY', true);
       }
+      if (result.status === 'retryable' && result.persisted !== false) {
+        // Still prepared and still matching the pre-event snapshot: keep the
+        // Topic blocked until a later retry/recovery resolves it.
+        lockTopic(record.topicId, record.eventId, 'E_LEDGER_PENDING_RECOVERY', true);
+      }
     }
+    recoveryComplete = true;
     return {
       recovered,
       persisted: recovered.every(entry => entry.persisted !== false),
       blockedTopicIds: [...new Set([...blockedTopicsFromLedger(persisted), ...topicLocks.keys()])],
     };
+    })();
+    try {
+      return await recoveryPromise;
+    } finally {
+      recoveryPromise = null;
+      recoveryComplete = true;
+    }
   }
 
   function view() {
