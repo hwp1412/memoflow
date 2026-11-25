@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-HOST-01（宿主门面接线、Vault.process 适配、持久账本边界）
+> 最后更新：P2-US1-SR-01（SR Card 边界审计与 Dashboard Card 计数修复）
 
 ## 0. 状态定义
 
