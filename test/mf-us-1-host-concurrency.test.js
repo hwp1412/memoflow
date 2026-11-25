@@ -447,7 +447,8 @@ test('a throwing recovery leaves the startup gate closed until a retry succeeds'
   // out of recover() before any record could be classified.
   context.app.vault.read = async () => null;
   await assert.rejects(() => runtime.recover());
-  assert.equal(runtime.view().writeEnabled, true, 'mode is authorized, only recovery is pending');
+  assert.equal(runtime.view().recoveryPending, true);
+  assert.equal(runtime.view().writeEnabled, false, 'recovery has not completed yet');
 
   const blocked = await runtime.execute(advance(context.topicId, uuid(206), { expectedRevision: 1 }));
   assert.equal(blocked.status, 'requires-manual-recovery');
@@ -457,6 +458,8 @@ test('a throwing recovery leaves the startup gate closed until a retry succeeds'
   const retry = await runtime.recover();
   assert.equal(retry.recovered.length, 1);
   assert.equal(retry.recovered[0].status, 'applied');
+  assert.equal(runtime.view().recoveryPending, false);
+  assert.equal(runtime.view().writeEnabled, true);
 
   const resumed = await runtime.execute(advance(context.topicId, uuid(207), { expectedRevision: 1 }));
   assert.equal(resumed.status, 'applied');

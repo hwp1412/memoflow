@@ -257,7 +257,9 @@ function createAsyncHostRuntime({
       // uncertain write is blocked even when the in-memory record already says
       // applied because its confirmation failed.
       blockedTopicIds: [...new Set([...blockedTopicsFromLedger(persisted), ...topicLocks.keys()])],
-      writeEnabled: evaluation.mode === 'unified' && evaluation.allowed,
+      // Writes are only enabled once startup recovery has actually completed.
+      writeEnabled: evaluation.mode === 'unified' && evaluation.allowed && recoveryComplete,
+      recoveryPending: !recoveryComplete,
       transport: 'obsidian-async',
     };
   }

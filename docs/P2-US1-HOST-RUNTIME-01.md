@@ -186,6 +186,7 @@ test/*.test.js                        1190 pass
 **异常路径**：只有遍历完整结束才置 `recoveryComplete=true`；`finally` 仅释放
 `recoveryPromise`。若 `reconcileUnifiedEventAsync()` 抛错（例如存储读取返回非法内容），
 启动门保持关闭，`execute` 继续返回 `E_RECOVERY_PENDING`，可显式重试 `recover()`。
+`view()` 同时暴露 `recoveryPending`，并在恢复完成前把 `writeEnabled` 置为 false。
 
 ### B. Plugin Data 持久化边界（审计结论）
 
