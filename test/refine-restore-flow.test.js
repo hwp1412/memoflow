@@ -49,6 +49,7 @@ class FakeEditor {
     this.to = { line: 0, ch: 0 };
   }
   getValue() { return this.text; }
+  setValue(value) { this.text = String(value); this.from = { line: 0, ch: 0 }; this.to = { ...this.from }; this.autoSave?.(); }
   getSelection() {
     const a = this.posToOffset(this.from);
     const b = this.posToOffset(this.to);
@@ -102,7 +103,15 @@ function setup(t, text = INITIAL) {
       getLeavesOfType: () => app.leaves,
       getActiveFile: () => file,
     },
-    vault: { async read(target) { return app.disk.get(target.path); } },
+    vault: {
+      async read(target) { return app.disk.get(target.path); },
+      async process(file, fn) {
+        const current = app.disk.get(file.path);
+        const next = await fn(current);
+        app.disk.set(file.path, next);
+        return next;
+      },
+    },
   };
   const view = new FakeView(app, file, editor);
   app.leaves.push({ view });
@@ -174,7 +183,7 @@ test('restore a v2 before snapshot writes history, replaces body, preserves fron
   assert.equal(entries.length, 3);
   assert.equal(entries[2].state.status, 'restored');
   assert.equal(entries[2].operation.restoreTarget.side, 'before');
-  assert.equal(view.saves, 3);
+  assert.equal(view.saves, 0);
   assert.match(app.notices.at(-1).message, /已恢复/);
 });
 
@@ -277,36 +286,36 @@ test('prepared state write failure leaves body untouched and history diagnosable
   assert.equal(app.disk.get(NOTE_PATH), body);
 });
 
-test('editor replace failure leaves disk unchanged and records prepared history', async (t) => {
+test('process failure leaves restore body unchanged and conflict history', async (t) => {
   const { app, editor, prompts, controller } = setup(t);
   const { op1 } = await twoRefines(editor, prompts, controller);
   const body = editor.text;
-  editor.replaceRange = () => { throw new Error('replace failed'); };
+  app.vault.process = async () => { throw new Error('process failed'); };
   const result = await controller.restoreVersion({ targetOperationId: op1.operationId, targetSide: 'before' });
   assert.equal(result, null);
   assert.equal(editor.text, body);
   assert.equal(app.disk.get(NOTE_PATH), body);
-});
+  assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+})
 
-test('save failure never reports success and preserves the applied history', async (t) => {
-  const { app, view, editor, prompts, controller } = setup(t);
+test('process failure never reports success and preserves conflict history', async (t) => {
+  const { app, editor, prompts, controller } = setup(t);
   const { op1 } = await twoRefines(editor, prompts, controller);
   const disk = app.disk.get(NOTE_PATH);
-  view.saveError = new Error('save failed');
+  app.vault.process = async () => { throw new Error('process failed'); };
   const result = await controller.restoreVersion({ targetOperationId: op1.operationId, targetSide: 'before' });
   assert.equal(result, null);
   assert.equal(app.disk.get(NOTE_PATH), disk);
-  const entries = await controller.store.listEntries(NOTE_PATH);
-  assert.equal(entries.at(-1).state.status, 'applied');
-});
+  assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+})
 
-test('markVerified and markRestored failures are distinguishable partial states', async (t) => {
+test('markVerified and markRestored failures remain diagnostic conflicts', async (t) => {
   const first = setup(t);
   const a = await twoRefines(first.editor, first.prompts, first.controller);
   first.controller.store.markVerified = async () => { throw new Error('verify failed'); };
   const resultA = await first.controller.restoreVersion({ targetOperationId: a.op1.operationId, targetSide: 'before' });
   assert.equal(resultA, null);
-  assert.equal((await first.controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'applied');
+  assert.equal((await first.controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
 
   const second = setup(t);
   const b = await twoRefines(second.editor, second.prompts, second.controller);
@@ -314,7 +323,7 @@ test('markVerified and markRestored failures are distinguishable partial states'
   const resultB = await second.controller.restoreVersion({ targetOperationId: b.op1.operationId, targetSide: 'before' });
   assert.equal(resultB, null);
   assert.equal((await second.controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'verified');
-});
+})
 
 test('target history changing during confirmation is rejected by the fresh plan', async (t) => {
   const { adapter, editor, prompts, controller } = setup(t);
@@ -332,10 +341,9 @@ test('target history changing during confirmation is rejected by the fresh plan'
 });
 
 
-test('applied status failure leaves the editor changed but reports no success', async (t) => {
-  const { app, editor, prompts, controller, view } = setup(t);
+test('applied status failure leaves committed body and reports no success', async (t) => {
+  const { app, editor, prompts, controller } = setup(t);
   const { op1 } = await twoRefines(editor, prompts, controller);
-  const disk = app.disk.get(NOTE_PATH);
   const original = controller.store.setStatus.bind(controller.store);
   controller.store.setStatus = async (id, status, options) => {
     if (status === 'applied') throw new Error('status failed');
@@ -343,20 +351,24 @@ test('applied status failure leaves the editor changed but reports no success', 
   };
   const result = await controller.restoreVersion({ targetOperationId: op1.operationId, targetSide: 'before' });
   assert.equal(result, null);
-  assert.equal(app.disk.get(NOTE_PATH), disk);
-  assert.notEqual(editor.text, disk);
-  assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'prepared');
-});
+  assert.equal(app.disk.get(NOTE_PATH), editor.text);
+  assert.match(editor.text, /Alpha beta/);
+  assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
+})
 
-test('save readback mismatch is a conflict, not success', async (t) => {
-  const { app, editor, prompts, controller, view } = setup(t);
+test('process disk mismatch is a conflict, not success', async (t) => {
+  const { app, editor, prompts, controller } = setup(t);
   const { op1 } = await twoRefines(editor, prompts, controller);
-  view.diskAfterSave = 'not the expected content';
+  app.vault.process = async (file, fn) => {
+    const current = app.disk.get(file.path);
+    await fn(current);
+    app.disk.set(file.path, 'not the expected content');
+  };
   const result = await controller.restoreVersion({ targetOperationId: op1.operationId, targetSide: 'before' });
   assert.equal(result, null);
   assert.equal(app.disk.get(NOTE_PATH), 'not the expected content');
   assert.equal((await controller.store.listEntries(NOTE_PATH)).at(-1).state.status, 'conflict');
-});
+})
 
 test('target history disappearing after prepared is rejected before body replacement', async (t) => {
   const { app, adapter, editor, prompts, controller } = setup(t);
