@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-QUEUE-01（每日队列、Priority/逾期补偿、预算、七日负荷）
+> 最后更新：P2-US1-MERCY-01（Mercy 分配、预览、批次与安全撤销）
 
 ## 0. 状态定义
 
@@ -48,10 +48,10 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 23 | QUEUE-03 | 每日时间预算与贪心选择 | A6.3 | `TESTED` | 03 | Q4 已落地为 `estimated_minutes`（1–120）；预算 Q15 1–1440 |
 | 24 | QUEUE-04 | 未来 7 天负荷统计 | A6.4 | `TESTED` | 03 | 窗口 [today, today+6]（Q17）；Ideal/Effective 分轴；逾期积压计入今日实际负荷（available*），原始积压用 idealBacklog*，只计一次不摊未来 |
 | 25 | QUEUE-05 | 排期解释（算法日期 vs 行政日期分离） | A12 | `TESTED` | 01→03 | 队列逐条解释：到期、补偿、排序、预算、延期原因 |
-| 26 | MERCY-01 | Mercy 分配（明天起 W 槽、预算、超载标记） | A7.2 | `NOT_STARTED` | 04 | |
-| 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `NOT_STARTED` | 04 | |
-| 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `NOT_STARTED` | 04 | 待裁决 Q10 |
-| 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→04 | 已交付 `initializeTopic` / `applyEvent` / `selectDailyQueue`；`previewMercy` 待 04 |
+| 26 | MERCY-01 | Mercy 分配（明天起 W 槽、预算、超载标记） | A7.2 | `TESTED` | 04 | 原始 Priority 排序；无槽可容纳时取最少负载槽并标超载；不提前既有延期 |
+| 27 | MERCY-02 | Mercy 预览（目标数/日分布/超载/高优先级延迟/前后 Effective Due） | A7.3 | `TESTED` | 04 | 只读、确定性；含 batchId 与逐项解释 |
+| 28 | MERCY-03 | Mercy 撤销与 revision 冲突逐条处理 | A7.3, A13 T16 | `TESTED` | 04 | T16；纯模型；持久化批次记录待 09（Q10） |
+| 29 | API-01 | 五个纯接口与输出契约（新状态/差异/解释/版本/错误/是否写入） | A9 | `IN_PROGRESS` | 01→04 | 已交付 `initializeTopic` / `applyEvent` / `selectDailyQueue` / `previewMercy`；`explainSchedule` 待后续 |
 | 30 | MODE-01 | Legacy / Shadow / Unified 隔离与默认不启用 | A10.1, A13 T19 | `NOT_STARTED` | 07/09 | |
 | 31 | MIG-01 | 只读旧数据适配（严格日期解析、异常逐项报告） | A10.2 | `NOT_STARTED` | 06 | |
 | 32 | MIG-02 | 迁移预览、备份、回滚 | A10.2 | `NOT_STARTED` | 08 | 写库需单独授权 |
@@ -86,7 +86,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | T13 | `eventId` 重复不重复计数 | `PASS` | `mf-us-1-idempotency.test.js`（含 E1→E2→E1） |
 | T14 | 相同优先级与日期稳定排序 | `PASS` | `mf-us-1-queue.test.js`（含乱序与 code-unit 决胜） |
 | T15 | 跨夏令时 +1 天 | `PASS` | `mf-us-1-dates.test.js`（美/欧 DST 日） |
-| T16 | Mercy 撤销恢复原 `mf_not_before` | `TODO` | PR-04 |
+| T16 | Mercy 撤销恢复原 `mf_not_before` | `PASS` | `mf-us-1-mercy-undo.test.js`（含 null 与具体日期混合） |
 | T17 | 新建 Extract→Extract 不改父调度 | `PARTIAL` | PR-01 保证 `initializeTopic` 不触碰父对象；父节点语义在 PR-06 |
 | T18 | SR 卡片评分不触碰 SR 数据 | `TODO` | PR-11（核心层已拒绝 `type: card`） |
 | T19 | Shadow 模式不写回 Topic | `TODO` | PR-07 |
@@ -101,7 +101,7 @@ PR-01 之前的报告曾把本矩阵误标为 40 项；按编号逐项核算为 
 | 1 | P 增加时同类型 I0 单调不减 | `PASS` | 01 |
 | 2 | I、A 始终在合法边界内 | `PASS` | 01 |
 | 3 | 完全相同输入产生完全相同输出 | `PASS` | 01 |
-| 4 | Skip/Postpone/Mercy 不引入有效评阅 | `PARTIAL` | 02 已覆盖 Skip/Postpone；Mercy 待 04 |
+| 4 | Skip/Postpone/Mercy 不引入有效评阅 | `PASS` | 02 Skip/Postpone + 04 Mercy（仅改 mf_not_before） |
 | 5 | 后续评阅不重新调用首次间隔函数 | `PASS`（核心层） | 01 |
 | 6 | 完成或移出后不自动复活 | `PASS` | 02（只有显式 REACTIVATE 可复活） |
 | 7 | 合法旧数据迁移前后 Effective Due 相同 | `TODO` | 08 |

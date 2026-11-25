@@ -17,6 +17,8 @@ const eventLedger = require('./event-ledger.js');
 const queueConfig = require('./queue-config.js');
 const queue = require('./queue.js');
 const workload = require('./workload.js');
+const mercy = require('./mercy.js');
+const mercyBatch = require('./mercy-batch.js');
 
 module.exports = {
   ...errors,
@@ -31,6 +33,8 @@ module.exports = {
   ...queueConfig,
   ...queue,
   ...workload,
+  ...mercy,
+  ...mercyBatch,
   // Namespaced access for callers that prefer explicit module grouping.
   schema,
   dates,
@@ -42,4 +46,6 @@ module.exports = {
   queueConfig,
   queue,
   workload,
+  mercy,
+  mercyBatch,
 };

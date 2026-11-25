@@ -430,6 +430,8 @@ module.exports = {
   AGE_BONUS_PERIOD_DAYS,
   AGE_BONUS_MAX,
   compareQueueEntries,
+  compareStableIds: compareIds,
+  resolveStableId,
   selectWithinBudget,
   analyzeTopic,
   selectDailyQueue,
