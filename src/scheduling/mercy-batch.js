@@ -8,15 +8,22 @@
 // restores each item's ORIGINAL mf_not_before (null included) and refuses to
 // overwrite anything the user changed after the batch.
 //
-// Revision contract: an item that really changes mf_not_before increments
-// mf_revision by exactly one; a no-op never changes revision; a conflict or a
-// missing topic changes nothing at all.
+// Safety rules added after review:
+//   * a plan is day-scoped: applying it on another day is refused outright;
+//   * duplicate stable ids in the CURRENT topic list make every affected item
+//     a conflict instead of silently picking one of the two topics;
+//   * a topic that stopped being an active Source/Extract, or whose Priority /
+//     Ideal Due / effective due changed without a revision bump, is a conflict;
+//   * undo is resumable: an already restored item reports `already-undone`
+//     without another revision bump, missing topics can be restored later, and
+//     a partially undone batch finishes as `undone`.
 
 const { fail } = require('./errors.js');
 const { ALGORITHM_VERSION } = require('./constants.js');
 const { assertDateString } = require('./dates.js');
-const { validateRevision } = require('./schema.js');
+const { validateRevision, validateTopicType, validateStatus } = require('./schema.js');
 const { resolveStableId } = require('./queue.js');
+const { effectiveDueOf: mercyEffectiveDueOf } = require('./mercy.js');
 
 const BATCH_KEYS = Object.freeze([
   'batchId',
@@ -35,20 +42,37 @@ function readRevision(topic) {
   }
 }
 
+// Identity index. A duplicated stable id is recorded instead of overwritten so
+// callers can reject the affected items rather than guessing which topic is
+// meant.
 function indexTopics(topics) {
   if (!Array.isArray(topics)) {
     fail('E_OBJECT_REQUIRED', 'topics must be an array', { field: 'topics' });
   }
   const byId = new Map();
+  const duplicates = new Set();
   topics.forEach((topic, index) => {
     if (!topic || typeof topic !== 'object' || Array.isArray(topic)) return;
+    let identity;
     try {
-      byId.set(resolveStableId(topic), { topic, index });
+      identity = resolveStableId(topic);
     } catch {
-      // A topic without a readable identity cannot match a batch item.
+      return; // an unreadable identity cannot match a batch item
     }
+    if (byId.has(identity)) duplicates.add(identity);
+    else byId.set(identity, { topic, index });
   });
-  return byId;
+  return { byId, duplicates };
+}
+
+function isSchedulableTopic(topic) {
+  try {
+    validateTopicType(topic.type);
+    validateStatus(topic.status);
+    return topic.status === 'active';
+  } catch {
+    return false;
+  }
 }
 
 function assertPlan(plan) {
@@ -75,17 +99,34 @@ function assertPlan(plan) {
   return plan;
 }
 
+function assertFreshPlan(plan, today) {
+  assertDateString(today, 'today');
+  if (typeof plan.today !== 'string') {
+    fail('E_MERCY_PLAN_STALE', 'plan has no preview day; generate a fresh preview', { field: 'plan.today' });
+  }
+  if (plan.today !== today) {
+    fail('E_MERCY_PLAN_STALE', 'this Mercy preview was generated for a different day; preview again', {
+      plannedOn: plan.today,
+      today,
+    });
+  }
+}
+
 // SPEC A7.2 — apply the plan to current topics. Caller keeps the returned
 // topics; nothing is written anywhere.
 function applyMercyBatch(plan, topics, today = undefined) {
   assertPlan(plan);
-  assertDateString(today, 'today');
-  const byId = indexTopics(topics);
+  assertFreshPlan(plan, today);
+  const { byId, duplicates } = indexTopics(topics);
   const updated = topics.slice();
   const results = [];
   const batchItems = [];
 
   for (const item of plan.items) {
+    if (duplicates.has(item.stableId)) {
+      results.push({ stableId: item.stableId, status: 'conflict', reason: 'DUPLICATE_ID', changed: false });
+      continue;
+    }
     const found = byId.get(item.stableId);
     if (!found) {
       results.push({ stableId: item.stableId, status: 'missing', changed: false });
@@ -107,6 +148,12 @@ function applyMercyBatch(plan, topics, today = undefined) {
     }
 
     const { topic, index } = found;
+
+    if (!isSchedulableTopic(topic)) {
+      results.push({ stableId: item.stableId, status: 'conflict', reason: 'NOT_SCHEDULABLE', changed: false });
+      continue;
+    }
+
     const revision = readRevision(topic);
     if (revision == null) {
       results.push({ stableId: item.stableId, status: 'conflict', reason: 'INVALID_REVISION', changed: false });
@@ -132,6 +179,20 @@ function applyMercyBatch(plan, topics, today = undefined) {
         actual: topic.mf_not_before ?? null,
         changed: false,
       });
+      continue;
+    }
+    // Fields that shaped the plan must still match, even if revision did not move.
+    if (item.priority != null && topic.priority !== item.priority) {
+      results.push({ stableId: item.stableId, status: 'conflict', reason: 'PRIORITY_CHANGED', expected: item.priority, actual: topic.priority, changed: false });
+      continue;
+    }
+    if (item.idealDue != null && topic.mf_ideal_due !== item.idealDue) {
+      results.push({ stableId: item.stableId, status: 'conflict', reason: 'IDEAL_DUE_CHANGED', expected: item.idealDue, actual: topic.mf_ideal_due, changed: false });
+      continue;
+    }
+    const effectiveNow = mercyEffectiveDueOf(topic.mf_ideal_due, topic.mf_not_before ?? null);
+    if (item.effectiveDueBefore != null && effectiveNow !== item.effectiveDueBefore) {
+      results.push({ stableId: item.stableId, status: 'conflict', reason: 'EFFECTIVE_DUE_CHANGED', expected: item.effectiveDueBefore, actual: effectiveNow, changed: false });
       continue;
     }
 
@@ -198,43 +259,38 @@ function applyMercyBatch(plan, topics, today = undefined) {
 }
 
 // SPEC A7.3 / A13 T16 — restore each item's original mf_not_before. Conflict
-// items are reported and skipped; the rest of the batch still undoes.
+// items are reported and skipped; the rest of the batch still undoes, and the
+// undo can be resumed until every applied item has been restored.
 function undoMercyBatch(batch, topics, today = undefined) {
   if (!batch || typeof batch !== 'object' || Array.isArray(batch)) {
     fail('E_MERCY_BATCH_INVALID', 'batch must be the record returned by applyMercyBatch', { field: 'batch' });
-  }
-  for (const key of Object.keys(batch)) {
-    if (!BATCH_KEYS.includes(key) && key !== 'undoneOn' && key !== 'undoResults') {
-      // Extra audit keys are tolerated, but the record must still look like one.
-      continue;
-    }
   }
   if (typeof batch.batchId !== 'string' || !Array.isArray(batch.items)) {
     fail('E_MERCY_BATCH_INVALID', 'batch needs batchId and items', { field: 'batch' });
   }
   assertDateString(today, 'today');
-
-  const byId = indexTopics(topics);
+  const { byId, duplicates } = indexTopics(topics);
   const updated = topics.slice();
   const results = [];
+  const nextItems = batch.items.map(item => ({ ...item }));
 
-  if (batch.status === 'undone') {
-    for (const item of batch.items) {
-      results.push({ stableId: item.stableId, status: 'already-undone', changed: false });
-    }
-    return {
-      algorithmVersion: ALGORITHM_VERSION,
-      batch,
-      results,
-      topics: updated,
-      summary: { undoneCount: 0, conflictCount: 0, missingCount: 0, alreadyUndoneCount: results.length, totalCount: results.length },
-      explain: { text: `Mercy 批次 ${batch.batchId} 已经撤销过，未重复修改任何 Topic。`, data: { batchId: batch.batchId } },
-    };
-  }
+  const legacyFullyUndone = batch.status === 'undone';
 
-  for (const item of batch.items) {
+  for (let position = 0; position < batch.items.length; position += 1) {
+    const item = batch.items[position];
+
     if (item.applyStatus !== 'applied') {
       results.push({ stableId: item.stableId, status: 'nothing-to-undo', changed: false });
+      continue;
+    }
+    // Idempotent resume: an item already restored (or a batch marked undone by
+    // an older version) must not be touched again.
+    if (item.undoState === 'undone' || (legacyFullyUndone && item.undoState == null)) {
+      results.push({ stableId: item.stableId, status: 'already-undone', changed: false });
+      continue;
+    }
+    if (duplicates.has(item.stableId)) {
+      results.push({ stableId: item.stableId, status: 'conflict', reason: 'DUPLICATE_ID', changed: false });
       continue;
     }
     const found = byId.get(item.stableId);
@@ -242,6 +298,7 @@ function undoMercyBatch(batch, topics, today = undefined) {
       results.push({ stableId: item.stableId, status: 'missing', changed: false });
       continue;
     }
+
     const { topic, index } = found;
     const revision = readRevision(topic);
     if (revision == null || revision !== item.revisionAfter) {
@@ -273,6 +330,7 @@ function undoMercyBatch(batch, topics, today = undefined) {
       mf_revision: revision + 1,
     };
     updated[index] = next;
+    nextItems[position] = { ...item, undoState: 'undone', undoneRevision: next.mf_revision };
     results.push({
       stableId: item.stableId,
       status: 'undone',
@@ -286,11 +344,15 @@ function undoMercyBatch(batch, topics, today = undefined) {
   const undone = results.filter(result => result.status === 'undone').length;
   const conflicts = results.filter(result => result.status === 'conflict').length;
   const missing = results.filter(result => result.status === 'missing').length;
+  const pending = nextItems.filter(item => item.applyStatus === 'applied' && item.undoState !== 'undone').length;
+  const status = pending === 0 ? 'undone' : 'partially-undone';
+
   const nextBatch = {
     ...batch,
     undoneOn: today,
     undoResults: results,
-    status: conflicts > 0 || missing > 0 ? 'partially-undone' : 'undone',
+    status,
+    items: nextItems,
   };
 
   return {
@@ -302,12 +364,13 @@ function undoMercyBatch(batch, topics, today = undefined) {
       undoneCount: undone,
       conflictCount: conflicts,
       missingCount: missing,
-      alreadyUndoneCount: 0,
+      alreadyUndoneCount: results.filter(result => result.status === 'already-undone').length,
+      pendingCount: pending,
       totalCount: results.length,
     },
     explain: {
-      text: `Mercy 撤销（批次 ${batch.batchId}）：恢复 ${undone} 项，冲突 ${conflicts} 项，缺失 ${missing} 项${conflicts > 0 || missing > 0 ? '；冲突项未覆盖用户后续修改。' : '。'}`,
-      data: { batchId: batch.batchId, status: nextBatch.status, undoneOn: today },
+      text: `Mercy 撤销（批次 ${batch.batchId}）：本次恢复 ${undone} 项，已撤销 ${results.filter(result => result.status === 'already-undone').length} 项，冲突 ${conflicts} 项，缺失 ${missing} 项${pending > 0 ? `；仍有 ${pending} 项待恢复。` : '；批次已全部恢复。'}`,
+      data: { batchId: batch.batchId, status, undoneOn: today, pendingCount: pending },
     },
   };
 }
@@ -317,4 +380,5 @@ module.exports = {
   undoMercyBatch,
   indexTopics,
   readRevision,
+  isSchedulableTopic,
 };

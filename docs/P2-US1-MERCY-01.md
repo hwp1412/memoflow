@@ -29,7 +29,7 @@ Mercy 的完整纯计算能力：
 | `src/scheduling/queue.js` | 仅新增导出 `compareStableIds` / `resolveStableId`（复用身份与排序，不改行为） | 兼容修改 |
 | `src/scheduling/index.js` | 导出新模块 | 修改 |
 | `test/mf-us-1-mercy.test.js` | 22 项分配/容量/边界测试 | 新增 |
-| `test/mf-us-1-mercy-undo.test.js` | 12 项批次/撤销/冲突测试 | 新增 |
+| `test/mf-us-1-mercy-undo.test.js` | 20 项批次/撤销/冲突/重复身份/过期预览测试 | 新增 |
 | `test/mf-us-1-mercy-properties.test.js` | 7 项性质 + 10k 性能 | 新增 |
 | `docs/MF-US-1-DELIVERY-MATRIX.md` | 状态更新 | 修改 |
 | `docs/P2-US1-MERCY-01.md` | 本说明 | 新增 |
@@ -113,7 +113,9 @@ batch = {
 }
 ```
 
-- 应用前校验：`revision === revisionBefore` **且** 当前 `mf_not_before === notBeforeBefore`；任一不符 → `conflict`（`REVISION_MISMATCH` / `NOT_BEFORE_CHANGED`），**不覆盖**。
+- **预览按日绑定**：`plan.today !== today`（或 plan 无 `today`）→ 直接抛 `E_MERCY_PLAN_STALE`，要求重新预览；不会把昨天的槽位套到今天。
+- 应用前逐项校验：Topic 仍是 `active` 的 Source/Extract（`NOT_SCHEDULABLE`）、`revision === revisionBefore`（`REVISION_MISMATCH`）、`mf_not_before === notBeforeBefore`（`NOT_BEFORE_CHANGED`）、`priority`（`PRIORITY_CHANGED`）、`mf_ideal_due`（`IDEAL_DUE_CHANGED`）、重算的 Effective Due（`EFFECTIVE_DUE_CHANGED`）；任一不符 → `conflict`，**不覆盖**。
+- **当前输入中的重复稳定 ID**：`indexTopics()` 记录重复集合而不是覆盖 Map；受影响条目一律 `conflict / DUPLICATE_ID`，不任选其一，其他 Topic 继续处理；不生成/修复/写回 ID。
 - 真正变化 → `mf_revision + 1`；no-op 与冲突 → revision 不变。
 - 冲突项不影响其他项，批次状态变为 `partially-applied`。
 - 不设置 `mf_last_event_id`：Mercy 不是 A8 事件，批次身份由 `batchId` 独立记录（Q22）。
@@ -121,6 +123,8 @@ batch = {
 ## 7. 撤销（A7.3 / T16）
 
 - 只对 `applied` 项恢复 `notBeforeBefore`（**可能是 null，也可是具体日期**），并 `mf_revision + 1`（保持单调，避免与后续事件 revision 冲突）。
+- **可续撤销**：每个批次项记录 `undoState: 'undone'` 与 `undoneRevision`；已恢复项再次撤销 → `already-undone`（**不再增加 revision**）；缺失项不标记，待 Topic 重新出现后可安全恢复；全部完成后批次状态为 `undone`，否则 `partially-undone` 并给出 `summary.pendingCount`。
+- 撤销同样拒绝输入中的重复稳定 ID（`conflict / DUPLICATE_ID`），不影响其他项。
 - 逐项校验 `stableId`、当前 revision === `revisionAfter`、当前 `mf_not_before` === `notBeforeAfter`；不符 → `conflict`，跳过该条。
 - 缺失 Topic → `missing`；未应用项 → `nothing-to-undo`。
 - 一项冲突不影响其他项；批次标记 `partially-undone`。
@@ -149,15 +153,15 @@ Mercy 前后：`mf_interval_days`、`a_factor`、`review_count`、`last_reviewed
 
 ```
 node --test test/mf-us-1-mercy.test.js test/mf-us-1-mercy-undo.test.js test/mf-us-1-mercy-properties.test.js
-  tests 41  pass 41  fail 0
+  tests 49  pass 49  fail 0
 
-node --test test/*.test.js    tests 623  pass 623  fail 0
+node --test test/*.test.js    tests 631  pass 631  fail 0
 node --test $(排除 mf-us-1-)   tests 380  pass 380  fail 0
 node scripts/validate-release.mjs -> valid
 node scripts/build.mjs --dry-run  -> no files written
 ```
 
-覆盖：W=3/7/14/30 与非法 W；窗口从明天开始；优先级/日期/ID 三级排序；乱序不变；刚好填满、成本>预算、全槽超载、并列取更早；跨月/跨年/闰年/DST；原 not_before 为 null/较早/较晚（既有延期不占容量）；无变化 no-op；学习字段不变；Card/历史状态/重复 ID/缺 revision 报告；预览确定性 50 次；撤销混合原值（T16）、apply/undo revision、revision 冲突、not_before 外部修改冲突、部分成功、缺失 Topic、重复撤销、冻结输入、批次字段完整性。
+覆盖：W=3/7/14/30 与非法 W；窗口从明天开始；优先级/日期/ID 三级排序；乱序不变；刚好填满、成本>预算、全槽超载、并列取更早；跨月/跨年/闰年/DST；原 not_before 为 null/较早/较晚（既有延期不占容量）；无变化 no-op；学习字段不变；Card/历史状态/重复 ID/缺 revision 报告；预览确定性 50 次；撤销混合原值（T16）、apply/undo revision、revision 冲突、not_before 外部修改冲突、部分成功、缺失 Topic、重复撤销、冻结输入、批次字段完整性；**预览后才出现的重复 ID（apply/undo 两侧）**；**A 已撤销、B 缺失、B 恢复后重新撤销**；**过期预览、跨日拒绝、无预览日拒绝**；**状态/Priority/Ideal Due/Effective Due 无 revision 变化时拒绝应用**。
 
 ## 11. 初步性能
 

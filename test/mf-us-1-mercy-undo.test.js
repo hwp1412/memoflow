@@ -176,6 +176,7 @@ test('repeated undo changes nothing', () => {
 test('a no-op plan item is applied and undone without any revision change', () => {
   const plan = {
     batchId: 'batch-noop',
+    today: TODAY,
     windowDays: 3,
     items: [{
       stableId: uuid(1),
@@ -230,4 +231,118 @@ test('invalid plans and batches are rejected at the boundary', () => {
   expectCode(() => applyMercyBatch({ batchId: 'b', items: [{ stableId: uuid(1), status: 'weird' }] }, [topic(1)], TODAY), 'E_MERCY_PLAN_INVALID');
   expectCode(() => undoMercyBatch(null, [topic(1)], TODAY), 'E_MERCY_BATCH_INVALID');
   expectCode(() => undoMercyBatch({ batchId: 'b' }, [topic(1)], TODAY), 'E_MERCY_BATCH_INVALID');
+});
+
+// ---- batch identity safety (review fix 1) ---------------------------------
+
+test('duplicate ids appearing after the preview reject only the affected item', () => {
+  const topics = [topic(1), topic(2)];
+  const plan = planFor(topics);
+  // The caller's snapshot now contains two notes with the same stable id.
+  const snapshot = [topics[0], topics[1], { ...topics[0], priority: 20 }];
+  const applied = applyMercyBatch(plan, snapshot, TODAY);
+
+  assert.equal(applied.results[0].status, 'conflict');
+  assert.equal(applied.results[0].reason, 'DUPLICATE_ID');
+  assert.equal(applied.results[1].status, 'applied');
+  assert.equal(applied.topics[0].mf_not_before, null, 'ambiguous item is untouched');
+  assert.equal(applied.topics[1].mf_not_before, '2026-11-26');
+  assert.equal(applied.batch.status, 'partially-applied');
+});
+
+test('duplicate ids appearing before undo reject only the affected item', () => {
+  const topics = [topic(1), topic(2)];
+  const applied = applyMercyBatch(planFor(topics), topics, TODAY);
+  const snapshot = [applied.topics[0], applied.topics[1], { ...applied.topics[0] }];
+  const undone = undoMercyBatch(applied.batch, snapshot, TODAY);
+
+  assert.equal(undone.results[0].status, 'conflict');
+  assert.equal(undone.results[0].reason, 'DUPLICATE_ID');
+  assert.equal(undone.results[1].status, 'undone');
+  assert.equal(undone.topics[0].mf_not_before, '2026-11-26', 'ambiguous item is untouched');
+  assert.equal(undone.topics[1].mf_not_before, null);
+  assert.equal(undone.batch.status, 'partially-undone');
+});
+
+// ---- resumable undo (review fix 2) ---------------------------------------
+
+test('partial undo resumes: A undone, B missing, B returns, undo again', () => {
+  const topics = [topic(1), topic(2)];
+  const applied = applyMercyBatch(planFor(topics), topics, TODAY);
+  assert.deepEqual(applied.topics.map(item => item.mf_not_before), ['2026-11-26', '2026-11-26']);
+
+  // First pass: only A is present, so B is missing.
+  const first = undoMercyBatch(applied.batch, [applied.topics[0]], TODAY);
+  assert.deepEqual(first.results.map(result => result.status), ['undone', 'missing']);
+  assert.equal(first.batch.status, 'partially-undone');
+  assert.equal(first.summary.pendingCount, 1);
+  const restoredA = first.topics[0];
+  const aRevision = restoredA.mf_revision;
+  assert.equal(restoredA.mf_not_before, null);
+
+  // B comes back in its post-apply state; retrying the same batch finishes it.
+  const second = undoMercyBatch(first.batch, [restoredA, applied.topics[1]], TODAY);
+  assert.deepEqual(second.results.map(result => result.status), ['already-undone', 'undone']);
+  assert.equal(second.topics[0].mf_revision, aRevision, 'no second revision bump for A');
+  assert.equal(second.topics[0].mf_not_before, null);
+  assert.equal(second.topics[1].mf_not_before, null);
+  assert.equal(second.batch.status, 'undone');
+  assert.equal(second.summary.pendingCount, 0);
+});
+
+test('a partially undone batch keeps unfinished items validated against the current revision', () => {
+  const topics = [topic(1), topic(2)];
+  const applied = applyMercyBatch(planFor(topics), topics, TODAY);
+  const first = undoMercyBatch(applied.batch, [applied.topics[0]], TODAY);
+
+  // The user edits B before the retry: undo must not overwrite it.
+  const editedB = { ...applied.topics[1], mf_revision: applied.topics[1].mf_revision + 1 };
+  const second = undoMercyBatch(first.batch, [first.topics[0], editedB], TODAY);
+  assert.equal(second.results[0].status, 'already-undone');
+  assert.equal(second.results[1].status, 'conflict');
+  assert.equal(second.results[1].reason, 'REVISION_MISMATCH');
+  assert.equal(second.batch.status, 'partially-undone');
+  assert.equal(second.summary.pendingCount, 1);
+});
+
+// ---- stale preview protection (review fix 3) ------------------------------
+
+test('a preview generated for another day is refused', () => {
+  const topics = [topic(1)];
+  const plan = planFor(topics);
+  expectCode(() => applyMercyBatch(plan, topics, '2026-11-26'), 'E_MERCY_PLAN_STALE');
+  // The same plan still applies on its own day.
+  assert.equal(applyMercyBatch(plan, topics, TODAY).summary.appliedCount, 1);
+});
+
+test('a plan without a preview day is refused', () => {
+  const plan = { batchId: 'b', windowDays: 3, items: [] };
+  expectCode(() => applyMercyBatch(plan, [topic(1)], TODAY), 'E_MERCY_PLAN_STALE');
+});
+
+test('a topic that stopped being schedulable is not applied', () => {
+  const topics = [topic(1), topic(2)];
+  const plan = planFor(topics);
+  const applied = applyMercyBatch(plan, [{ ...topics[0], status: 'done' }, topics[1]], TODAY);
+  assert.equal(applied.results[0].status, 'conflict');
+  assert.equal(applied.results[0].reason, 'NOT_SCHEDULABLE');
+  assert.equal(applied.topics[0].mf_not_before, null);
+  assert.equal(applied.results[1].status, 'applied');
+});
+
+test('authoritative fields changed without a revision bump are conflicts', () => {
+  const cases = [
+    [{ priority: 20 }, 'PRIORITY_CHANGED'],
+    [{ mf_ideal_due: '2026-11-02' }, 'IDEAL_DUE_CHANGED'],
+    [{ mf_not_before: '2026-11-03' }, 'NOT_BEFORE_CHANGED'],
+    [{ type: 'card' }, 'NOT_SCHEDULABLE'],
+  ];
+  for (const [overrides, reason] of cases) {
+    const topics = [topic(1)];
+    const plan = planFor(topics);
+    const applied = applyMercyBatch(plan, [{ ...topics[0], ...overrides }], TODAY);
+    assert.equal(applied.results[0].status, 'conflict', reason);
+    assert.equal(applied.results[0].reason, reason);
+    assert.equal(applied.summary.appliedCount, 0, reason);
+  }
 });
