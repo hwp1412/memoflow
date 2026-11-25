@@ -42,7 +42,7 @@ function setupMercy() {
   });
   const batchStore = new MemoryBatchStore();
   const plan = previewMercy([first.scheduling, second.scheduling], { windowDays: 3, batchId: 'mercy-batch' }, TODAY);
-  const batch = prepareUnifiedMercyBatch(plan, { batchId: 'mercy-batch' });
+  const batch = prepareUnifiedMercyBatch(plan, { batchId: 'mercy-batch', dateFormat: 'DD-MM-YYYY' });
   const deps = {
     mode: { mode: 'unified' },
     storage,
@@ -145,12 +145,13 @@ test('a missing topic makes the batch partial and retryable', () => {
 
 // ---- mercy target validation, preview binding and crash windows ----------
 
-function rawBatch(entries, batchId = 'mercy-batch') {
+function rawBatch(entries, batchId = 'mercy-batch', dateFormat = 'DD-MM-YYYY') {
   const batch = {
     kind: 'mf-us-1-unified-mercy-batch',
     batchId,
     today: '2026-11-24',
     algorithmVersion: 1,
+    dateFormat,
     entries: entries.map((entry, index) => ({
       operationId: `${batchId}:${entry.topicId ?? `dup-${index}`}`,
       topicId: entry.topicId ?? `dup-${index}`,
@@ -468,4 +469,94 @@ test('a not_before that already equals the original value is not trusted without
   const first = undone.batch.entries.find(item => item.topicId === uuid(1));
   assert.equal(first.status, 'conflict');
   assert.equal(first.error.code, 'E_UNDO_EVIDENCE_MISSING');
+});
+
+// ---- next_review compatibility projection (final review fix) -------------
+
+function singleTopicSetup(seq, { idealDue = '2026-11-20', dateFormat = 'DD-MM-YYYY', batchId = 'mercy-batch' } = {}) {
+  const topic = makeTopic({ seq, frontmatter: { mf_ideal_due: idealDue } });
+  const storage = new SyntheticUnifiedStorage({ [topic.path]: topic.entry });
+  const batchStore = new MemoryBatchStore();
+  const batch = rawBatch([{ topicId: topic.mfId, notBeforeBefore: null, notBeforeAfter: '2026-11-27' }], batchId, dateFormat);
+  const deps = rawDeps(storage, batchStore, batch);
+  return { topic, storage, batchStore, batch, deps };
+}
+
+test('Mercy apply and undo project next_review in DD-MM-YYYY', () => {
+  const context = singleTopicSetup(5);
+  const applied = applyUnifiedMercyBatch(context.batch, context.deps);
+  assert.equal(applied.writesPerformed, true);
+  let entry = context.storage.read('Sources/5.md');
+  assert.equal(entry.frontmatter.mf_not_before, '2026-11-27');
+  assert.equal(entry.frontmatter.next_review, '27-11-2026');
+  assert.equal(entry.frontmatter.mf_ideal_due, '2026-11-20');
+  assert.equal(entry.frontmatter.mf_interval_days, 8);
+  assert.equal(entry.frontmatter.review_count, 3);
+
+  const undone = undoUnifiedMercyBatch(context.batch, context.deps);
+  assert.equal(undone.writesPerformed, true);
+  entry = context.storage.read('Sources/5.md');
+  assert.equal(entry.frontmatter.mf_not_before, null);
+  assert.equal(entry.frontmatter.next_review, '20-11-2026');
+});
+
+test('Mercy projection follows YYYY-MM-DD as well', () => {
+  const context = singleTopicSetup(6, { dateFormat: 'YYYY-MM-DD' });
+  applyUnifiedMercyBatch(context.batch, context.deps);
+  assert.equal(context.storage.read('Sources/6.md').frontmatter.next_review, '2026-11-27');
+  undoUnifiedMercyBatch(context.batch, context.deps);
+  assert.equal(context.storage.read('Sources/6.md').frontmatter.next_review, '2026-11-20');
+});
+
+test('an unsupported Vault date format is refused', () => {
+  const context = setupMercy();
+  assert.throws(
+    () => prepareUnifiedMercyBatch(context.plan, { batchId: 'bad-format', dateFormat: 'DD.MM.YYYY' }),
+    error => error.code === 'E_DATE_FORMAT_UNSUPPORTED'
+  );
+  const missing = rawBatch([{ topicId: uuid(1) }]);
+  delete missing.dateFormat;
+  assert.throws(() => applyUnifiedMercyBatch(missing, context.deps), error => error.code === 'E_DATE_FORMAT_UNSUPPORTED');
+});
+
+test('a delay that does not pass ideal due keeps the effective projection', () => {
+  const context = singleTopicSetup(7, { idealDue: '2027-01-01' });
+  applyUnifiedMercyBatch(context.batch, context.deps);
+  const entry = context.storage.read('Sources/7.md');
+  assert.equal(entry.frontmatter.mf_not_before, '2026-11-27');
+  assert.equal(entry.frontmatter.next_review, '01-01-2027');
+});
+
+test('next_review is part of the persisted intent and survives recovery', () => {
+  const context = setupMercy();
+  context.storage.failNextReadAfterWrite('Sources/1.md');
+  applyUnifiedMercyBatch(context.batch, context.deps);
+  const afterFirst = context.storage.read('Sources/1.md').frontmatter.next_review;
+
+  const retried = applyUnifiedMercyBatch(context.batch, context.deps);
+  assert.equal(retried.batch.entries.find(item => item.topicId === uuid(1)).status, 'applied');
+  assert.equal(context.storage.read('Sources/1.md').frontmatter.next_review, afterFirst);
+
+  context.storage.failNextReadAfterWrite('Sources/1.md');
+  undoUnifiedMercyBatch(context.batch, context.deps);
+  const restored = context.storage.read('Sources/1.md').frontmatter.next_review;
+  assert.equal(restored, '20-11-2026');
+  const again = undoUnifiedMercyBatch(context.batch, context.deps);
+  assert.equal(again.writesPerformed, false);
+  assert.equal(context.storage.read('Sources/1.md').frontmatter.next_review, restored);
+});
+
+test('a user edit of next_review after apply blocks undo', () => {
+  const context = singleTopicSetup(8);
+  applyUnifiedMercyBatch(context.batch, context.deps);
+  const entry = context.storage.read('Sources/8.md');
+  context.storage.setFile('Sources/8.md', {
+    ...entry,
+    frontmatter: { ...entry.frontmatter, next_review: '01-01-2030' },
+  });
+
+  const undone = undoUnifiedMercyBatch(context.batch, context.deps);
+  assert.equal(undone.batch.entries[0].status, 'conflict');
+  assert.equal(undone.batch.entries[0].error.code, 'E_EXTERNAL_EDIT');
+  assert.equal(context.storage.read('Sources/8.md').frontmatter.next_review, '01-01-2030');
 });

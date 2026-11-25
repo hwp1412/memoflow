@@ -372,6 +372,7 @@ function getUnifiedEventResult(eventId, ledger) {
 
 module.exports = {
   WRITE_FIELDS,
+  SUPPORTED_DATE_FORMATS,
   formatLegacyDate,
   executeUnifiedEvent,
   reconcileUnifiedEvent,

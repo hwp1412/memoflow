@@ -10,9 +10,11 @@
 const { fail } = require('./errors.js');
 const { ALGORITHM_VERSION } = require('./constants.js');
 const { isValidDateString } = require('./dates.js');
+const { effectiveDueFromDates } = require('./due.js');
 const { isPersistentUuid } = require('./legacy-identity.js');
 const { resolveSchedulerMode } = require('./mode.js');
 const { sha256Hex, stableStringify } = require('./migration-hash.js');
+const { SUPPORTED_DATE_FORMATS, formatLegacyDate } = require('./unified-writer.js');
 const {
   renderContent,
   assertTrustedTopicStorage,
@@ -28,6 +30,7 @@ function digestOf(batch) {
     batchId: batch.batchId,
     today: batch.today,
     algorithmVersion: batch.algorithmVersion,
+    dateFormat: batch.dateFormat,
     entries: batch.entries.map(entry => ({
       operationId: entry.operationId,
       topicId: entry.topicId,
@@ -50,6 +53,9 @@ function validateBatch(batch) {
   if (typeof batch.batchId !== 'string' || !batch.batchId) fail('E_BATCH_ID_REQUIRED', 'a batch id is required');
   if (!isValidDateString(batch.today)) fail('E_BATCH_TODAY_INVALID', 'batch today must be a calendar date');
   if (batch.algorithmVersion !== ALGORITHM_VERSION) fail('E_BATCH_VERSION_INVALID', 'unsupported algorithm version');
+  if (!SUPPORTED_DATE_FORMATS.includes(batch.dateFormat)) {
+    fail('E_DATE_FORMAT_UNSUPPORTED', 'unsupported Vault date format; no silent fallback', { dateFormat: batch.dateFormat });
+  }
   if (!Array.isArray(batch.entries)) fail('E_BATCH_INVALID', 'batch entries must be an array');
 
   const topics = new Set();
@@ -115,7 +121,11 @@ function intentIsValid(entry) {
   );
 }
 
-function buildIntent(entry, current) {
+function projectedNextReview(frontmatter, notBefore, dateFormat) {
+  return formatLegacyDate(effectiveDueFromDates(frontmatter.mf_ideal_due, notBefore), dateFormat);
+}
+
+function buildIntent(entry, current, dateFormat) {
   const frontmatter = current.frontmatter;
   return {
     topicId: entry.topicId,
@@ -126,6 +136,7 @@ function buildIntent(entry, current) {
       mf_not_before: entry.notBeforeAfter,
       mf_revision: entry.revisionAfter,
       mf_scheduler_version: ALGORITHM_VERSION,
+      next_review: projectedNextReview(frontmatter, entry.notBeforeAfter, dateFormat),
     }, current.body)),
     beforeNotBefore: entry.notBeforeBefore,
     afterNotBefore: entry.notBeforeAfter,
@@ -150,11 +161,16 @@ function prepareUnifiedMercyBatch(plan, options = {}) {
       error: null,
       intent: null,
     }));
+  const dateFormat = options.dateFormat || plan.dateFormat;
+  if (!SUPPORTED_DATE_FORMATS.includes(dateFormat)) {
+    fail('E_DATE_FORMAT_UNSUPPORTED', 'a supported Vault date format must be provided explicitly', { dateFormat });
+  }
   const batch = {
     kind: MERCY_BATCH_KIND,
     batchId,
     today: plan.today,
     algorithmVersion: ALGORITHM_VERSION,
+    dateFormat,
     entries,
     status: entries.length ? 'planned' : 'noop',
     writesPerformed: false,
@@ -211,7 +227,7 @@ function applyUnifiedMercyBatch(batch, dependencies = {}) {
       entry.error = { code: 'E_PREVIEW_STALE' };
       continue;
     }
-    entry.intent = buildIntent(entry, target.current);
+    entry.intent = buildIntent(entry, target.current, working.dateFormat);
     entry.status = 'pending';
     entry.error = null;
   }
@@ -286,6 +302,7 @@ function applyUnifiedMercyBatch(batch, dependencies = {}) {
         mf_not_before: entry.notBeforeAfter,
         mf_revision: entry.revisionAfter,
         mf_scheduler_version: ALGORITHM_VERSION,
+        next_review: projectedNextReview(frontmatter, entry.notBeforeAfter, working.dateFormat),
       },
       nextBody: current.body,
       nextRevision: entry.revisionAfter,
@@ -424,6 +441,7 @@ function undoUnifiedMercyBatch(batch, dependencies = {}) {
           ...frontmatter,
           mf_not_before: entry.notBeforeBefore,
           mf_revision: entry.revisionAfter + 1,
+          next_review: projectedNextReview(frontmatter, entry.notBeforeBefore, working.dateFormat),
         }, current.body)),
       };
     }
@@ -435,6 +453,7 @@ function undoUnifiedMercyBatch(batch, dependencies = {}) {
         ...frontmatter,
         mf_not_before: entry.notBeforeBefore,
         mf_revision: entry.revisionAfter + 1,
+        next_review: projectedNextReview(frontmatter, entry.notBeforeBefore, working.dateFormat),
       },
       nextBody: current.body,
       nextRevision: entry.revisionAfter + 1,
