@@ -213,3 +213,30 @@ Card 无 `mf_*`、Ledger applied 记录对应真实 Topic、Batch（Boost eventI
 
 - 本轮实机覆盖：插件加载、激活、真实评阅写入（Event→Intent→CAS→Readback→Ledger）、撤销、撤销后零写入、审计。**尚未覆盖**：真实 UI 菜单创建 Source/Extract（需 GUI 自动化或人工点击）、Legacy/Shadow 交互、批量/恢复实机、Card/SR 实机、关闭重开。这些仍按 §4–§9 清单由人工或后续 UI 自动化完成。
 - Harness 仅在测试 Vault 内、仅用于本轮证据；运行后已从 `community-plugins.json` 移除，不会在用户环境出现。
+
+
+## 18. 真实 Obsidian 第二批自动化结果（进行中，发现新问题）
+
+在 §17 基础上继续用 Harness 驱动（真实 Obsidian、真实插件方法）：
+
+| 用例 | 结果 | 证据 |
+|---|---|---|
+| 激活 Unified（真实门禁） | **Pass** | `e2e-phase-a-result.json`：`authorized=true` |
+| 真实评阅 ADVANCED 写入 + Ledger | **Pass** | §17（revision 0→1、Ledger 1、hash 审计完整） |
+| 紧急撤销 + 撤销后写入被拒（零修改） | **Pass** | §17 |
+| 真实 Boost（激活后、3 个层级 Topic） | **Fail（插件拒绝）** | 真实 UI 提示：`Boost 未执行：Subtree root not found: S`；批次未创建、零写入 |
+
+### 18.1 新发现：Unified Boost 在 Topic 索引未刷新时直接拒绝
+
+`boostUnified()` 用 `walkSubtree(..., { rows: this.getIRRows(), strict: true })` 规划批次；若该缓存尚未包含新创建/刚激活的 Topic（真实 Obsidian 中 metadataCache 异步索引），会得到 `Subtree root not found` 并放弃整批。虽然本轮是 Harness 快速创建文件导致，但真实用户也可能在“新建后立即 Boost”时遇到。
+
+建议最小修复（待授权）：`boostUnified()`/`postponeSubtreeHost()` 规划前显式失效 `irRowsCache/treeIndexCache/duePoolCache` 并读最新 metadata（或失败时提示“索引尚未就绪，请稍后重试”而不是直接判根不存在）。同类风险：Mercy 批次、Subtree Postpone。
+
+### 18.2 仍待完成
+
+- Boost/Mercy/Undo/Subtree 实机（待上述索引刷新修复后重跑）
+- Legacy/Shadow 实机交互（评阅弹窗驱动）
+- 真实 UI 创建 Source/多级 Extract（需模拟弹窗输入）
+- Card/SR 实机、关闭重开恢复、故障注入
+
+以上均可用同一 Harness 继续自动化；本轮因执行时间/上下文限制暂停在“发现并记录缺陷”阶段，未把未完成项标为通过。
