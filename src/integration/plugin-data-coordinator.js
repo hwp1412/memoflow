@@ -77,37 +77,50 @@ function createPluginDataCoordinator({
   let chain = Promise.resolve();
   let pending = 0;
   let lastResult = null;
-  let diagnostics = [];
-  let notifiedCode = null;
-  let recoveredSinceNotify = false;
+  const lastByOwner = new Map();
+  // Unresolved failure is tracked PER OWNER. A successful settings save must
+  // never clear a ledger failure (and vice versa): they are independent
+  // durability claims about the same file.
+  const failures = new Map();
+  const notified = new Map();
+  const recoveredSinceNotify = new Map();
+
+  function ownerLabel(owner) {
+    return owner === OWNER_LEDGER ? 'Unified 账本' : '插件设置';
+  }
 
   function notifyFailure(result) {
-    const sameCode = result.code === notifiedCode;
-    diagnostics = [{
+    const diagnostic = {
       code: result.code,
       owner: result.owner,
       phase: result.phase,
       pendingRetry: result.pendingRetry === true,
       at: new Date().toISOString(),
-    }];
+    };
+    failures.set(result.owner, diagnostic);
     if (typeof onDiagnostic === 'function') {
-      try { onDiagnostic(diagnostics[0]); } catch (error) { /* diagnostics must never throw */ }
+      try { onDiagnostic(diagnostic); } catch (error) { /* diagnostics must never throw */ }
     }
-    if (sameCode && !recoveredSinceNotify) return;
-    notifiedCode = result.code;
-    recoveredSinceNotify = false;
+    // Rate limit per owner: a persistent failure notifies once; it notifies
+    // again only after the owner has recovered and failed again.
+    const previousCode = notified.get(result.owner) || null;
+    const recovered = recoveredSinceNotify.get(result.owner) === true;
+    if (previousCode === result.code && !recovered) return;
+    notified.set(result.owner, result.code);
+    recoveredSinceNotify.set(result.owner, false);
     if (typeof notice === 'function') {
-      try { notice(`MemoFlow 保存未完成（${result.code}，${result.owner}）：${result.message || '请稍后重试'}`, 8000); } catch (error) { /* notice is best effort */ }
+      try {
+        notice(`MemoFlow ${ownerLabel(result.owner)} 保存未完成（${result.code}）：${result.message || '请稍后重试'}`, 8000);
+      } catch (error) { /* notice is best effort */ }
     }
   }
 
-  function notifyRecovered() {
-    if (notifiedCode == null) return;
-    notifiedCode = null;
-    recoveredSinceNotify = true;
-    diagnostics = [];
+  function notifyRecovered(owner) {
+    if (!notified.has(owner)) return;
+    notified.delete(owner);
+    recoveredSinceNotify.set(owner, true);
     if (typeof notice === 'function') {
-      try { notice('MemoFlow 保存已恢复。', 4000); } catch (error) { /* best effort */ }
+      try { notice(`MemoFlow ${ownerLabel(owner)} 保存已恢复。`, 4000); } catch (error) { /* best effort */ }
     }
   }
 
@@ -159,7 +172,12 @@ function createPluginDataCoordinator({
       }, { writesAttempted: true, verified: false, uncertain: true });
     }
     if (!verifyAfter) {
-      return { ok: true, verified: false, owner, code: null, pendingRetry: false };
+      const result = { ok: true, verified: false, owner, code: null, pendingRetry: false, writesAttempted: true };
+      lastResult = result;
+      lastByOwner.set(owner, result);
+      failures.delete(owner);
+      notifyRecovered(owner);
+      return result;
     }
     let back;
     try {
@@ -181,7 +199,11 @@ function createPluginDataCoordinator({
     }
     const result = { ok: true, verified: true, owner, code: null, pendingRetry: false, writesAttempted: true };
     lastResult = result;
-    if (notifiedCode != null) notifyRecovered();
+    lastByOwner.set(owner, result);
+    // Only this owner's failure is cleared, and only because this owner's write
+    // was just written and read back successfully.
+    failures.delete(owner);
+    notifyRecovered(owner);
     return result;
   }
 
@@ -198,6 +220,7 @@ function createPluginDataCoordinator({
       pendingRetry: true,
     };
     lastResult = result;
+    lastByOwner.set(owner, result);
     notifyFailure(result);
     return result;
   }
@@ -215,7 +238,11 @@ function createPluginDataCoordinator({
     return run.finally(() => { pending -= 1; });
   }
 
-  async function flush() {
+  function unresolvedList() {
+    return [...failures.entries()].map(([owner, diagnostic]) => ({ owner, ...diagnostic }));
+  }
+
+  async function flush({ owner = null } = {}) {
     // Drain everything queued so far. Re-checks because callers may enqueue
     // another write while we wait.
     let guard = 0;
@@ -223,7 +250,34 @@ function createPluginDataCoordinator({
       await chain.catch(() => undefined);
       guard += 1;
     } while (pending > 0 && guard < 100);
-    return lastResult || { ok: true, verified: false, owner: null, code: null, pendingRetry: false, idle: true };
+    const unresolved = unresolvedList();
+    if (owner) {
+      // Owner-scoped flush answers "is THIS owner durable?"; it still reports
+      // other owners' unresolved failures instead of hiding them.
+      const failure = failures.get(owner);
+      if (failure) {
+        return {
+          ok: false, verified: false, owner, code: failure.code, phase: failure.phase,
+          pendingRetry: true, unresolved,
+        };
+      }
+      const last = lastByOwner.get(owner) || null;
+      return {
+        ok: !last || last.ok !== false,
+        verified: last ? last.verified === true : false,
+        owner, code: null, idle: !last, unresolved,
+      };
+    }
+    if (unresolved.length > 0) {
+      // A global flush may not claim everything is persisted while any owner
+      // still has an unresolved failure.
+      return {
+        ok: false, verified: false, owner: null, code: 'E_PERSIST_UNRESOLVED',
+        pendingRetry: true, unresolved,
+      };
+    }
+    if (lastResult) return { ...lastResult, unresolved };
+    return { ok: true, verified: false, owner: null, code: null, pendingRetry: false, idle: true, unresolved };
   }
 
   function read(owner) {
@@ -249,18 +303,22 @@ function createPluginDataCoordinator({
         return update(OWNER_LEDGER, () => value);
       },
       async flush() {
-        return flush();
+        return flush({ owner: OWNER_LEDGER });
       },
     };
   }
 
   function state() {
+    const unresolved = {};
+    for (const owner of [OWNER_SETTINGS, OWNER_LEDGER]) unresolved[owner] = failures.get(owner) || null;
     return {
       pending,
       reservedKeys: [...reservedKeys],
       ledgerKey,
       lastResult,
-      diagnostics,
+      lastByOwner: Object.fromEntries([...lastByOwner.entries()]),
+      unresolved,
+      diagnostics: unresolvedList(),
     };
   }
 

@@ -434,3 +434,62 @@ test('ledger records survive a restart and the same eventId stays duplicate', as
   const fm = frontmatterFromContent(app.vault.readContent(file)).frontmatter;
   assert.equal(fm.review_count, 1, 'restart must not review twice');
 });
+
+// ---- per-owner unresolved failure state ----------------------------------
+
+test('a settings success never clears an unresolved ledger failure', async () => {
+  const plugin = new FakePlugin({});
+  const coordinator = coordinatorFor(plugin);
+  await coordinator.update('settings', () => ({ theme: 'light' }));
+
+  plugin.failNextSave = new Error('ledger write failed');
+  const ledgerFailure = await coordinator.update('ledger', () => ({ version: 1, records: {} }));
+  assert.equal(ledgerFailure.ok, false);
+
+  const settingsOk = await coordinator.update('settings', () => ({ theme: 'dark' }));
+  assert.equal(settingsOk.ok, true, 'the settings write itself succeeds');
+  assert.equal(plugin.data.theme, 'dark');
+
+  const state = coordinator.state();
+  assert.ok(state.unresolved.ledger, 'the ledger failure must stay visible');
+  assert.equal(state.unresolved.ledger.owner, 'ledger');
+  assert.equal(state.unresolved.settings, null, 'the settings owner has no unresolved failure');
+  assert.deepEqual(state.diagnostics.map(item => item.owner), ['ledger']);
+
+  const flushed = await coordinator.flush();
+  assert.equal(flushed.ok, false, 'a global flush must not claim everything is persisted');
+  assert.equal(flushed.code, 'E_PERSIST_UNRESOLVED');
+  assert.deepEqual(flushed.unresolved.map(item => item.owner), ['ledger']);
+});
+
+test('a successful ledger retry clears only the ledger failure', async () => {
+  const plugin = new FakePlugin({});
+  const coordinator = coordinatorFor(plugin);
+  plugin.failNextSave = new Error('first attempt failed');
+  const failed = await coordinator.update('ledger', () => ({ version: 1, records: {} }));
+  assert.equal(failed.ok, false);
+  assert.ok(coordinator.state().unresolved.ledger);
+
+  const retry = await coordinator.update('ledger', current => ({ ...current, records: { e1: { status: 'applied' } } }));
+  assert.equal(retry.ok, true);
+  assert.equal(retry.verified, true);
+  assert.equal(coordinator.state().unresolved.ledger, null, 'the retry clears the ledger failure');
+  assert.deepEqual(plugin.data[LEDGER_KEY].records, { e1: { status: 'applied' } });
+
+  const flushed = await coordinator.flush();
+  assert.equal(flushed.ok, true);
+  assert.equal(flushed.verified, true);
+  assert.deepEqual(flushed.unresolved, []);
+});
+
+test('a ledger failure does not block a later settings save from being durable', async () => {
+  const plugin = new FakePlugin({ keep: 1 });
+  const coordinator = coordinatorFor(plugin);
+  plugin.failNextSave = new Error('ledger failed');
+  await coordinator.update('ledger', () => ({ version: 1, records: {} }));
+  const settings = await coordinator.update('settings', () => ({ theme: 'dark' }));
+  assert.equal(settings.ok, true);
+  assert.equal(settings.verified, true);
+  assert.deepEqual(plugin.data, { keep: 1, theme: 'dark' });
+  assert.ok(coordinator.state().unresolved.ledger);
+});

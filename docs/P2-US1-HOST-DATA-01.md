@@ -40,8 +40,15 @@
   - `E_DATA_CORRUPT`：`data.json` 不是对象 → 拒绝覆盖。
 - **失败传播**：`openPluginDataLedger().flush()` 现在检查 `saveData` 的返回值，
   `{ok:false}` 不再被当成成功；`host-runtime` 的 `persistIntent` 因此保持"未确认禁止 CAS"。
-- **诊断**：`{code, owner, phase, pendingRetry, at}`；首次失败弹一次非阻塞 Notice，
-  同码持续失败**不再重复弹**，恢复后清除并提示一次；不记录账本内容。
+- **按 owner 跟踪未解决故障**：`state().unresolved = { settings, ledger }`。
+  一个 owner 保存成功**只清除它自己**的故障，不会清掉另一个 owner 尚未解决的失败；
+  只有该 owner 自己写入并读回校验成功后，其故障才标记为恢复。
+- **flush 语义**：
+  - `flush()`（全局）：只要仍有任一 owner 未解决 → `{ok:false, code:'E_PERSIST_UNRESOLVED', unresolved}`，
+    不会宣称全部持久化正常；
+  - `flush({ owner })`：回答“该 owner 是否持久化”，同时仍回传 `unresolved` 列表。
+- **诊断**：`{code, owner, phase, pendingRetry, at}`；每个 owner 首次失败弹一次非阻塞 Notice，
+  同码持续失败不再重复弹，该 owner 恢复后清除并提示一次；不记录账本内容。
 
 ## 4. main.js 修改（已获批 M1–M7）
 
@@ -61,8 +68,8 @@
 ## 5. 测试（19 项新增）
 
 ```
-test/mf-us-1-host-data.test.js   19 pass
-test/*.test.js                 1214 pass
+test/mf-us-1-host-data.test.js   22 pass
+test/*.test.js                 1217 pass
 node scripts/validate-release.mjs   valid
 node scripts/build.mjs --dry-run    no files written
 ```
