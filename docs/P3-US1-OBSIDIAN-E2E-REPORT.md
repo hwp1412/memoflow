@@ -240,3 +240,15 @@ Card 无 `mf_*`、Ledger applied 记录对应真实 Topic、Batch（Boost eventI
 - Card/SR 实机、关闭重开恢复、故障注入
 
 以上均可用同一 Harness 继续自动化；本轮因执行时间/上下文限制暂停在“发现并记录缺陷”阶段，未把未完成项标为通过。
+
+
+## 19. 索引刷新修复（针对 §18.1）
+
+已实现最小修复：
+
+- 新增 `_mfUs1EnsureTopicIndexed(file)`：批量规划前等待 MetadataCache 出现该 Topic 的 frontmatter（最多约 1.2s），随后使 `irRowsCache/treeIndexCache/duePoolCache` 失效；
+- `boostUnified()` 与 `postponeSubtreeHost()` 规划前调用；
+- 回归测试：人为制造 `irRowsCache=[]` 陈旧缓存后，Boost 与子树延期均能正确规划并逐节点写事件（revision+1、Ledger 记录）。
+- 全量 **1449 pass**。
+
+真机复测状态：Harness 在后续批次中因自身弹窗驱动缺陷（`Extracts/E2.md` 不存在导致 `getFileCache(null)`、以及 suggest/confirm 弹窗驱动不可靠）未能完成 Boost/Mercy 真机复测——这属于测试工具限制，不构成产品通过证据；Boost/Mercy/Subtree 实机仍标记 **未验证**，待下一轮修复 Harness 后重跑。

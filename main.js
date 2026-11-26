@@ -4189,6 +4189,25 @@ class IncrementalReadingPlugin extends Plugin {
     // row would otherwise report the pre-write mf_not_before / priority.
     this.irFilesCache = null;
     this.irRowsCache = null;
+    this.treeIndexCache = null;
+    this.duePoolCache = null;
+  }
+
+  // Real Obsidian indexes new files asynchronously. Before batch planning over
+  // a subtree, wait briefly for the root metadata and drop stale row caches;
+  // otherwise a freshly created topic yields "Subtree root not found" and the
+  // whole batch is refused (found by real-Obsidian E2E).
+  async _mfUs1EnsureTopicIndexed(file) {
+    if (!file || !this.app || !this.app.metadataCache || typeof this.app.metadataCache.getFileCache !== 'function') {
+      this._mfUs1RefreshRows();
+      return;
+    }
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (fm && (fm.type === 'source' || fm.type === 'extract')) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    this._mfUs1RefreshRows();
   }
 
   // Read-only Shadow comparison: Legacy remains the only writer. This computes
@@ -6049,6 +6068,7 @@ class IncrementalReadingPlugin extends Plugin {
       new Notice('子树延期未执行：根节点缺少持久 mf_id（不做隐式迁移）。', 10000);
       return { status: 'blocked', reason: 'E_ROOT_ID_REQUIRED' };
     }
+    await this._mfUs1EnsureTopicIndexed(rootFile);
     // One date for the whole batch, even if the clock crosses midnight.
     const today = this._mfUs1IsoTodayFrom(this._todayKey());
     let subtree = null;

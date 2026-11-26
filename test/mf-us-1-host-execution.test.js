@@ -263,3 +263,31 @@ test('host scheduling actions use ISO today under a DD-MM-YYYY setting', async (
   assert.ok(fm.mf_not_before && fm.mf_not_before !== 'null');
   assert.equal(Object.values(plugin.__ledger.store.dump()).length, 1);
 });
+
+test('boost refreshes a stale row cache before planning the subtree', async () => {
+  const { plugin, app } = await harness({ quality: 5 });
+  const root = addTopic(app, 'Sources/BS.md', uuid(51));
+  addTopic(app, 'Extracts/BE.md', uuid(52), { type: 'extract', source: '[[BS]]' });
+  app.activeFile = root;
+  plugin.irRowsCache = []; // simulate a stale cache right after file creation
+  plugin.treeIndexCache = null;
+  const outcome = await plugin.boost();
+  assert.ok(outcome && outcome.status !== 'blocked', JSON.stringify(outcome && outcome.status));
+  assert.equal(Number(fmOf(app, root).priority), 45);
+  assert.ok(Object.values(plugin.__ledger.store.dump()).length >= 1);
+});
+
+test('subtree postpone refreshes a stale row cache before planning', async () => {
+  const { plugin, app } = await harness();
+  const root = addTopic(app, 'Sources/PS.md', uuid(53));
+  const child = addTopic(app, 'Extracts/PE.md', uuid(54), { type: 'extract', source: '[[PS]]' });
+  app.activeFile = root;
+  plugin.irRowsCache = []; // stale
+  const outcome = await plugin.postponeSubtreeHost(root, 3);
+  assert.ok(outcome, 'subtree postpone returned an outcome');
+  for (const file of [root, child]) {
+    const fm = fmOf(app, file);
+    assert.ok(fm.mf_not_before && fm.mf_not_before !== 'null', `${file.path} postponed`);
+    assert.equal(Number(fm.mf_revision), 1);
+  }
+});
