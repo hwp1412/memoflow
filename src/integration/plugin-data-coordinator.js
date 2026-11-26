@@ -48,7 +48,9 @@ function stripReservedKeys(data, reservedKeys = DEFAULT_RESERVED_KEYS) {
 
 function sectionOf(snapshot, owner, reservedKeys) {
   if (owner === OWNER_LEDGER) return snapshot[LEDGER_KEY] ?? null;
-  return stripReservedKeys(snapshot, reservedKeys);
+  if (owner === OWNER_SETTINGS) return stripReservedKeys(snapshot, reservedKeys);
+  if (reservedKeys.includes(owner)) return snapshot[owner] ?? null;
+  return null;
 }
 
 function sameSection(left, right) {
@@ -125,7 +127,10 @@ function createPluginDataCoordinator({
   }
 
   async function buildNext(owner, mutate, reserved) {
-    if (owner !== OWNER_SETTINGS && owner !== OWNER_LEDGER) fail('E_DATA_OWNER_INVALID', `unknown data owner: ${owner}`);
+    const isReservedKey = reserved.includes(owner) && owner !== OWNER_SETTINGS && owner !== OWNER_LEDGER;
+    if (owner !== OWNER_SETTINGS && owner !== OWNER_LEDGER && !isReservedKey) {
+      fail('E_DATA_OWNER_INVALID', `unknown data owner: ${owner}`);
+    }
     let snapshot;
     try {
       snapshot = await plugin.loadData();
@@ -144,7 +149,11 @@ function createPluginDataCoordinator({
       return { error: { code: 'E_PERSIST_PREWRITE', phase: 'mutate', message: error && error.message } };
     }
     const next = { ...snapshot };
-    if (owner === OWNER_SETTINGS) {
+    if (isReservedKey) {
+      // A dedicated reserved key has its own owner: it can never overwrite
+      // settings or the ledger, and settings can never overwrite it.
+      next[owner] = value;
+    } else if (owner === OWNER_SETTINGS) {
       if (!isPlainObject(value)) {
         return { error: { code: 'E_DATA_OWNER_INVALID', phase: 'mutate', message: 'settings mutation must return an object' } };
       }
@@ -310,7 +319,9 @@ function createPluginDataCoordinator({
 
   function state() {
     const unresolved = {};
-    for (const owner of [OWNER_SETTINGS, OWNER_LEDGER]) unresolved[owner] = failures.get(owner) || null;
+    for (const owner of [OWNER_SETTINGS, OWNER_LEDGER, ...reservedKeys.filter(key => key !== ledgerKey)]) {
+      unresolved[owner] = failures.get(owner) || null;
+    }
     return {
       pending,
       reservedKeys: [...reservedKeys],
@@ -322,9 +333,25 @@ function createPluginDataCoordinator({
     };
   }
 
+  function reservedStore(key) {
+    if (!reservedKeys.includes(key) || key === ledgerKey) {
+      fail('E_DATA_OWNER_INVALID', `reserved store key is not registered: ${key}`);
+    }
+    return {
+      key,
+      async load() {
+        return read(key);
+      },
+      async save(value) {
+        return update(key, () => value);
+      },
+    };
+  }
+
   return {
     reservedKeys: [...reservedKeys],
     ledgerKey,
+    reservedStore,
     update,
     flush,
     read,

@@ -106,7 +106,7 @@ test('identical concurrent host requests execute once', async () => {
 
 // ---- observation validity and live mode refresh (review fixes 4/5) -------
 
-test('failed, no-op and void legacy results never produce a shadow match', async () => {
+test('the shadow observer runs read-only for any completed legacy result', async () => {
   for (const legacyResult of [
     { status: 'failed', writesPerformed: false },
     { status: 'no-op', writesPerformed: false },
@@ -116,12 +116,15 @@ test('failed, no-op and void legacy results never produce a shadow match', async
     let compared = 0;
     const service = createHostSchedulerService({
       mode: 'shadow',
-      shadowObserver: () => { compared += 1; return { differences: [] }; },
+      shadowObserver: () => { compared += 1; return { status: 'compared', differences: [], writesPerformed: false }; },
     });
     const outcome = await service.execute({ action: 'ADVANCED' }, async () => legacyResult);
-    assert.equal(compared, 0);
-    assert.equal(outcome.shadow.status, 'not-comparable');
-    assert.equal(outcome.shadow.reason, 'LEGACY_OBSERVATION_UNAVAILABLE');
+    assert.equal(compared, 1, 'observation is read-only and must not be skipped');
+    assert.equal(outcome.shadow.writesPerformed, false);
+    if (legacyResult && legacyResult.status !== 'applied') {
+      assert.equal(outcome.shadow.legacyStatus, legacyResult.status);
+    }
+    assert.equal(outcome.writesPerformed, legacyResult ? (legacyResult.writesPerformed === true ? true : (legacyResult.writesPerformed === false ? false : null)) : null);
   }
 });
 

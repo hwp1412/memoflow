@@ -71,7 +71,57 @@ async function buildModel({ plugin, isMobile = false, demo = false, today: today
     cardsDue = flags.filter(Boolean).length;
   }
   counts.cardsDue = cardsDue;
-  const queue = selectors.buildQueue(rows, today, settings);
+  // Unified: the dashboard queue must come from the authoritative projection.
+  // Legacy/Shadow keep the existing selector output byte-for-byte.
+  const mode = plugin && typeof plugin._mfUs1EffectiveMode === 'function'
+    ? plugin._mfUs1EffectiveMode()
+    : 'legacy';
+  let queue;
+  let unifiedSource = null;
+  if (mode === 'unified') {
+    try {
+      const { buildUnifiedQueue } = require('../integration/unified-queue-source.js');
+      const rowsByPath = new Map(rows.map(row => [row.tfile.path, row]));
+      unifiedSource = buildUnifiedQueue({
+        rows,
+        mode,
+        today: dateCore.formatDate(today, 'YYYY-MM-DD'),
+        config: settings.queueConfig || undefined,
+      });
+      queue = unifiedSource.queue.selected.map((item, index) => {
+        const row = rowsByPath.get(item.path) || {};
+        const fm = row.fm || {};
+        const isOverdue = Boolean(item.effectiveDue && item.effectiveDue < dateCore.formatDate(today, 'YYYY-MM-DD'));
+        return {
+          path: item.path,
+          basename: item.basename || (row.tfile ? row.tfile.basename : ''),
+          type: item.type,
+          sourceTitle: fm.source ? String(fm.source).replace(/^\[\[/, '').replace(/\]\]$/, '').split('|')[0] : '',
+          priority: item.priority,
+          interval: item.intervalDays,
+          aFactor: item.aFactor,
+          status: item.status,
+          dueDate: item.effectiveDue,
+          dueTime: null,
+          dueLabel: item.effectiveDue || '',
+          dueTitle: item.effectiveDue ? `最早可见 ${item.effectiveDue}` : '',
+          dueTone: isOverdue ? 'late' : 'today',
+          isOverdue,
+          hasPdf: Boolean(fm.pdf_vault_path || fm.pdf_path),
+          urgency: 1000 - index,
+          tfile: row.tfile || null,
+          fm,
+          unified: true,
+          explain: item.explain || null,
+        };
+      });
+    } catch (error) {
+      console.error('[IR] unified dashboard queue failed', error);
+      queue = [];
+    }
+  } else {
+    queue = selectors.buildQueue(rows, today, settings);
+  }
   const tree = plugin && typeof plugin.buildTreeIndex === 'function'
     ? selectors.buildTree(plugin.buildTreeIndex(), today, settings)
     : [];
@@ -86,6 +136,13 @@ async function buildModel({ plugin, isMobile = false, demo = false, today: today
   const todayKey = dateCore.formatDate(today, 'YYYY-MM-DD');
   const reviewsTodayFromLog = entries.filter(entry => entry.key === todayKey).length;
   counts.reviewedToday = Math.max(counts.reviewedToday, reviewsTodayFromLog);
+  if (mode === 'unified') {
+    const todayKeyUnified = dateCore.formatDate(today, 'YYYY-MM-DD');
+    counts.due = queue.length;
+    counts.overdue = queue.filter(item => item.isOverdue).length;
+    counts.newItems = queue.filter(item => !item.dueDate).length;
+    counts.diagnostics = unifiedSource ? unifiedSource.diagnostics.length : 0;
+  }
 
   const cache = new Map();
   const primary = queue.find(item => item.type !== 'card') || queue[0] || null;
@@ -133,6 +190,16 @@ async function buildModel({ plugin, isMobile = false, demo = false, today: today
     demo: false,
     srReady,
     isMobile,
+    mode,
+    unified: unifiedSource
+      ? {
+        mode,
+        authority: 'mf',
+        diagnostics: unifiedSource.diagnostics,
+        queued: unifiedSource.source.queued,
+        excluded: unifiedSource.source.excluded,
+      }
+      : null,
   };
 }
 

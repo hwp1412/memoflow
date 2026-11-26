@@ -187,6 +187,7 @@ class MemoFlowPlugin extends BasePlugin {
 
   advancedTools() {
     return this._runActionMenu(MENU_LABELS.advancedTitle, [
+      { label: '恢复当前主题（重新激活）…', run: () => this.reactivateCurrent() },
       { label: MENU_LABELS.advanced[0], run: () => this.subsetReview() },
       { label: MENU_LABELS.advanced[1], run: () => this.mercy() },
       { label: MENU_LABELS.advanced[2], run: () => this.postponeSubtree() },
@@ -496,9 +497,13 @@ class MemoFlowPlugin extends BasePlugin {
           }
           await this._openNextSessionTarget(next);
           return;
-        case 'skip':
-          await this.nextElement();
+        case 'skip': {
+          // SKIP is session-only (SPEC A5.1): move the pointer, never write
+          // scheduling fields.
+          if (typeof this.consumeSessionItem === 'function') await this.consumeSessionItem(file.path);
+          await this._openNextSessionTarget(next);
           return;
+        }
         case 'postpone': {
           const outcome = await this._postponeReadingFile(file, Math.max(1, Number(data.days) || 1));
           // Only a confirmed (or legacy-applied) postpone may leave the current
@@ -931,6 +936,19 @@ class MemoFlowPlugin extends BasePlugin {
 
   async _maybeAutoOverload() {
     if (!this.settings?.misc?.auto_overload) return;
+    // R4: Unified never executes Mercy silently; it only surfaces a suggestion.
+    if (this._mfUs1EffectiveMode() === 'unified') {
+      const autoThreshold = Math.max(1, Number(this.settings.misc.overload_threshold) || 10);
+      const { projectTopic } = require('./integration/topic-projection.js');
+      const todayKey = this._todayKey();
+      const autoOverdue = this.getIRRows()
+        .map(row => projectTopic(row, { mode: this._mfUs1EffectiveMode() }))
+        .filter(item => item.queueEligible && item.effectiveDue && item.effectiveDue < todayKey);
+      if (autoOverdue.length >= autoThreshold) {
+        new Notice(`今日有 ${autoOverdue.length} 个逾期主题。Unified 模式不会自动摊平，请在「Mercy」菜单确认执行。`, 10000);
+      }
+      return;
+    }
     const threshold = Math.max(1, Number(this.settings.misc.overload_threshold) || 10);
     const overdue = this._overdueTopics();
     if (overdue.length <= threshold) return;
@@ -1078,6 +1096,9 @@ class MemoFlowPlugin extends BasePlugin {
   }
 
   async spreadOverdue(overdueRows, days) {
+    if (this._mfUs1EffectiveMode() === 'unified') {
+      return this.mercyUnified({ windowDays: Number(days) || 7 });
+    }
     return this._mfUs1RunLegacy({ action: 'MERCY_APPLY' }, () => this._spreadOverdueLegacy(overdueRows, days));
   }
 

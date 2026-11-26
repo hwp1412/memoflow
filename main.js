@@ -2861,10 +2861,14 @@ class IncrementalReadingPlugin extends Plugin {
     // One coordinator owns every data.json write. Reserved keys (the Unified
     // ledger) must never become part of this.settings: writing a startup-time
     // ledger snapshot back would roll the ledger backwards.
+    const { BATCH_KEY } = require('./src/integration/batch-store.js');
     this.pluginData = createPluginDataCoordinator({
       plugin: this,
+      reservedKeys: ['mfUs1Ledger', BATCH_KEY],
       notice: (message, timeout) => new Notice(message, timeout),
     });
+    this.mfUs1BatchStore = null;
+    this.mfUs1AdminWriter = null;
     const rawData = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, this.pluginData.stripReservedKeys(rawData));
     for (const reservedKey of this.pluginData.reservedKeys) delete this.settings[reservedKey];
@@ -2887,6 +2891,8 @@ class IncrementalReadingPlugin extends Plugin {
     this.spacedRepetitionCloseAttempt = 0;
     this.sessionSaveTimer = null;
     this.mfUs1Lifecycle = null;
+    this.mfUs1AsyncLifecycle = null;
+    this.mfUs1Recovery = null;
     try {
       const { initializeHostLifecycle } = require('./src/integration/host-lifecycle.js');
       this.mfUs1Lifecycle = await initializeHostLifecycle({
@@ -2901,6 +2907,62 @@ class IncrementalReadingPlugin extends Plugin {
       // reports diagnostics through mfUs1Lifecycle = null.
       console.error('[IR] MF-US-1 lifecycle unavailable', error);
       this.mfUs1Lifecycle = null;
+    }
+    // Real async lifecycle: only this transport can reconcile a durable ledger
+    // against real Markdown bytes. It stays non-writable (no production
+    // authorization); recovery only updates the ledger, never topic content.
+    try {
+      const { initializeAsyncHostLifecycle } = require('./src/integration/host-lifecycle.js');
+      const { createObsidianAsyncTopicStorage, createVaultTopicResolver } = require('./src/integration/host-async-storage.js');
+      const storage = createObsidianAsyncTopicStorage({
+        app: this.app,
+        resolveFile: createVaultTopicResolver({ app: this.app }),
+        dateFormat: configuredDateFormat(this.settings),
+      });
+      this.mfUs1HostStorage = storage;
+      const { createBatchStore } = require('./src/integration/batch-store.js');
+      const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
+      this.mfUs1BatchStore = createBatchStore({ coordinator: this.pluginData });
+      // No production authorization token exists: the writer stays read-only
+      // until a separately approved activation supplies one.
+      this.mfUs1AdminWriter = createProtectedAdminWriter({ storage, authorization: this.__mfUs1AdminAuthorization || null });
+      this.mfUs1AsyncLifecycle = await initializeAsyncHostLifecycle({
+        plugin: this,
+        mode: this.settings.mf_us1_mode || 'legacy',
+        conditions: {},
+        storage,
+        dataStore: this.pluginData.ledgerStore(),
+      });
+      const recovery = this.mfUs1AsyncLifecycle.recovery || {};
+      this.mfUs1Recovery = {
+        healthy: this.mfUs1AsyncLifecycle.healthy !== false,
+        blockedTopicIds: this.mfUs1AsyncLifecycle.blockedTopicIds || [],
+        recovered: recovery.recovered || [],
+        persisted: recovery.persisted !== false,
+      };
+      // Batch reconcile runs after the single-topic ledger recovery. It is
+      // metadata-only: it classifies Mercy/Boost batches against the real topic
+      // state and never writes a topic.
+      try {
+        const { reconcileBatches } = require('./src/integration/batch-recovery.js');
+        this.mfUs1BatchRecovery = await reconcileBatches({
+          store: this.mfUs1BatchStore,
+          storage,
+          ledger: this.mfUs1AsyncLifecycle ? this.mfUs1AsyncLifecycle.ledger : null,
+        });
+        const blocked = new Set(this.mfUs1Recovery.blockedTopicIds || []);
+        for (const topicId of this.mfUs1BatchRecovery.blockedTopicIds || []) blocked.add(topicId);
+        this.mfUs1Recovery.blockedTopicIds = [...blocked];
+      } catch (error) {
+        this.mfUs1BatchRecovery = { batches: [], blockedTopicIds: [], summary: { error: error && error.code ? error.code : 'E_BATCH_RECONCILE_FAILED' } };
+        console.error('[IR] MF-US-1 batch reconcile failed', error);
+      }
+      if (this.mfUs1Recovery.blockedTopicIds.length) {
+        console.warn('[IR] MF-US-1 recovery left blocked topics', this.mfUs1Recovery.blockedTopicIds);
+      }
+    } catch (error) {
+      console.error('[IR] MF-US-1 async lifecycle unavailable', error);
+      this.mfUs1AsyncLifecycle = null;
     }
     this.treeIndexCache = null;
     this.duePoolCache = null;
@@ -3143,6 +3205,12 @@ class IncrementalReadingPlugin extends Plugin {
       { label: 'Export inline cards to Spaced Repetition', run: () => this.seedInlineCards() },
       { label: 'Migrate legacy cards to Spaced Repetition', run: () => this.migrateLegacyCards() },
       { label: 'Performance diagnostics', run: () => this.performanceDiagnostics() },
+      { label: 'MF-US-1 diagnostics', run: () => this.mfUs1Diagnostics() },
+      { label: 'Reactivate current…', run: () => this.reactivateCurrent() },
+      { label: 'Undo last Mercy', run: () => this.mercyUndoLast() },
+      { label: 'Resume pending batches…', run: () => this.resumePendingBatches() },
+      { label: 'Migration preview (read-only)…', run: () => this.mfUs1MigrationPreview() },
+      { label: 'MF-US-1 mode…', run: () => this.mfUs1ModeMenu() },
     ]);
   }
 
@@ -3424,6 +3492,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async migrateDateFormat(fromFormat, toFormat) {
+    if (this._mfUs1GuardLegacyWrite('日期格式迁移')) return null;
     const keys = ['next_review', 'last_reviewed', 'date_added', 'date_done', 'date_dismissed', 'today_session_date'];
     const files = new Map(this.getIRFiles().map(file => [file.path, file]));
     const dashboard = this.app.vault.getAbstractFileByPath(this.dashboardPath());
@@ -3522,6 +3591,31 @@ class IncrementalReadingPlugin extends Plugin {
     const today = todayDate();
     const active = this.app.workspace.getActiveFile();
     const dateKey = todayDateString(this.settings);
+    const mode = this._mfUs1EffectiveMode();
+    if (mode === 'unified') {
+      // Unified pool: canonical mf_* projection only; cards keep their SR path.
+      const { buildUnifiedQueue } = require('./src/integration/unified-queue-source.js');
+      const rows = this.getIRRows();
+      let source;
+      try {
+        source = buildUnifiedQueue({ rows, mode, today: dateKey, config: this.settings.queueConfig || undefined });
+      } catch (error) {
+        console.error('[IR] unified queue source failed', error);
+        new Notice('MF-US-1 队列投影失败，本次不建立队列。', 9000);
+        return [];
+      }
+      if (source.diagnostics.length) this.mfUs1QueueDiagnostics = source.diagnostics;
+      const byPath = new Map(rows.map(row => [row.tfile.path, row]));
+      const topics = (source.queue.selected || []).map(item => byPath.get(item.path)).filter(Boolean);
+      const cards = [];
+      if (this.settings.queue.mix_cards !== false && this.isSpacedRepetitionReady()) {
+        const cardRows = rows.filter(row => row.fm && row.fm.type === 'card');
+        const dueCards = await filterAsyncConcurrent(cardRows, async item => this._cardIsDue(item.tfile, today));
+        cards.push(...dueCards);
+      }
+      const pool = topics.concat(cards);
+      return skipCurrent && active ? pool.filter(item => item.tfile.path !== active.path) : pool;
+    }
     const mixCards = this.settings.queue.mix_cards !== false;
     const srReady = mixCards && this.isSpacedRepetitionReady();
     const key = `${dateKey}:${this.irCollectionRevision}:${mixCards}:${srReady}`;
@@ -3577,6 +3671,12 @@ class IncrementalReadingPlugin extends Plugin {
       if (f.last_reviewed === todayStr) continue;
       if (f.type === 'card') {
         if (this.settings.queue.mix_cards === false || !this.isSpacedRepetitionReady()) continue;
+      } else if (this._mfUs1EffectiveMode() === 'unified') {
+        // Authoritative filter: the snapshot entry must still be a migrated,
+        // writable topic. Do not re-filter with the legacy next_review date.
+        const { projectTopic } = require('./src/integration/topic-projection.js');
+        const projected = projectTopic({ tfile: tf, fm: f }, { mode: this._mfUs1EffectiveMode() });
+        if (!projected.writable) continue;
       } else if (!isDue(f, today, this.settings)) continue;
       candidates.push({ tfile: tf, fm: f });
     }
@@ -3808,6 +3908,7 @@ class IncrementalReadingPlugin extends Plugin {
       today,
       calendarDate: today,
       payload,
+      path: file && typeof file.path === 'string' ? file.path : null,
     };
   }
 
@@ -3827,10 +3928,14 @@ class IncrementalReadingPlugin extends Plugin {
       // The unified transport is injected only by an isolated harness; the
       // service itself still refuses unified when it is absent, and the
       // runtime it points at re-checks its own authorization.
-      const transport = this.__mfUs1UnifiedTransport || null;
+      const transport = this.__mfUs1UnifiedTransport
+        || (this.mfUs1AsyncLifecycle && this.mfUs1AsyncLifecycle.runtime
+          ? (request) => this.mfUs1AsyncLifecycle.runtime.execute(request)
+          : null);
       this._mfUs1HostInstance = createHostSchedulerService({
         getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
         unified: typeof transport === 'function' ? descriptor => transport(this._mfUs1UnifiedRequest(descriptor)) : null,
+        shadowObserver: (descriptor) => this._mfUs1ShadowObserve(descriptor),
       });
     }
     return this._mfUs1HostInstance;
@@ -3869,6 +3974,586 @@ class IncrementalReadingPlugin extends Plugin {
   // calls them, so no surface can write scheduling fields on its own.
   _mfUs1EffectiveMode() {
     return (this.settings && this.settings.mf_us1_mode) || 'legacy';
+  }
+
+  // Guard for residual direct writers that are not yet routed through the host.
+  // Returns true when the write must be refused (Unified mode).
+  mfUs1Diagnostics() {
+    const mode = this._mfUs1EffectiveMode();
+    const recovery = this.mfUs1Recovery || {};
+    const lines = [
+      `MF-US-1 模式：${mode}`,
+      `生产写入：${this.mfUs1AsyncLifecycle && this.mfUs1AsyncLifecycle.view ? (this.mfUs1AsyncLifecycle.view.writeEnabled ? '已启用' : '锁定') : '未初始化'}`,
+      `账本健康：${recovery.healthy === false ? '异常' : '正常'}`,
+      `待恢复事件：${(recovery.recovered || []).length}`,
+      `阻断 Topic：${(recovery.blockedTopicIds || []).length}`,
+      `Unified 队列源：${this.settings && this.settings.mf_queue_source === 'unified' ? '统一投影' : '旧字段（未切换）'}`,
+      `批次恢复：${this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && !this.mfUs1BatchRecovery.summary.error ? `检查 ${this.mfUs1BatchRecovery.summary.checked} · 需人工 ${this.mfUs1BatchRecovery.summary.manual}` : (this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error) || '未运行'}`,
+      `Shadow 最近差异：${this.mfUs1ShadowLast ? `${this.mfUs1ShadowLast.action} · ${this.mfUs1ShadowLast.changes.length} 项 · ${this.mfUs1ShadowLast.status}` : '无'}`,
+      `迁移预检：${this.mfUs1MigrationPreviewCache ? `共 ${this.mfUs1MigrationPreviewCache.summary.total} · 可迁移 ${this.mfUs1MigrationPreviewCache.summary.migratable} · 冲突 ${this.mfUs1MigrationPreviewCache.summary.conflict}` : '未运行'}`,
+    ];
+    new Notice(lines.join('\n'), 12000);
+    return lines.join('\n');
+  }
+
+  // REACTIVATE: the only state transition that had no host entry at all.
+  // Legacy writes status/next_review; Unified uses the A4.3 event with an
+  // explicit recovery date (never an implicit "review").
+  async reactivateCurrent() {
+    const { runStateAction } = require('./src/integration/state-actions-host.js');
+    const active = this.app.workspace.getActiveFile();
+    if (!active || active.extension !== 'md') {
+      new Notice('请先打开一个已完成的来源或摘录。');
+      return null;
+    }
+    const fm = getFm(this.app, active);
+    if (!fm || (fm.type !== 'source' && fm.type !== 'extract')) {
+      new Notice('只能恢复来源或摘录（卡片由 Spaced Repetition 管理）。');
+      return null;
+    }
+    if (fm.status !== 'done' && fm.status !== 'dismissed') {
+      new Notice('当前主题不是已完成/已移出状态，无需恢复。');
+      return null;
+    }
+    const format = configuredDateFormat(this.settings);
+    const current = fm.next_review || '(unscheduled)';
+    const raw = await askText(this.app, `恢复到（${format} 或 +Nd；当前：${current}）`, '');
+    if (!raw || !raw.trim()) return null; // cancel: no event, no write
+    const idealDue = this._mfUs1ParseManualScheduleInput(raw);
+    if (!idealDue) { new Notice(`无效日期：${raw.trim()}`); return null; }
+    const legacy = () => this._reactivateLegacy({ tfile: active, fm }, idealDue);
+    const result = await runStateAction({
+      run: (descriptor, legacyWriter) => this._mfUs1RunLegacy(descriptor, legacyWriter),
+      type: 'REACTIVATE',
+      file: active,
+      fm,
+      today: this._todayKey(),
+      payload: { idealDue },
+      legacy,
+    });
+    this._mfUs1ShowActionResult(result);
+    return result;
+  }
+
+  async _markPathsDoneUnified(paths, confirm) {
+    this._mfUs1RefreshRows();
+    const { runStateAction } = require('./src/integration/state-actions-host.js');
+    const files = [...new Set(paths || [])]
+      .map(value => this.app.vault.getAbstractFileByPath(value))
+      .filter(file => file instanceof TFile && file.extension === 'md')
+      .filter(file => ['source', 'extract'].includes(getFm(this.app, file)?.type))
+      .filter(file => getFm(this.app, file)?.status === 'active');
+    if (!files.length) { new Notice('没有可完成的来源或摘录（卡片由 SR 管理）。'); return 0; }
+    if (confirm) {
+      const ok = await confirmDialog(this.app, `完成 ${files.length} 项？`, 'Unified 模式：每项各提交一次 COMPLETE 事件，不计评阅。');
+      if (!ok) return 0;
+    }
+    let applied = 0;
+    const problems = [];
+    for (const file of files) {
+      const result = await runStateAction({
+        run: (descriptor, legacyWriter) => this._mfUs1RunLegacy(descriptor, legacyWriter),
+        type: 'COMPLETE',
+        file,
+        fm: getFm(this.app, file),
+        today: this._todayKey(),
+      });
+      if (['applied', 'duplicate', 'legacy', 'no-op'].includes(result.status)) applied += 1;
+      else problems.push(`${file.basename}: ${result.status}${result.reason ? `/${result.reason}` : ''}`);
+    }
+    if (problems.length) new Notice(`完成 ${applied} 项；${problems.length} 项未完成：${problems.slice(0, 3).join('；')}`, 14000);
+    else new Notice(`已完成 ${applied} 项。`);
+    return applied;
+  }
+
+  async _dismissTreeNodeUnified(path) {
+    this._mfUs1RefreshRows();
+    const { runStateAction } = require('./src/integration/state-actions-host.js');
+    const file = this.app.vault.getAbstractFileByPath(path);
+    const fm = file ? getFm(this.app, file) : null;
+    if (!file || !fm || (fm.type !== 'source' && fm.type !== 'extract')) { new Notice('只能移出来源或摘录。'); return false; }
+    const result = await runStateAction({
+      run: (descriptor, legacyWriter) => this._mfUs1RunLegacy(descriptor, legacyWriter),
+      type: 'DISMISS',
+      file,
+      fm,
+      today: this._todayKey(),
+    });
+    this._mfUs1ShowActionResult(result);
+    return ['applied', 'duplicate', 'legacy'].includes(result.status);
+  }
+
+  async _addCheckpointUnified(noteOverride) {
+    const active = this.app.workspace.getActiveFile();
+    if (!active) { new Notice('No active file'); return null; }
+    const cache = this.app.metadataCache.getFileCache(active);
+    const fmBefore = cache?.frontmatter;
+    if (!isActiveIR(fmBefore) || fmBefore.type === 'card') {
+      new Notice('Checkpoints apply to sources and extracts only.');
+      return null;
+    }
+    if (typeof noteOverride === 'string' && /^\d+d::/.test(noteOverride)) {
+      // Interval overrides are scheduling writes: no accepted event exists, so
+      // Unified refuses instead of silently rewriting the interval.
+      new Notice('Unified 下检查点不能修改学习间隔（请使用排期/延期事件）。', 9000);
+      return null;
+    }
+    let note = noteOverride;
+    if (note == null) {
+      note = await new Promise(resolve => {
+        new TextPromptModal(this.app, 'Checkpoint note', '', resolve).open();
+      });
+    }
+    if (note == null) return null;
+    const editor = this.app.workspace.activeEditor?.editor;
+    const line = editor ? editor.getCursor().line : 0;
+    const revisionBefore = Number(fmBefore.mf_revision);
+
+    await this.app.fileManager.processFrontMatter(active, (fmw) => {
+      fmw.checkpoints = Array.isArray(fmw.checkpoints) ? fmw.checkpoints : [];
+      fmw.checkpoints.push({ date: todayDateString(this.settings), line, note: String(note) });
+    });
+
+    const fmAfter = this.app.metadataCache.getFileCache(active)?.frontmatter || {};
+    if (Number(fmAfter.mf_revision) !== revisionBefore) {
+      new Notice('检查点已保存，但检测到并发的调度修改，请核对最新状态。', 10000);
+    } else {
+      new Notice('检查点已保存（仅阅读元数据，调度字段未变）。');
+    }
+    return { ok: true, note: String(note), line, revisionBefore };
+  }
+
+  async boostUnified() {
+    this._mfUs1RefreshRows();
+    const { planBoostBatch, applyBoostBatch, describeBoostOutcome } = require('./src/integration/boost-batch-host.js');
+    if (!this.mfUs1BatchStore) { new Notice('MF-US-1 Boost 尚未初始化（缺少批次存储）。', 9000); return null; }
+    const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
+    if (!r) return null;
+    if (!r.fm || typeof r.fm.mf_id !== 'string' || !r.fm.mf_id) {
+      new Notice('Boost 未执行：该主题缺少持久 mf_id（需先迁移）。', 9000);
+      return null;
+    }
+    const delta = await pickFromList(this.app, ['Small (-5)', 'Medium (-15)', 'Strong (-30)'], [5, 15, 30], 'Boost amount');
+    if (!delta) return null;
+    let batch;
+    try {
+      const { projectTopic } = require('./src/integration/topic-projection.js');
+      const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, {
+        rows: this.getIRRows(),
+        strict: true,
+      });
+      const items = subtree.map(page => {
+        const projected = projectTopic({ tfile: page.tfile, fm: page.fm }, { mode: this._mfUs1EffectiveMode() });
+        return {
+          path: projected.path,
+          basename: projected.basename,
+          topicId: projected.topicId,
+          type: projected.type,
+          status: projected.status,
+          priority: projected.priority,
+          revision: projected.revision,
+        };
+      });
+      batch = planBoostBatch({ rows: items, rootTopicId: r.fm.mf_id, delta, today: this._todayKey() });
+    } catch (error) {
+      new Notice(`Boost 未执行：${error.message || error.code || '计划失败'}`, 9000);
+      return null;
+    }
+    if (!batch.targets.length) { new Notice('Boost 没有可提升的节点。'); return null; }
+    const ok = await confirmDialog(this.app, 'Boost 优先级', `将对 ${batch.targets.length} 个主题各提交一次 SET_PRIORITY（绝对目标值），确认执行？`);
+    if (!ok) return null;
+    const rowsByPath = new Map(this.getIRRows().map(row => [row.tfile.path, row]));
+    const eventById = new Map((batch.events || []).map(event => [event.topicId, event]));
+    const today = this._todayKey();
+    const outcome = await applyBoostBatch({
+      batch,
+      getPriority: async node => Number((rowsByPath.get(node.path) || {}).fm?.priority) || 50,
+      applyItem: async (node, change) => {
+        const file = this.app.vault.getAbstractFileByPath(node.path);
+        if (!file) return { status: 'failed', reason: 'E_FILE_MISSING' };
+        const plannedEvent = eventById.get(node.topicId);
+        if (!plannedEvent || !plannedEvent.eventId) {
+          // Without a durable event identity the batch can never prove what it
+          // wrote after a crash: refuse instead of emitting an anonymous event.
+          return { status: 'blocked', reason: 'E_BOOST_EVENT_ID_REQUIRED' };
+        }
+        try {
+          const outcome = await this._mfUs1RunLegacy({
+            action: 'SET_PRIORITY',
+            eventId: plannedEvent.eventId,
+            topicId: node.topicId,
+            expectedRevision: plannedEvent.expectedRevision,
+            today,
+            calendarDate: today,
+            payload: { priority: change.priority },
+            path: node.path,
+          });
+          return outcome || { status: 'failed', reason: 'E_BOOST_WRITE_FAILED' };
+        } catch (error) {
+          return { status: 'failed', reason: (error && error.code) || 'E_BOOST_WRITE_FAILED' };
+        }
+      },
+      store: {
+        getBatch: batchId => this.mfUs1BatchStore.getBatch(batchId),
+        save: (batchId, record) => this.mfUs1BatchStore.saveBatch({ batchId, kind: 'BOOST', ...record }),
+      },
+    });
+    const report = describeBoostOutcome(outcome);
+    new Notice(report.message, report.nonAtomic ? 14000 : 7000);
+    return outcome;
+  }
+
+  _mfUs1RefreshRows() {
+    // MetadataCache objects are replaced after each write; a cached projection
+    // row would otherwise report the pre-write mf_not_before / priority.
+    this.irFilesCache = null;
+    this.irRowsCache = null;
+  }
+
+  // Read-only Shadow comparison: Legacy remains the only writer. This computes
+  // what Unified would have produced for a migrated topic and records the diff
+  // for diagnostics. It never writes a file or a ledger record, and any failure
+  // is contained so Legacy keeps working.
+  _mfUs1ShadowObserve(descriptor) {
+    try {
+      const row = this.getIRRows().find(item => item.tfile && item.tfile.path === descriptor.path);
+      if (!row) return { status: 'not-comparable', reason: 'TOPIC_NOT_FOUND' };
+      const fm = row.fm || {};
+      const revision = Number(fm.mf_revision);
+      if (!fm.mf_id || !Number.isInteger(revision)) return { status: 'not-comparable', reason: 'NOT_MIGRATED' };
+      const { applyEvent } = require('./src/scheduling/events.js');
+      const normalize = value => (value == null || value === 'null' || value === '' ? null : String(value));
+      const topic = {
+        type: fm.type,
+        status: fm.status,
+        priority: Number(fm.priority) || 50,
+        mf_id: fm.mf_id,
+        mf_parent_id: normalize(fm.mf_parent_id),
+        mf_root_id: normalize(fm.mf_root_id),
+        mf_ideal_due: normalize(fm.mf_ideal_due),
+        mf_not_before: normalize(fm.mf_not_before),
+        mf_interval_days: Number(fm.mf_interval_days),
+        mf_last_event_id: normalize(fm.mf_last_event_id),
+        mf_revision: revision,
+        mf_scheduler_version: Number(fm.mf_scheduler_version),
+        a_factor: Number(fm.a_factor),
+        review_count: Number(fm.review_count),
+      };
+      const applied = applyEvent(topic, {
+        eventId: descriptor.eventId,
+        topicId: fm.mf_id,
+        type: descriptor.action,
+        payload: descriptor.payload,
+        expectedRevision: revision,
+        algorithmVersion: 1,
+        calendarDate: descriptor.calendarDate,
+      }, undefined, descriptor.today);
+      const next = applied && applied.topic ? applied.topic : topic;
+      const changeFields = ['priority', 'status', 'mf_ideal_due', 'mf_not_before', 'mf_interval_days', 'a_factor', 'review_count', 'mf_revision'];
+      const changes = [];
+      for (const field of changeFields) {
+        if (String(topic[field]) !== String(next[field])) changes.push({ field, before: topic[field], after: next[field] });
+      }
+      this.mfUs1ShadowLast = {
+        at: new Date().toISOString(),
+        action: descriptor.action,
+        path: descriptor.path,
+        changes,
+        status: applied && applied.applied === false ? 'no-op' : 'compared',
+        writesPerformed: false,
+      };
+      return { status: this.mfUs1ShadowLast.status, changes, writesPerformed: false };
+    } catch (error) {
+      return { status: 'not-comparable', reason: (error && error.code) || 'E_SHADOW_FAILED' };
+    }
+  }
+
+  _mfUs1RowByTopicId(topicId) {
+    if (!topicId) return null;
+    const wanted = String(topicId).toLowerCase();
+    return this.getIRRows().find(row => row.fm && typeof row.fm.mf_id === 'string' && row.fm.mf_id.toLowerCase() === wanted) || null;
+  }
+
+  _mfUs1NotBeforeOf(row) {
+    const value = row && row.fm ? row.fm.mf_not_before : null;
+    return value == null || value === 'null' || value === '' ? null : String(value);
+  }
+
+  async mercyUnified({ windowDays = null } = {}) {
+    this._mfUs1RefreshRows();
+    const { buildMercyPreview, confirmMercyPreview, applyMercyHost, describeMercyOutcome } = require('./src/integration/mercy-host.js');
+    const { projectTopic, toQueueTopic } = require('./src/integration/topic-projection.js');
+    if (!this.mfUs1AdminWriter || !this.mfUs1BatchStore) {
+      new Notice('MF-US-1 Mercy 尚未初始化（缺少受保护写入或批次存储）。', 9000);
+      return null;
+    }
+    const chosenWindow = windowDays || await pickFromList(this.app, ['3 days', '7 days', '14 days', '30 days'], [3, 7, 14, 30], 'Mercy window');
+    if (!chosenWindow) return null;
+    const today = this._todayKey();
+    const rows = this.getIRRows();
+    const projections = rows.map(row => projectTopic(row, { mode: this._mfUs1EffectiveMode() }));
+    const topics = projections
+      .filter(item => item.writable && item.status === 'active' && item.effectiveDue && item.effectiveDue <= today)
+      .map(toQueueTopic);
+    if (!topics.length) { new Notice('没有可摊平的逾期主题。'); return null; }
+
+    let preview;
+    try {
+      preview = buildMercyPreview({ topics, today, windowDays: chosenWindow, budgetPerDay: this.settings.queueBudgetMinutes || 30, config: this.settings.queueConfig || undefined });
+    } catch (error) {
+      new Notice(`Mercy 预览失败：${error.message || error.code || '未知错误'}`, 9000);
+      return null;
+    }
+    if (!preview.items || !preview.items.length) { new Notice('Mercy 预览没有需要调整的主题。'); return null; }
+    const ok = await confirmDialog(this.app, 'Mercy 预览',
+      `${preview.items.length} 个逾期主题将在未来 ${chosenWindow} 天内摊平（仅修改最早可见日，不改真实间隔）。确认执行？`);
+    if (!ok) return null;
+    const confirmation = confirmMercyPreview(preview);
+
+    const appliedRevisions = new Map();
+    const outcome = await applyMercyHost({
+      preview,
+      confirmation,
+      today,
+      applyItem: async item => {
+        const row = this._mfUs1RowByTopicId(item.topicId);
+        if (!row) return { status: 'conflict', reason: 'E_TOPIC_NOT_FOUND' };
+        const current = this._mfUs1NotBeforeOf(row);
+        if (current !== (item.currentNotBefore ?? null)) return { status: 'conflict', reason: 'E_INPUT_CHANGED' };
+        const written = await this.mfUs1AdminWriter.write({
+          topicId: item.topicId,
+          updates: { mf_not_before: item.notBefore },
+          expectedNotBefore: item.currentNotBefore ?? null,
+        });
+        if (written.status === 'applied' && Number.isInteger(written.revision)) {
+          appliedRevisions.set(String(item.topicId).toLowerCase(), written.revision);
+        }
+        return written;
+      },
+      store: { save: record => this.mfUs1BatchStore.saveBatch({ kind: 'MERCY', ...record }) },
+    });
+    if (appliedRevisions.size) {
+      // Persist the revisions this batch actually produced: Undo must CAS on
+      // them so an external scheduler write is a conflict, not a silent undo.
+      const record = await this.mfUs1BatchStore.getBatch(outcome.batchId);
+      if (record) {
+        const saved = await this.mfUs1BatchStore.saveBatch({
+          ...record,
+          revisions: [...appliedRevisions.entries()].map(([topicId, revision]) => ({ topicId, revision })),
+        });
+        outcome.revisionEvidencePersisted = Boolean(saved && saved.ok);
+        if (!saved || !saved.ok) {
+          new Notice('Mercy 已应用，但撤销凭证保存失败；Undo 不可用，请核对批次记录后再操作。', 14000);
+        }
+      }
+    }
+    const report = describeMercyOutcome(outcome);
+    new Notice(report.message, report.nonAtomic ? 14000 : 7000);
+    return outcome;
+  }
+
+  // Read-only migration precheck (R5). Never writes a topic; the resulting plan
+  // is kept only for the diagnostics menu.
+  async mfUs1MigrationPreview() {
+    const { previewMigration } = require('./src/scheduling/migration-plan.js');
+    const rows = this.getIRRows().filter(row => row.fm && (row.fm.type === 'source' || row.fm.type === 'extract'));
+    const snapshots = rows.map(row => ({
+      ...row.fm,
+      path: row.tfile.path,
+      basename: row.tfile.basename,
+      content: null,
+    }));
+    let plan;
+    try {
+      plan = previewMigration(snapshots, { dateFormat: configuredDateFormat(this.settings) });
+    } catch (error) {
+      new Notice(`迁移预检失败：${error.code || error.message || '未知错误'}`, 9000);
+      return null;
+    }
+    this.mfUs1MigrationPreviewCache = plan;
+    const summary = plan.summary;
+    const examples = plan.entries
+      .filter(entry => entry.status !== 'already-migrated')
+      .slice(0, 4)
+      .map(entry => `${entry.basename || entry.path}:${entry.status}`)
+      .join('；');
+    new Notice(
+      `迁移预检（只读，未写入）：共 ${summary.total} · 可迁移 ${summary.migratable} · 需人工 ${summary.manualReview} · 冲突 ${summary.conflict} · 已迁移 ${summary.alreadyMigrated}` +
+        (examples ? `
+例：${examples}` : ''),
+      14000,
+    );
+    return plan;
+  }
+
+  // Mode status and safe switching. Unified stays fail-closed: selecting it
+  // never grants a token and is refused while activation conditions are unmet.
+  mfUs1ActivationBlockers() {
+    const blockers = [];
+    if (!this.__mfUs1UnifiedTransport) blockers.push('E_NO_HOST_TRANSPORT');
+    if (!this.mfUs1Recovery || this.mfUs1Recovery.healthy === false) blockers.push('E_RECOVERY_UNHEALTHY');
+    if (!this.mfUs1BatchRecovery || (this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error)) blockers.push('E_BATCH_RECOVERY_UNKNOWN');
+    if (this.mfUs1Recovery && Array.isArray(this.mfUs1Recovery.blockedTopicIds) && this.mfUs1Recovery.blockedTopicIds.length) blockers.push('E_BLOCKED_TOPICS');
+    const plan = this.mfUs1MigrationPreviewCache;
+    if (!plan) blockers.push('E_MIGRATION_NOT_PREVIEWED');
+    else if (plan.summary && (plan.summary.migratable > 0 || plan.summary.manualReview > 0 || plan.summary.conflict > 0)) blockers.push('E_MIGRATION_INCOMPLETE');
+    return blockers;
+  }
+
+  async mfUs1ModeMenu() {
+    const modes = await pickFromList(this.app, ['Legacy', 'Shadow', 'Unified（需要激活条件）'], ['legacy', 'shadow', 'unified'], 'MF-US-1 mode');
+    if (!modes) return null;
+    if (modes === 'unified') {
+      const blockers = this.mfUs1ActivationBlockers();
+      new Notice(`Unified 不可激活：${blockers.length ? blockers.join('、') : '缺少生产授权 Token'}。生产写入保持锁定。`, 12000);
+      return { ok: false, mode: this._mfUs1EffectiveMode(), blockers };
+    }
+    this.settings.mf_us1_mode = modes;
+    if (typeof this.saveSettings === 'function') await this.saveSettings();
+    this._mfUs1HostInstance = null;
+    new Notice(`MF-US-1 模式已切换为 ${modes}（Legacy/Shadow 写入行为不变）。`);
+    return { ok: true, mode: modes };
+  }
+
+  async resumePendingBatches() {
+    const { resumeBatch } = require('./src/integration/batch-resume.js');
+    if (this._mfUs1EffectiveMode() !== 'unified') {
+      new Notice('批次恢复只在 Unified 模式可用。');
+      return null;
+    }
+    if (!this.mfUs1BatchStore || !this.mfUs1AdminWriter) {
+      new Notice('批次存储尚未初始化。');
+      return null;
+    }
+    const pending = await this.mfUs1BatchStore.listBatches({ unfinishedOnly: true });
+    if (!pending.length) { new Notice('没有未决批次。'); return null; }
+    const label = pending.slice(0, 3).map(batch => `${batch.kind}/${String(batch.batchId).slice(0, 8)}(${batch.status})`).join('、');
+    const ok = await confirmDialog(this.app, '恢复未决批次',
+      `${pending.length} 个未决批次：${label}。将按持久绝对目标继续未完成项（不会重算增量），确认？`);
+    if (!ok) return null;
+    const { projectTopic } = require('./src/integration/topic-projection.js');
+    const results = [];
+    for (const batch of pending) {
+      const outcome = await resumeBatch({
+        store: this.mfUs1BatchStore,
+        batchId: batch.batchId,
+        ledger: this.mfUs1AsyncLifecycle ? this.mfUs1AsyncLifecycle.ledger : null,
+        authorization: this.__mfUs1ResumeAuthorization || null,
+        readTopic: async topicId => {
+          const row = this._mfUs1RowByTopicId(topicId);
+          if (!row) return { entry: null };
+          const projected = projectTopic(row, { mode: this._mfUs1EffectiveMode() });
+          return {
+            entry: {
+              frontmatter: { mf_not_before: projected.notBefore, priority: projected.priority },
+              revision: projected.revision,
+            },
+          };
+        },
+        runItem: async item => {
+          const row = this._mfUs1RowByTopicId(item.topicId);
+          if (!row) return { status: 'conflict', reason: 'E_TOPIC_NOT_FOUND' };
+          if (batch.kind === 'MERCY') {
+            return this.mfUs1AdminWriter.write({
+              topicId: item.topicId,
+              updates: { mf_not_before: item.notBefore },
+              expectedNotBefore: item.currentNotBefore,
+              expectedRevision: Number.isInteger(item.revision) ? item.revision : undefined,
+            });
+          }
+          if (!item.eventId) return { status: 'blocked', reason: 'E_BOOST_EVENT_ID_REQUIRED' };
+          try {
+            // Resume reuses the batch's persisted event identity: a fresh id
+            // would break the ledger evidence chain after a crash.
+            const outcome = await this._mfUs1RunLegacy({
+              action: 'SET_PRIORITY',
+              eventId: item.eventId,
+              topicId: item.topicId,
+              expectedRevision: Number.isInteger(item.expectedRevision) ? item.expectedRevision : null,
+              today: this._todayKey(),
+              calendarDate: this._todayKey(),
+              payload: { priority: item.priority },
+              path: row.tfile.path,
+            });
+            return outcome || { status: 'failed', reason: 'E_BOOST_WRITE_FAILED' };
+          } catch (error) {
+            return { status: 'failed', reason: (error && error.code) || 'E_BOOST_WRITE_FAILED' };
+          }
+        },
+      });
+      results.push({ batchId: batch.batchId, kind: batch.kind, status: outcome.status, reason: outcome.reason });
+    }
+    new Notice(`批次恢复：${results.map(item => `${item.kind}=${item.status}`).join('、')}`, 12000);
+    return results;
+  }
+
+  async mercyUndoLast() {
+    this._mfUs1RefreshRows();
+    const { confirmMercyPreview, undoMercyHost, describeMercyOutcome } = require('./src/integration/mercy-host.js');
+    if (!this.mfUs1AdminWriter || !this.mfUs1BatchStore) { new Notice('MF-US-1 Mercy 尚未初始化。', 9000); return null; }
+    const batch = await this.mfUs1BatchStore.latestBatch('MERCY');
+    if (!batch || !Array.isArray(batch.results)) { new Notice('没有可撤销的 Mercy 批次记录。'); return null; }
+    const revisionByTopic = new Map((Array.isArray(batch.revisions) ? batch.revisions : [])
+      .filter(entry => entry && entry.topicId && Number.isInteger(entry.revision))
+      .map(entry => [String(entry.topicId).toLowerCase(), entry.revision]));
+    if (!revisionByTopic.size) {
+      new Notice('该批次缺少写入 Revision 证据，无法安全撤销。', 10000);
+      return { status: 'blocked', reason: 'E_UNDO_EVIDENCE_MISSING' };
+    }
+    const ok = await confirmDialog(this.app, '撤销上次 Mercy', `恢复 ${batch.results.filter(r => r.status === 'applied').length} 个主题的原最早可见日？`);
+    if (!ok) return null;
+    let confirmation;
+    try {
+      confirmation = confirmMercyPreview({
+        batchId: batch.batchId,
+        previewDigest: batch.previewDigest,
+        today: batch.today,
+        windowDays: batch.windowDays,
+        items: batch.items,
+      });
+    } catch (error) {
+      new Notice(`批次凭证无效，无法撤销：${error.message || error.code}`, 9000);
+      return null;
+    }
+    const outcome = await undoMercyHost({
+      batch,
+      confirmation,
+      undoItem: async item => {
+        const row = this._mfUs1RowByTopicId(item.topicId);
+        if (!row) return { status: 'conflict', reason: 'E_TOPIC_NOT_FOUND' };
+        const current = this._mfUs1NotBeforeOf(row);
+        const expectedRevision = revisionByTopic.get(String(item.topicId).toLowerCase());
+        if (expectedRevision == null) return { status: 'conflict', reason: 'E_UNDO_EVIDENCE_MISSING' };
+        if (current !== item.notBefore) return { status: 'conflict', reason: 'E_TOPIC_CHANGED_SINCE_APPLY' };
+        return this.mfUs1AdminWriter.write({
+          topicId: item.topicId,
+          updates: { mf_not_before: item.currentNotBefore ?? null },
+          expectedNotBefore: item.notBefore,
+          expectedRevision,
+        });
+      },
+    });
+    const report = describeMercyOutcome(outcome);
+    new Notice(report.message, report.nonAtomic ? 14000 : 7000);
+    return outcome;
+  }
+
+  async _reactivateLegacy(r, idealDue) {
+    const vaultDate = formatDateValue(dateCore.parseDateExact(idealDue, 'YYYY-MM-DD'), this.settings);
+    await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => {
+      fmw.status = 'active';
+      if (fmw.date_done !== undefined) delete fmw.date_done;
+      if (fmw.date_dismissed !== undefined) delete fmw.date_dismissed;
+      fmw.next_review = vaultDate;
+    });
+    new Notice(`已恢复：${r.tfile.basename} · ${vaultDate}`);
+  }
+
+  _mfUs1GuardLegacyWrite(feature) {
+    const { guardLegacySchedulingWrite } = require('./src/integration/host-write-guard.js');
+    const verdict = guardLegacySchedulingWrite(this, feature);
+    if (verdict.blocked && verdict.first) new Notice(verdict.message, 9000);
+    return verdict.blocked;
   }
 
   _mfUs1HostActionTarget(file) {
@@ -4046,7 +4731,13 @@ class IncrementalReadingPlugin extends Plugin {
 
   async _mfUs1CreateTopicFromHost({ requestId, kind, priority, parentFile = null, path, content }) {
     const authorization = this._mfUs1CreationAuthorization();
-    if (!authorization) return { handled: false };
+    if (!authorization) {
+      if (this._mfUs1EffectiveMode() === 'unified') {
+        new Notice('Unified 创建需要授权；本次未创建（已 fail-closed）。', 9000);
+        return { handled: true, outcome: { status: 'blocked', reason: 'E_CREATION_NOT_AUTHORIZED' } };
+      }
+      return { handled: false };
+    }
     const { planTopicCreation, composeCreationContent, executeTopicCreation } = require('./src/integration/topic-creation-host.js');
     const today = typeof this._todayKey === 'function' ? this._todayKey() : todayDateString(this.settings);
 
@@ -4067,6 +4758,10 @@ class IncrementalReadingPlugin extends Plugin {
     let outcome;
     try {
       const plan = planTopicCreation({ requestId, kind, priority, parentId, rootId, today });
+      if (kind === 'source' && plan.topic && !plan.topic.mf_root_id) {
+        // A standalone source is its own root.
+        plan.topic.mf_root_id = plan.topic.mf_id;
+      }
       const composed = composeCreationContent({
         content,
         topic: plan.topic,
@@ -4102,6 +4797,18 @@ class IncrementalReadingPlugin extends Plugin {
       mode: { mode: this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy' },
       dateFormat,
     });
+  }
+
+  async _mfUs1CreateSplitNote({ path, content, kind, priority, parentFile, requestId }) {
+    if (this._mfUs1EffectiveMode() !== 'unified') {
+      await this.app.vault.create(path, content);
+      return { status: 'created', path };
+    }
+    const creation = await this._mfUs1CreateTopicFromHost({ requestId, kind, priority, parentFile, path, content });
+    if (!creation || creation.handled === false) return { status: 'failed', reason: 'E_CREATION_NOT_ROUTED' };
+    const outcome = creation.outcome || {};
+    if (outcome.status === 'applied' || outcome.status === 'duplicate') return { status: outcome.status, path };
+    return { status: outcome.status || 'failed', reason: outcome.reason || outcome.status };
   }
 
   async _gradeTopic(file, fm, today) {
@@ -4268,6 +4975,8 @@ class IncrementalReadingPlugin extends Plugin {
   // clamped to [settings.a_factor_min, settings.a_factor_max], persists to
   // frontmatter, and returns { from, to } when the value actually moved.
   async _bumpAFactor(file, fm, factor) {
+    // R2: Unified creation never performs the legacy implicit parent reward.
+    if (this._mfUs1EffectiveMode() === 'unified') return null;
     if (!fm || (fm.type !== 'source' && fm.type !== 'extract')) return null;
     const cur = readAFactor(this.settings, fm);
     const next = clampAFactor(this.settings, cur * factor);
@@ -4459,6 +5168,8 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async dismissTreeNode(path) {
+    if (this._mfUs1EffectiveMode() === 'unified') return this._dismissTreeNodeUnified(path);
+    if (this._mfUs1GuardLegacyWrite('移出队列（树）')) return false;
     const f = this.app.vault.getAbstractFileByPath(path);
     if (!f) return;
     if (getFm(this.app, f)?.type === 'card') {
@@ -4474,6 +5185,8 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async markPathsDone(paths, { confirm = true } = {}) {
+    if (this._mfUs1EffectiveMode() === 'unified') return this._markPathsDoneUnified(paths, confirm);
+    if (this._mfUs1GuardLegacyWrite('完成（直接写入）')) return 0;
     const files = [...new Set(paths || [])]
       .map(path => this.app.vault.getAbstractFileByPath(path))
       .filter(file => file instanceof TFile && ['source', 'extract', 'card'].includes(getFm(this.app, file)?.type));
@@ -4506,6 +5219,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async resetPaths(paths, { confirm = true } = {}) {
+    if (this._mfUs1GuardLegacyWrite('重置排期（直接写入）')) return 0;
     const files = [...new Set(paths || [])]
       .map(path => this.app.vault.getAbstractFileByPath(path))
       .filter(file => file instanceof TFile && ['source', 'extract', 'card'].includes(getFm(this.app, file)?.type));
@@ -4595,6 +5309,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async addCheckpoint(noteOverride) {
+    if (this._mfUs1EffectiveMode() === 'unified') return this._addCheckpointUnified(noteOverride);
     const active = this.app.workspace.getActiveFile();
     if (!active) { new Notice('No active file'); return; }
     const cache = this.app.metadataCache.getFileCache(active);
@@ -4746,12 +5461,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async boost() {
-    // Boost is a batch delta, not one SET_PRIORITY event. Until a batch event
-    // protocol exists it must not bypass the single writer in Unified mode.
-    if (this._mfUs1EffectiveMode() === 'unified') {
-      new Notice('Boost 尚未支持 Unified 批量优先级；请使用「设置优先级」逐项修改。', 9000);
-      return { status: 'failed', reason: 'E_BOOST_REQUIRES_BATCH_EVENTS', writesPerformed: false };
-    }
+    if (this._mfUs1EffectiveMode() === 'unified') return this.boostUnified();
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const amount = await pickFromList(
@@ -4873,6 +5583,8 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mercy() {
+    if (this._mfUs1EffectiveMode() === 'unified') return this.mercyUnified();
+    if (this._mfUs1GuardLegacyWrite('Mercy（旧入口）')) return null;
     const choice = await pickFromList(
       this.app, ['3 days', '7 days', '14 days', '30 days'], [3, 7, 14, 30], 'Spread window'
     );
@@ -5631,6 +6343,11 @@ ${body}
   }
 
   async importClipping() {
+    if (this._mfUs1EffectiveMode() === 'unified') {
+      new Notice('Unified 下不隐式接管已有笔记。请先使用「Migration preview / 迁移」。', 10000);
+      return { status: 'blocked', reason: 'E_IMPORT_IS_IDENTITY_MIGRATION' };
+    }
+    if (this._mfUs1GuardLegacyWrite('导入剪藏')) return null;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') {
       new Notice('Open a clipper note first.'); return;
@@ -5939,12 +6656,18 @@ ${body}
   // ---- Splits ------------------------------------------------------------
 
   async splitArticle() {
+    const unified = this._mfUs1EffectiveMode() === 'unified';
+    if (!unified && this._mfUs1GuardLegacyWrite('拆分文章')) return null;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') { new Notice('Open a source note.'); return; }
     const fm = getFm(this.app, active);
     if (!fm || fm.type !== 'source') { new Notice('Not a source.'); return; }
     if (fm.source_type !== 'article') { new Notice('Articles only — books use Split Book.'); return; }
     if (fm.status === 'container') { new Notice('Already split.'); return; }
+    if (unified && (typeof fm.mf_id !== 'string' || !fm.mf_id)) {
+      new Notice('Unified：该来源尚未迁移（缺少 mf_id），请先执行迁移。', 9000);
+      return null;
+    }
 
     const content = await this.app.vault.read(active);
     const fmEnd = content.indexOf('\n---', 3);
@@ -5966,6 +6689,7 @@ ${body}
     const baseInterval = priorityToInterval(priority);
     const folder = active.parent.path;
     const links = [];
+    const failures = [];
 
     for (let i = 0; i < selected.length; i++) {
       const h = selected[i];
@@ -5995,25 +6719,72 @@ tags:
 ${sectionBody}
 `;
       const p = `${folder}/${noteTitle}.md`;
+      const requestId = `split-article:${active.path}:${h.title}`;
       if (!this.app.vault.getAbstractFileByPath(p)) {
-        await this.app.vault.create(p, noteContent);
+        const created = await this._mfUs1CreateSplitNote({
+          path: p,
+          content: `${noteContent}\n<!-- mf-split:${requestId} -->\n`,
+          kind: 'source',
+          priority,
+          parentFile: active,
+          requestId,
+        });
+        if (created.status === 'applied' || created.status === 'duplicate' || created.status === 'created') {
+          links.push(`- [[${noteTitle}]]`);
+        } else {
+          failures.push(`${noteTitle}:${created.status}${created.reason ? `/${created.reason}` : ''}`);
+        }
+      } else {
+        const existing = this.app.vault.getAbstractFileByPath(p);
+        const existingFm = existing ? getFm(this.app, existing) : null;
+        let looksLikeCreatedChild = false;
+        if (existingFm && typeof existingFm.mf_id === 'string' && existingFm.mf_id && existingFm.type === 'source') {
+          // Exact Phase 1 parent relation, not a substring match.
+          const parentLink = String(existingFm.parent || '').trim();
+          if (parentLink === `[[${parentTitle}]]` || parentLink === JSON.stringify(`[[${parentTitle}]]`)) {
+            const existingText = await this.app.vault.read(existing);
+            looksLikeCreatedChild = existingText.includes(`<!-- mf-split:${requestId} -->`);
+          }
+        }
+        if (!unified || looksLikeCreatedChild) {
+          links.push(`- [[${noteTitle}]]`);
+        } else {
+          // A same-named file that this batch cannot prove it created is an
+          // identity conflict, not a duplicate.
+          failures.push(`${noteTitle}:E_IDENTITY_CONFLICT`);
+        }
       }
-      links.push(`- [[${noteTitle}]]`);
+    }
+
+    if (failures.length) {
+      new Notice(`拆分部分失败 ${links.length}/${selected.length}：${failures.slice(0, 3).join('；')}。未修改父来源状态，可重试。`, 14000);
+      return { created: links.length, failed: failures.length, failures };
     }
 
     const subSection = `\n## Sub-topics\n\n${links.join('\n')}\n`;
     const bodyWithoutOld = content.replace(/\n## Sub-topics[\s\S]*?(?=\n## |$)/, '');
     await this.app.vault.process(active, () => bodyWithoutOld + subSection);
-    await this.app.fileManager.processFrontMatter(active, (fmw) => { fmw.status = 'container'; });
+    if (!unified) {
+      await this.app.fileManager.processFrontMatter(active, (fmw) => { fmw.status = 'container'; });
+    } else {
+      new Notice('Unified：父来源状态未直接改写（container 需迁移/事件处理）。', 9000);
+    }
     new Notice(`Split into ${selected.length} sub-topic${selected.length === 1 ? '' : 's'}.`);
+    return { created: links.length, failed: 0 };
   }
 
   async splitBook() {
+    const unified = this._mfUs1EffectiveMode() === 'unified';
+    if (!unified && this._mfUs1GuardLegacyWrite('拆分书籍')) return null;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') { new Notice('Open a book source note.'); return; }
     const fm = getFm(this.app, active);
     if (!fm || fm.type !== 'source') { new Notice('Not a source.'); return; }
     if (fm.status === 'container') { new Notice('Already a container.'); return; }
+    if (unified && (typeof fm.mf_id !== 'string' || !fm.mf_id)) {
+      new Notice('Unified：该书籍尚未迁移（缺少 mf_id），请先执行迁移。', 9000);
+      return null;
+    }
     if (fm.source_type !== 'book' && fm.source_type !== 'pdf') {
       const cont = await confirmDialog(this.app, "Not a book/PDF — proceed anyway?");
       if (!cont) return;
@@ -6063,6 +6834,7 @@ ${sectionBody}
     const folder = this.sourcesFolder();
     await ensureFolder(this.app, folder);
     let created = 0;
+    const failures = [];
     const skipped = [];
 
     for (let i = 0; i < chapters.length; i++) {
@@ -6071,7 +6843,22 @@ ${sectionBody}
       const safeTitle = slugifyForFolder(ch.title) || `Chapter ${i + 1}`;
       const name = slugifyForFolder(`${parentTitle} - Ch${num} ${safeTitle}`);
       const path = `${folder}/${name}.md`;
-      if (this.app.vault.getAbstractFileByPath(path)) { skipped.push(name); continue; }
+      const requestId = `split-book:${active.path}:${i + 1}:${ch.title}`;
+      const existingChapter = this.app.vault.getAbstractFileByPath(path);
+      if (existingChapter) {
+        const existingFm = getFm(this.app, existingChapter);
+        let looksLikeCreatedChapter = false;
+        if (existingFm && typeof existingFm.mf_id === 'string' && existingFm.mf_id && existingFm.type === 'source') {
+          const parentLink = String(existingFm.parent || '').trim();
+          if (parentLink === `[[${parentTitle}]]` || parentLink === JSON.stringify(`[[${parentTitle}]]`)) {
+            const existingText = await this.app.vault.read(existingChapter);
+            looksLikeCreatedChapter = existingText.includes(`<!-- mf-split:${requestId} -->`);
+          }
+        }
+        if (!unified || looksLikeCreatedChapter) { skipped.push(name); continue; }
+        failures.push(`${ch.title}:E_IDENTITY_CONFLICT`);
+        continue;
+      }
 
       const chInterval = baseInterval + i;
       const chNext = futureDateString(chInterval, this.settings);
@@ -6113,14 +6900,38 @@ tags:
 ## Extracts
 
 `;
-      await this.app.vault.create(path, content);
-      created++;
+      if (unified) {
+        const createdNote = await this._mfUs1CreateSplitNote({
+          path,
+          content: `${content}\n<!-- mf-split:${requestId} -->\n`,
+          kind: 'source',
+          priority,
+          parentFile: active,
+          requestId,
+        });
+        if (createdNote.status === 'applied' || createdNote.status === 'duplicate' || createdNote.status === 'created') {
+          created++;
+        } else {
+          failures.push(`${ch.title}:${createdNote.status}`);
+        }
+      } else {
+        await this.app.vault.create(path, content);
+        created++;
+      }
     }
 
-    await this.app.fileManager.processFrontMatter(active, (fmw) => {
-      fmw.status = 'container';
-      fmw.next_review = null;
-    });
+    if (failures.length) {
+      new Notice(`拆分部分失败 ${created}/${chapters.length}：${failures.slice(0, 3).join('；')}。未修改父来源状态，可重试。`, 14000);
+      return { created, failed: failures.length, failures };
+    }
+    if (!unified) {
+      await this.app.fileManager.processFrontMatter(active, (fmw) => {
+        fmw.status = 'container';
+        fmw.next_review = null;
+      });
+    } else {
+      new Notice('Unified：父来源状态未直接改写（container 需迁移/事件处理）。', 9000);
+    }
     await this.app.vault.process(active, (cur) => {
       if (cur.includes('## Chapters')) return cur;
       const list = chapters.map((ch, i) => {
@@ -6133,6 +6944,7 @@ tags:
     });
     const skipMsg = skipped.length ? ` | Skipped ${skipped.length} (already exist)` : '';
     new Notice(`Split: ${created} chapter(s).${skipMsg}`);
+    return { created, failed: 0, skipped: skipped.length };
   }
 }
 

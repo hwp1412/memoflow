@@ -41,9 +41,12 @@ function createHostSchedulerService({ mode = 'legacy', getMode = null, condition
     if (!descriptor || typeof descriptor !== 'object' || typeof descriptor.action !== 'string') {
       fail('E_ACTION_REQUIRED', 'a host scheduling action descriptor is required');
     }
-    if (typeof legacy !== 'function') fail('E_LEGACY_CALLBACK_REQUIRED', 'a legacy implementation callback is required');
-
     const evaluation = currentEvaluation();
+    // Unified transport does not need a legacy callback; requiring it first used
+    // to make every unified event unreachable through this facade.
+    if (evaluation.mode !== 'unified' && typeof legacy !== 'function') {
+      fail('E_LEGACY_CALLBACK_REQUIRED', 'a legacy implementation callback is required');
+    }
     const key = typeof descriptor.eventId === 'string' ? descriptor.eventId : null;
     const fingerprint = key ? fingerprintOf(descriptor) : null;
     if (key && inflight.has(key)) {
@@ -97,19 +100,23 @@ function createHostSchedulerService({ mode = 'legacy', getMode = null, condition
       };
 
       if (evaluation.mode === 'shadow') {
-        if (status !== OBSERVABLE_STATUS) {
+        // The observer is read-only and may run for any completed legacy call;
+        // a legacy writer that does not report a status still deserves a
+        // comparison (its status is attached to the observation).
+        if (typeof shadowObserver === 'function') {
+          try {
+            outcome.shadow = await shadowObserver(descriptor, result);
+            if (status !== OBSERVABLE_STATUS) outcome.shadow.legacyStatus = status;
+          } catch (error) {
+            outcome.shadow = { status: 'not-comparable', reason: 'SHADOW_COMPARATOR_FAILED' };
+            outcome.shadowError = error && error.code ? error.code : 'E_SHADOW_FAILED';
+          }
+        } else if (status !== OBSERVABLE_STATUS) {
           outcome.shadow = {
             status: 'not-comparable',
             reason: 'LEGACY_OBSERVATION_UNAVAILABLE',
             legacyStatus: status,
           };
-        } else if (typeof shadowObserver === 'function') {
-          try {
-            outcome.shadow = await shadowObserver(descriptor, result);
-          } catch (error) {
-            outcome.shadow = { status: 'not-comparable', reason: 'SHADOW_COMPARATOR_FAILED' };
-            outcome.shadowError = error && error.code ? error.code : 'E_SHADOW_FAILED';
-          }
         } else {
           outcome.shadow = { status: 'not-comparable', reason: 'SHADOW_OBSERVER_MISSING' };
         }
