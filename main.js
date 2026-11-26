@@ -4461,9 +4461,24 @@ class IncrementalReadingPlugin extends Plugin {
               expectedRevision: Number.isInteger(item.revision) ? item.revision : undefined,
             });
           }
-          const file = this.app.vault.getAbstractFileByPath(row.tfile.path);
-          if (!file) return { status: 'failed', reason: 'E_FILE_MISSING' };
-          return this.setPriorityFile(file, item.priority, { quiet: true });
+          if (!item.eventId) return { status: 'blocked', reason: 'E_BOOST_EVENT_ID_REQUIRED' };
+          try {
+            // Resume reuses the batch's persisted event identity: a fresh id
+            // would break the ledger evidence chain after a crash.
+            const outcome = await this._mfUs1RunLegacy({
+              action: 'SET_PRIORITY',
+              eventId: item.eventId,
+              topicId: item.topicId,
+              expectedRevision: Number.isInteger(item.expectedRevision) ? item.expectedRevision : null,
+              today: this._todayKey(),
+              calendarDate: this._todayKey(),
+              payload: { priority: item.priority },
+              path: row.tfile.path,
+            });
+            return outcome || { status: 'failed', reason: 'E_BOOST_WRITE_FAILED' };
+          } catch (error) {
+            return { status: 'failed', reason: (error && error.code) || 'E_BOOST_WRITE_FAILED' };
+          }
         },
       });
       results.push({ batchId: batch.batchId, kind: batch.kind, status: outcome.status, reason: outcome.reason });

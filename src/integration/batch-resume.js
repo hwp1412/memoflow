@@ -41,6 +41,11 @@ async function resumeBatch({ store, batchId, readTopic, runItem, ledger = null, 
     return { status: 'no-op', reason: 'E_BATCH_ALREADY_SETTLED', counts: null, batch };
   }
 
+  const ownedEvents = new Map();
+  for (const event of Array.isArray(batch.eventIds) ? batch.eventIds : []) {
+    if (event && event.topicId && event.eventId) ownedEvents.set(String(event.topicId).toLowerCase(), event);
+  }
+
   const results = [];
   if (batch.kind === 'MERCY') {
     for (const item of Array.isArray(batch.items) ? batch.items : []) {
@@ -78,7 +83,26 @@ async function resumeBatch({ store, batchId, readTopic, runItem, ledger = null, 
         continue;
       }
       if (current !== Number(target.from)) { results.push({ ...pick(target), status: STATUS.conflict, reason: 'E_PRIORITY_CHANGED' }); continue; }
-      const outcome = await runItem({ topicId: target.topicId, path: target.path, priority: Number(target.to), expectedFrom: Number(target.from), revision: entry.revision });
+      const owned = ownedEvents.get(String(target.topicId).toLowerCase());
+      if (!owned || !owned.eventId) {
+        results.push({ ...pick(target), status: STATUS.blocked, reason: 'E_BOOST_EVENT_ID_REQUIRED' });
+        continue;
+      }
+      if (Number.isInteger(owned.expectedRevision) && Number.isInteger(entry.revision) && entry.revision !== owned.expectedRevision) {
+        results.push({ ...pick(target), status: STATUS.conflict, reason: 'E_REVISION_CHANGED' });
+        continue;
+      }
+      // Resume MUST reuse the original event identity: a fresh event id would
+      // make the ledger unable to prove this batch applied the write.
+      const outcome = await runItem({
+        topicId: target.topicId,
+        path: target.path,
+        priority: Number(target.to),
+        expectedFrom: Number(target.from),
+        revision: entry.revision,
+        eventId: owned.eventId,
+        expectedRevision: owned.expectedRevision,
+      });
       results.push({ ...pick(target), status: classify(outcome), reason: outcome && outcome.reason });
     }
   } else {

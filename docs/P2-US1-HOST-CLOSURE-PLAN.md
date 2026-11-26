@@ -506,3 +506,16 @@ test/*.test.js                                      见最终交付报告
    `<!-- mf-split:<requestId> -->` 创建标记，才视为同一批次的重复创建；否则 `E_IDENTITY_CONFLICT`。
 3. **Mercy Revision 证据**：撤销凭证（revisions）保存失败时在 outcome 标记
    `revisionEvidencePersisted:false` 并给出明确 Notice；Undo 在缺证据时继续拒绝，不暗示可用。
+
+## PR #38 二轮增量复核修复（相对 a6446e0）
+
+1. **Resume 复用原事件身份**：`resumeBatch` 从批次记录的 `eventIds` 取原始 `eventId` 与
+   `expectedRevision` 传给宿主；缺失 → `blocked/E_BOOST_EVENT_ID_REQUIRED`，revision 已推进 →
+   `conflict/E_REVISION_CHANGED`；`main.js#resumePendingBatches` 用该 eventId 构造事件描述符
+   （不再调用 `setPriorityFile` 生成新身份），Ledger 因此可关联原批次事件。
+2. **已确认批次不再重复执行/覆盖**：`applyBoostBatch` 读取既有记录后：targets 不同 →
+   `E_BATCH_PLAN_CONFLICT`；event 身份不同 → `E_BATCH_EVENT_ID_CONFLICT`；`applied` → 直接返回
+   `alreadyApplied` 不写；`prepared/partial/uncertain/manual` → 保留原审计记录、返回
+   `alreadyRecorded`，交由恢复协议处理。
+3. 测试：resume 原身份 + 最终落盘失败后 Reconcile 凭原 eventId 识别 applied（宿主级）、
+   重复提交零写入且记录不变、pending 记录保留、revision 推进拒绝恢复。

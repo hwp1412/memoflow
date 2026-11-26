@@ -21,7 +21,7 @@ function storeWith(batch) {
 function reader(map) {
   return async topicId => {
     const fm = map[String(topicId).toLowerCase()];
-    return fm ? { entry: { frontmatter: fm } } : { entry: null };
+    return fm ? { entry: { frontmatter: fm, revision: fm.mf_revision } } : { entry: null };
   };
 }
 
@@ -64,6 +64,7 @@ test('boost resume uses the persisted absolute target, never a new delta', async
   const batch = {
     batchId: 'boost-1', kind: 'BOOST', status: 'partial', today: '2026-11-27', delta: 5,
     targets: [{ topicId: ID1, path: 'A', basename: 'A', from: 50, to: 45 }],
+    eventIds: [{ topicId: ID1, eventId: '00000000-0000-4000-8000-0000000000c1', expectedRevision: 0 }],
   };
   const store = storeWith(batch);
   const writes = [];
@@ -162,4 +163,49 @@ test('boost resume requires batch-owned ledger evidence for an already-equal pri
   });
   assert.notEqual(none.status, 'applied');
   assert.equal(writes, 0);
+});
+
+
+test('boost resume reuses the persisted event identity and refuses without it', async () => {
+  const planned = '00000000-0000-4000-8000-0000000000cc';
+  const batch = {
+    batchId: 'boost-r1', kind: 'BOOST', status: 'prepared', today: '2026-11-27', delta: 5,
+    targets: [{ topicId: ID1, path: 'A', basename: 'A', from: 50, to: 45 }],
+    eventIds: [{ topicId: ID1, eventId: planned, expectedRevision: 2 }],
+  };
+  const seen = [];
+  const result = await resumeBatch({
+    store: storeWith(batch), batchId: 'boost-r1', authorization: issueSyntheticBatchResumeAuthorization(),
+    readTopic: reader({ [ID1]: { priority: 50, mf_revision: 2 } }),
+    runItem: async item => { seen.push(item); return { status: 'applied' }; },
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].eventId, planned, 'original identity reused');
+  assert.equal(seen[0].expectedRevision, 2);
+  assert.equal(result.status, 'applied');
+
+  let writes = 0;
+  const noIdentity = await resumeBatch({
+    store: storeWith({ ...batch, eventIds: [] }), batchId: 'boost-r1', authorization: issueSyntheticBatchResumeAuthorization(),
+    readTopic: reader({ [ID1]: { priority: 50, mf_revision: 2 } }),
+    runItem: async () => { writes += 1; return { status: 'applied' }; },
+  });
+  assert.equal(writes, 0);
+  assert.equal(noIdentity.counts.blocked, 1);
+});
+
+test('boost resume refuses when the topic revision moved past the plan', async () => {
+  const batch = {
+    batchId: 'boost-r2', kind: 'BOOST', status: 'prepared', today: '2026-11-27', delta: 5,
+    targets: [{ topicId: ID1, path: 'A', basename: 'A', from: 50, to: 45 }],
+    eventIds: [{ topicId: ID1, eventId: '00000000-0000-4000-8000-0000000000dd', expectedRevision: 2 }],
+  };
+  let writes = 0;
+  const result = await resumeBatch({
+    store: storeWith(batch), batchId: 'boost-r2', authorization: issueSyntheticBatchResumeAuthorization(),
+    readTopic: reader({ [ID1]: { priority: 50, mf_revision: 4 } }),
+    runItem: async () => { writes += 1; return { status: 'applied' }; },
+  });
+  assert.equal(writes, 0);
+  assert.equal(result.counts.conflict, 1);
 });

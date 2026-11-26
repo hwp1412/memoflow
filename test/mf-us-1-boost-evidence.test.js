@@ -132,3 +132,44 @@ test('an existing record with different targets is a plan conflict with zero wri
   assert.equal(applies, 0);
   assert.equal(outcome.writesPerformed, false);
 });
+
+
+test('a recorded applied batch is never re-executed or overwritten', async () => {
+  const store = storeWithMap();
+  const batch = planBoostBatch({ rows: [row(ID1, 50)], rootTopicId: ID1, delta: 5, today: TODAY });
+  let applies = 0;
+  let currentPriority = 50;
+  const deps = {
+    batch,
+    getPriority: async () => currentPriority,
+    applyItem: async () => { applies += 1; currentPriority = 45; return { status: 'applied' }; },
+    store: { getBatch: id => store.getBatch(id), save: (id, record) => store.saveBatch({ batchId: id, kind: 'BOOST', ...record }) },
+  };
+  const first = await applyBoostBatch(deps);
+  assert.equal(first.status, 'applied');
+  const snapshot = JSON.parse(JSON.stringify(store.records.get(batch.batchId)));
+  const second = await applyBoostBatch({ ...deps, getPriority: async () => 50 });
+  assert.equal(applies, 1, 'no second write');
+  assert.equal(second.alreadyApplied, true);
+  assert.equal(second.status, 'applied');
+  assert.deepEqual(store.records.get(batch.batchId), snapshot, 'the applied record is unchanged');
+});
+
+test('an unsettled recorded batch is preserved for the recovery protocol', async () => {
+  const store = storeWithMap();
+  const batch = planBoostBatch({ rows: [row(ID1, 50)], rootTopicId: ID1, delta: 5, today: TODAY });
+  await store.saveBatch({
+    batchId: batch.batchId, kind: 'BOOST', status: 'prepared', today: TODAY,
+    targets: batch.targets, eventIds: batch.events,
+  });
+  const before = JSON.parse(JSON.stringify(store.records.get(batch.batchId)));
+  let applies = 0;
+  const outcome = await applyBoostBatch({
+    batch, getPriority: async () => 50,
+    applyItem: async () => { applies += 1; return { status: 'applied' }; },
+    store: { getBatch: id => store.getBatch(id), save: (id, record) => store.saveBatch({ batchId: id, kind: 'BOOST', ...record }) },
+  });
+  assert.equal(applies, 0, 'pending batch must not be silently re-executed');
+  assert.equal(outcome.alreadyRecorded, true);
+  assert.deepEqual(store.records.get(batch.batchId), before, 'audit record is preserved');
+});

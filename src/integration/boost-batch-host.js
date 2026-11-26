@@ -263,20 +263,75 @@ async function applyBoostBatch({ batch, getPriority, applyItem, store } = {}) {
   // accepted by the store. A store failure is a definite zero-write failure.
   if (typeof store.getBatch === 'function') {
     const existing = await store.getBatch(batch.batchId);
-    if (existing && JSON.stringify(existing.targets) !== JSON.stringify(batch.targets)) {
+    if (existing) {
+      const sameTargets = JSON.stringify(existing.targets) === JSON.stringify(batch.targets);
+      if (!sameTargets) {
+        return {
+          batchId: batch.batchId,
+          kind: 'BOOST',
+          today: batch.today,
+          status: 'failed',
+          counts: emptyCounts(),
+          results: [],
+          skipped,
+          total: batch.targets.length,
+          durable: false,
+          reason: 'E_BATCH_PLAN_CONFLICT',
+          message: 'an existing batch record has different absolute targets',
+          writesPerformed: false,
+        };
+      }
+      const existingEvents = Array.isArray(existing.eventIds) ? existing.eventIds : [];
+      const plannedEvents = Array.isArray(batch.events) ? batch.events : [];
+      if (existingEvents.length && plannedEvents.length
+        && JSON.stringify(existingEvents) !== JSON.stringify(plannedEvents)) {
+        return {
+          batchId: batch.batchId,
+          kind: 'BOOST',
+          today: batch.today,
+          status: 'failed',
+          counts: emptyCounts(),
+          results: [],
+          skipped,
+          total: batch.targets.length,
+          durable: false,
+          reason: 'E_BATCH_EVENT_ID_CONFLICT',
+          message: 'the existing batch record owns different event identities',
+          writesPerformed: false,
+        };
+      }
+      // A recorded batch is never re-executed and never overwritten: applied
+      // stays applied; unsettled batches wait for the explicit recovery path.
+      if (existing.status === 'applied') {
+        return {
+          batchId: batch.batchId,
+          kind: 'BOOST',
+          today: batch.today,
+          status: 'applied',
+          counts: emptyCounts(),
+          results: Array.isArray(existing.results) ? existing.results : [],
+          skipped,
+          total: batch.targets.length,
+          durable: true,
+          reason: 'E_BATCH_ALREADY_APPLIED',
+          alreadyApplied: true,
+          writesPerformed: false,
+        };
+      }
       return {
+        ...existing,
         batchId: batch.batchId,
         kind: 'BOOST',
         today: batch.today,
-        status: 'failed',
-        counts: emptyCounts(),
-        results: [],
         skipped,
         total: batch.targets.length,
-        durable: false,
-        reason: 'E_BATCH_PLAN_CONFLICT',
-        message: 'an existing batch record has different absolute targets',
+        status: existing.status === 'failed' ? 'uncertain' : (existing.status || 'prepared'),
+        reason: 'E_BATCH_PENDING_RECOVERY',
+        alreadyRecorded: true,
         writesPerformed: false,
+        durable: true,
+        counts: existing.counts || emptyCounts(),
+        results: Array.isArray(existing.results) ? existing.results : [],
       };
     }
   }

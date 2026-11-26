@@ -45,6 +45,7 @@ async function harness({ authorized = true, confirm = true, quality = 3 } = {}) 
   plugin.pluginData = createPluginDataCoordinator({ plugin, reservedKeys: ['mfUs1Ledger', BATCH_KEY], notice: () => {} });
   plugin.mfUs1BatchStore = createBatchStore({ coordinator: plugin.pluginData });
   const storage = createObsidianAsyncTopicStorage({ app, resolveFile: createVaultTopicResolver({ app }), dateFormat: DATE_FORMAT });
+  plugin.mfUs1HostStorage = storage;
   plugin.mfUs1AdminWriter = createProtectedAdminWriter({
     storage,
     authorization: authorized ? issueSyntheticHostAuthorization() : null,
@@ -193,4 +194,45 @@ test('a failed revision-evidence save is surfaced and undo stays blocked', async
   const undo = await plugin.mercyUndoLast();
   assert.equal(undo.status, 'blocked');
   assert.equal(app.vault.readContent(file), before);
+});
+
+
+test('resume reuses the planned event id and reconcile survives a final-save failure', async () => {
+  const { plugin, app } = await harness();
+  const { planBoostBatch } = require('../src/integration/boost-batch-host.js');
+  const { issueSyntheticBatchResumeAuthorization } = require('../src/integration/batch-resume.js');
+  const { reconcileBatches } = require('../src/integration/batch-recovery.js');
+  const file = addTopic(app, 'Sources/R1.md', uuid(31));
+  const topicId = uuid(31);
+  const today = '2026-11-27';
+  const batch = planBoostBatch({
+    rows: [{ topicId, path: file.path, basename: 'R1', type: 'source', status: 'active', priority: 50, revision: 0 }],
+    rootTopicId: topicId, delta: 5, today,
+  });
+  await plugin.mfUs1BatchStore.saveBatch({
+    batchId: batch.batchId, kind: 'BOOST', status: 'prepared', today,
+    targets: batch.targets, eventIds: batch.events,
+  });
+  plugin.__mfUs1ResumeAuthorization = issueSyntheticBatchResumeAuthorization();
+  const originalSave = plugin.mfUs1BatchStore.saveBatch.bind(plugin.mfUs1BatchStore);
+  plugin.mfUs1BatchStore.saveBatch = async record => (record && record.status && record.status !== 'prepared'
+    ? { ok: false, code: 'E_SAVE' }
+    : originalSave(record));
+  app.__promptState.confirm = true;
+
+  const results = await plugin.resumePendingBatches();
+  assert.ok(Array.isArray(results) && results.length === 1, JSON.stringify(results));
+  assert.equal(results[0].status, 'uncertain', 'write happened but record was not durable');
+  assert.equal(Number(fmOf(app, file).priority), 45, 'absolute target applied');
+  const owned = batch.events[0].eventId;
+  assert.ok(Object.values(plugin.__ledger.store.dump()).some(record => record.eventId === owned), 'original event id in ledger');
+
+  plugin.mfUs1BatchStore.saveBatch = originalSave;
+  plugin._mfUs1RefreshRows();
+  const recovered = await reconcileBatches({
+    store: plugin.mfUs1BatchStore,
+    storage: plugin.mfUs1HostStorage,
+    ledger: plugin.__ledger,
+  });
+  assert.equal(recovered.batches[0].items[0].state, 'applied', 'reconcile recognises the original identity');
 });
