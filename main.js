@@ -4284,6 +4284,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (!ok) return null;
     const confirmation = confirmMercyPreview(preview);
 
+    const appliedRevisions = new Map();
     const outcome = await applyMercyHost({
       preview,
       confirmation,
@@ -4293,14 +4294,29 @@ class IncrementalReadingPlugin extends Plugin {
         if (!row) return { status: 'conflict', reason: 'E_TOPIC_NOT_FOUND' };
         const current = this._mfUs1NotBeforeOf(row);
         if (current !== (item.currentNotBefore ?? null)) return { status: 'conflict', reason: 'E_INPUT_CHANGED' };
-        return this.mfUs1AdminWriter.write({
+        const written = await this.mfUs1AdminWriter.write({
           topicId: item.topicId,
           updates: { mf_not_before: item.notBefore },
           expectedNotBefore: item.currentNotBefore ?? null,
         });
+        if (written.status === 'applied' && Number.isInteger(written.revision)) {
+          appliedRevisions.set(String(item.topicId).toLowerCase(), written.revision);
+        }
+        return written;
       },
       store: { save: record => this.mfUs1BatchStore.saveBatch({ kind: 'MERCY', ...record }) },
     });
+    if (appliedRevisions.size) {
+      // Persist the revisions this batch actually produced: Undo must CAS on
+      // them so an external scheduler write is a conflict, not a silent undo.
+      const record = await this.mfUs1BatchStore.getBatch(outcome.batchId);
+      if (record) {
+        await this.mfUs1BatchStore.saveBatch({
+          ...record,
+          revisions: [...appliedRevisions.entries()].map(([topicId, revision]) => ({ topicId, revision })),
+        });
+      }
+    }
     const report = describeMercyOutcome(outcome);
     new Notice(report.message, report.nonAtomic ? 14000 : 7000);
     return outcome;
@@ -4396,7 +4412,12 @@ class IncrementalReadingPlugin extends Plugin {
           const row = this._mfUs1RowByTopicId(topicId);
           if (!row) return { entry: null };
           const projected = projectTopic(row, { mode: this._mfUs1EffectiveMode() });
-          return { entry: { frontmatter: { mf_not_before: projected.notBefore, priority: projected.priority } } };
+          return {
+            entry: {
+              frontmatter: { mf_not_before: projected.notBefore, priority: projected.priority },
+              revision: projected.revision,
+            },
+          };
         },
         runItem: async item => {
           const row = this._mfUs1RowByTopicId(item.topicId);
@@ -4406,6 +4427,7 @@ class IncrementalReadingPlugin extends Plugin {
               topicId: item.topicId,
               updates: { mf_not_before: item.notBefore },
               expectedNotBefore: item.currentNotBefore,
+              expectedRevision: Number.isInteger(item.revision) ? item.revision : undefined,
             });
           }
           const file = this.app.vault.getAbstractFileByPath(row.tfile.path);
@@ -4425,6 +4447,13 @@ class IncrementalReadingPlugin extends Plugin {
     if (!this.mfUs1AdminWriter || !this.mfUs1BatchStore) { new Notice('MF-US-1 Mercy 尚未初始化。', 9000); return null; }
     const batch = await this.mfUs1BatchStore.latestBatch('MERCY');
     if (!batch || !Array.isArray(batch.results)) { new Notice('没有可撤销的 Mercy 批次记录。'); return null; }
+    const revisionByTopic = new Map((Array.isArray(batch.revisions) ? batch.revisions : [])
+      .filter(entry => entry && entry.topicId && Number.isInteger(entry.revision))
+      .map(entry => [String(entry.topicId).toLowerCase(), entry.revision]));
+    if (!revisionByTopic.size) {
+      new Notice('该批次缺少写入 Revision 证据，无法安全撤销。', 10000);
+      return { status: 'blocked', reason: 'E_UNDO_EVIDENCE_MISSING' };
+    }
     const ok = await confirmDialog(this.app, '撤销上次 Mercy', `恢复 ${batch.results.filter(r => r.status === 'applied').length} 个主题的原最早可见日？`);
     if (!ok) return null;
     let confirmation;
@@ -4447,11 +4476,14 @@ class IncrementalReadingPlugin extends Plugin {
         const row = this._mfUs1RowByTopicId(item.topicId);
         if (!row) return { status: 'conflict', reason: 'E_TOPIC_NOT_FOUND' };
         const current = this._mfUs1NotBeforeOf(row);
+        const expectedRevision = revisionByTopic.get(String(item.topicId).toLowerCase());
+        if (expectedRevision == null) return { status: 'conflict', reason: 'E_UNDO_EVIDENCE_MISSING' };
         if (current !== item.notBefore) return { status: 'conflict', reason: 'E_TOPIC_CHANGED_SINCE_APPLY' };
         return this.mfUs1AdminWriter.write({
           topicId: item.topicId,
           updates: { mf_not_before: item.currentNotBefore ?? null },
           expectedNotBefore: item.notBefore,
+          expectedRevision,
         });
       },
     });
@@ -6656,7 +6688,20 @@ ${sectionBody}
           failures.push(`${noteTitle}:${created.status}${created.reason ? `/${created.reason}` : ''}`);
         }
       } else {
-        links.push(`- [[${noteTitle}]]`);
+        const existing = this.app.vault.getAbstractFileByPath(p);
+        const existingFm = existing ? getFm(this.app, existing) : null;
+        const looksLikeCreatedChild = existingFm
+          && typeof existingFm.mf_id === 'string'
+          && existingFm.mf_id
+          && existingFm.type === 'source'
+          && String(existingFm.parent || '').includes(parentTitle);
+        if (!unified || looksLikeCreatedChild) {
+          links.push(`- [[${noteTitle}]]`);
+        } else {
+          // A same-named file that this batch cannot prove it created is an
+          // identity conflict, not a duplicate.
+          failures.push(`${noteTitle}:E_IDENTITY_CONFLICT`);
+        }
       }
     }
 
@@ -6747,7 +6792,18 @@ ${sectionBody}
       const safeTitle = slugifyForFolder(ch.title) || `Chapter ${i + 1}`;
       const name = slugifyForFolder(`${parentTitle} - Ch${num} ${safeTitle}`);
       const path = `${folder}/${name}.md`;
-      if (this.app.vault.getAbstractFileByPath(path)) { skipped.push(name); continue; }
+      const existingChapter = this.app.vault.getAbstractFileByPath(path);
+      if (existingChapter) {
+        const existingFm = getFm(this.app, existingChapter);
+        const looksLikeCreatedChapter = existingFm
+          && typeof existingFm.mf_id === 'string'
+          && existingFm.mf_id
+          && existingFm.type === 'source'
+          && String(existingFm.parent || '').includes(parentTitle);
+        if (!unified || looksLikeCreatedChapter) { skipped.push(name); continue; }
+        failures.push(`${ch.title}:E_IDENTITY_CONFLICT`);
+        continue;
+      }
 
       const chInterval = baseInterval + i;
       const chNext = futureDateString(chInterval, this.settings);

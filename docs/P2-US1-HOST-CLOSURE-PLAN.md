@@ -480,3 +480,17 @@ test/*.test.js                                      见最终交付报告
   不隐式迁移、不先 Legacy 建后补 ID。
 - **创建网关**：Source 创建时补 `mf_root_id = mf_id`，修复 standalone source 根关系。
 - 测试：`1393 pass`（新增 split-import 6：未授权零写、文章拆分身份、重复执行、Legacy 回归、导入阻断、书籍拆分身份/根）。
+
+## PR #38 审查修复（相对 7bcd40f）
+
+1. **Resume 证据规则**：`batch-resume.js` 对"当前值=目标值"的节点不再直接 applied；
+   Mercy 需 `batch.results` applied 证据，Boost 需本批次归属的 Ledger 证据；缺失 → uncertain + `E_NO_*_EVIDENCE`，
+   零 Topic 写入且不持久化成功；pending 项恢复时携带原始 revision 供受保护写入 CAS。
+2. **Boost Ledger 归属**：`hasLedgerEvidence` 要求 `type=SET_PRIORITY`、`status=applied`、
+   `after.priority=持久目标`，且 `eventId` 属于批次记录的 `eventIds`（apply 时持久化）；
+   无关 ADVANCED / 无关批次 SET_PRIORITY 均判 unknown。
+3. **Mercy Undo Revision**：Apply 成功时把每项写入后的 `mf_revision` 持久化到批次记录 `revisions`；
+   Undo 用该 revision 做真实 CAS，外部调度写入（revision 变、not_before 未变）→ conflict 零写入；
+   缺证据的旧批次拒绝 Undo。
+4. **拆分身份校验**：目标路径已存在时，只有具备 `mf_id` + `type=source` + `parent` 指向当前父级的文件
+   才视为本次创建结果；否则 `E_IDENTITY_CONFLICT`，不添加链接、不静默跳过。splitBook 同步处理。

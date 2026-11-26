@@ -153,3 +153,19 @@ test('a card never enters mercy / complete / boost', async () => {
   assert.equal(await plugin.dismissTreeNode(card.path), false);
   assert.equal(app.vault.readContent(card), before);
 });
+
+test('mercy undo CASes on the applied revision and conflicts after an external write', async () => {
+  const { plugin, app } = await harness();
+  const file = addTopic(app, 'Sources/U1.md', uuid(11));
+  await plugin.mercy();
+  const record = Object.values(plugin.__data[BATCH_KEY] || {}).find(item => item.kind === 'MERCY');
+  assert.ok(record && Array.isArray(record.revisions) && record.revisions.length === 1, 'applied revision persisted');
+
+  await app.vault.process(file, data => data.replace(/(mf_revision:\s*)(\d+)/, (match, head, value) => `${head}${Number(value) + 1}`));
+  plugin._mfUs1RefreshRows();
+  const beforeUndo = app.vault.readContent(file);
+  const result = await plugin.mercyUndoLast();
+  assert.equal(result.counts.conflict, 1, JSON.stringify(result.counts));
+  assert.notEqual(result.status, 'applied');
+  assert.equal(app.vault.readContent(file), beforeUndo, 'undo writes nothing after an external change');
+});

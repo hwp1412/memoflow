@@ -47,7 +47,7 @@ test('resume refuses without an explicit authorization token', async () => {
 });
 
 test('mercy resume finishes pending items only and records results', async () => {
-  const store = storeWith(mercyBatch);
+  const store = storeWith({ ...mercyBatch, results: [{ topicId: ID1, status: 'applied' }] });
   const writes = [];
   const result = await resumeBatch({
     store, batchId: 'mercy-1', authorization: issueSyntheticBatchResumeAuthorization(),
@@ -77,7 +77,7 @@ test('boost resume uses the persisted absolute target, never a new delta', async
   assert.equal(result.status, 'applied');
 
   const settled = await resumeBatch({
-    store: storeWith(batch), batchId: 'boost-1', authorization: issueSyntheticBatchResumeAuthorization(),
+    store: storeWith({ ...batch, results: [{ topicId: ID1, status: 'applied' }] }), batchId: 'boost-1', authorization: issueSyntheticBatchResumeAuthorization(),
     readTopic: reader({ [ID1]: { priority: 45 } }),
     runItem: async () => { throw new Error('must not write'); },
   });
@@ -111,4 +111,55 @@ test('a failed final batch save downgrades the resume to uncertain', async () =>
   });
   assert.equal(result.status, 'uncertain');
   assert.equal(result.reason, 'E_BATCH_RESUME_RESULT_NOT_DURABLE');
+});
+
+test('a value equal to the target without evidence is not applied by resume', async () => {
+  const store = storeWith({
+    ...mercyBatch,
+    status: 'prepared',
+    items: [{ topicId: ID1, path: 'A', basename: 'A', notBefore: '2026-11-28', currentNotBefore: null }],
+    results: [],
+  });
+  let writes = 0;
+  const result = await resumeBatch({
+    store, batchId: 'mercy-1', authorization: issueSyntheticBatchResumeAuthorization(),
+    readTopic: reader({ [ID1]: { mf_not_before: '2026-11-28', mf_revision: 3 } }),
+    runItem: async () => { writes += 1; return { status: 'applied' }; },
+  });
+  assert.equal(writes, 0, 'no write based on value equality alone');
+  assert.notEqual(result.status, 'applied');
+  assert.equal(result.counts.uncertain, 1);
+  assert.equal(store.saved.length, 1);
+  assert.notEqual(store.saved[0].status, 'applied', 'must not persist a false success');
+});
+
+test('boost resume requires batch-owned ledger evidence for an already-equal priority', async () => {
+  const { PersistentEventLedger, MemoryLedgerStore } = require('../src/scheduling/index.js');
+  const batch = {
+    batchId: 'boost-9', kind: 'BOOST', status: 'prepared', today: '2026-11-27', delta: 5,
+    targets: [{ topicId: ID1, path: 'A', basename: 'A', from: 50, to: 45 }],
+    eventIds: [{ topicId: ID1, eventId: '00000000-0000-4000-8000-0000000000aa' }],
+  };
+  const ledger = new PersistentEventLedger(new MemoryLedgerStore({
+    '00000000-0000-4000-8000-0000000000aa': {
+      eventId: '00000000-0000-4000-8000-0000000000aa', topicId: ID1, status: 'applied',
+      audit: { before: { priority: 50 }, after: { priority: 45 } }, type: 'SET_PRIORITY',
+    },
+  }));
+  let writes = 0;
+  const settled = await resumeBatch({
+    store: storeWith(batch), batchId: 'boost-9', authorization: issueSyntheticBatchResumeAuthorization(),
+    ledger, readTopic: reader({ [ID1]: { priority: 45, mf_revision: 2 } }),
+    runItem: async () => { writes += 1; return { status: 'applied' }; },
+  });
+  assert.equal(writes, 0);
+  assert.equal(settled.status, 'applied', 'owned ledger evidence proves the batch applied');
+
+  const none = await resumeBatch({
+    store: storeWith({ ...batch, eventIds: [] }), batchId: 'boost-9', authorization: issueSyntheticBatchResumeAuthorization(),
+    readTopic: reader({ [ID1]: { priority: 45, mf_revision: 2 } }),
+    runItem: async () => { writes += 1; return { status: 'applied' }; },
+  });
+  assert.notEqual(none.status, 'applied');
+  assert.equal(writes, 0);
 });

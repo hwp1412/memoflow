@@ -117,3 +117,45 @@ test('unified book split keeps stable identity and root relations', async () => 
   }
   assert.equal(app.vault.readFm(book).status, 'active', 'parent not rewritten in unified');
 });
+
+test('an unrelated same-named file is an identity conflict, not a duplicate', async () => {
+  const { plugin, app } = setup('unified');
+  plugin.__mfUs1CreationAuthorization = issueSyntheticCreationAuthorization();
+  // Same path the split would pick, but with no Unified identity.
+  makeFile(app, 'Sources/Article - Intro.md', { type: 'note' }, '# unrelated\n');
+  const result = await plugin.splitArticle();
+  assert.ok(result.failed >= 1, JSON.stringify(result));
+  assert.ok(result.failures.join(' ').includes('E_IDENTITY_CONFLICT'));
+  assert.equal(app.vault.createCalls.length, 1, 'only the genuinely new child is created');
+  const parentText = app.vault.readContent(app.vault.getAbstractFileByPath('Sources/Article.md'));
+  assert.ok(!parentText.includes('[[Article - Intro]]'), 'conflicting file is not linked as a child');
+});
+
+test('a previously created child is a legitimate duplicate on re-run', async () => {
+  const { plugin, app } = setup('unified');
+  plugin.__mfUs1CreationAuthorization = issueSyntheticCreationAuthorization();
+  makeFile(app, 'Sources/Article - Intro.md', {
+    type: 'source',
+    status: 'active',
+    parent: '[[Article]]',
+    mf_id: uuid(21),
+    mf_revision: 0,
+  }, '# saved intro\n');
+  const result = await plugin.splitArticle();
+  assert.equal(result.failed, 0, JSON.stringify(result));
+  assert.equal(app.vault.createCalls.length, 1, 'only Body is newly created');
+});
+
+test('book split treats a same-named unrelated chapter as an identity conflict', async () => {
+  const { plugin, app } = setup('unified');
+  plugin.__mfUs1CreationAuthorization = issueSyntheticCreationAuthorization();
+  const book = makeFile(app, 'Sources/Book.md', { ...MIGRATED_FM, source_type: 'book', total_pages: 4 }, '# Book\n');
+  book.parent = { path: 'Sources' };
+  app.activeFile = book;
+  app.__promptState.longTexts = ['1-2: Intro\n3-4: Body'];
+  makeFile(app, 'Sources/Book - Ch01 Intro.md', { type: 'note' }, '# not ours\n');
+  const result = await plugin.splitBook();
+  assert.ok(result.failed >= 1, JSON.stringify(result));
+  assert.ok(result.failures.join(' ').includes('E_IDENTITY_CONFLICT'));
+  assert.equal(app.vault.createCalls.length, 1, 'only the genuinely new chapter is created');
+});

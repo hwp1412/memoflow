@@ -60,3 +60,10 @@
 - 模式切换：`mfUs1ModeMenu()`（Legacy/Shadow 可切；Unified 仅显示阻断原因，fail-closed）。
 - 诊断：`mfUs1Diagnostics()` 增加 Shadow 差异与迁移预检摘要。
 - 仍未接线：`importClipping`（Identity 迁移类）、`splitArticle` / `splitBook`（创建网关类）。
+
+
+## PR #38 审查修复
+
+- 批次恢复/续跑：证据归属规则（批次 eventIds、results）已实现，值相等不再判 applied。
+- Mercy Undo：持久 revision CAS 已实现。
+- 拆分：已存在路径身份冲突检测已实现。

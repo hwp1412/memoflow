@@ -51,12 +51,28 @@ function hasPriorResult(batch, topicId) {
     result && String(result.topicId || '').toLowerCase() === wanted && result.status === 'applied');
 }
 
-function hasLedgerEvidence(ledger, topicId, target) {
+function batchEventIds(batch) {
+  const map = new Map();
+  for (const entry of Array.isArray(batch && batch.eventIds) ? batch.eventIds : []) {
+    if (entry && entry.topicId && entry.eventId) {
+      map.set(String(entry.topicId).toLowerCase(), String(entry.eventId));
+    }
+  }
+  return map;
+}
+
+// Ledger evidence must belong to THIS batch: the batch record persists the
+// event ids it produced. A same-topic event with an equal priority is not enough.
+function hasLedgerEvidence(ledger, topicId, target, batch = null) {
   if (!ledger || !ledger.store || typeof ledger.store.dump !== 'function') return false;
   const wanted = String(topicId || '').toLowerCase();
+  const owned = batch ? batchEventIds(batch).get(wanted) : null;
+  if (batch && !owned && !hasPriorResult(batch, topicId)) return false;
   return Object.values(ledger.store.dump()).some(record => {
     if (!record || String(record.topicId || '').toLowerCase() !== wanted) return false;
     if (record.status !== 'applied') return false;
+    if (record.type !== 'SET_PRIORITY') return false;
+    if (owned && String(record.eventId || '') !== owned) return false;
     const after = record.audit && record.audit.after;
     return Boolean(after) && Number(after.priority) === Number(target.to);
   });
@@ -85,7 +101,7 @@ function classifyBatch(batch, entriesByTopicId, { ledger = null } = {}) {
     const items = targets.map(target => {
       const classified = boostItemState(target, entriesByTopicId.get(String(target.topicId || '').toLowerCase()));
       if (classified.state === ITEM_STATE.applied) {
-        const evidence = hasPriorResult(batch, target.topicId) || hasLedgerEvidence(ledger, target.topicId, target);
+        const evidence = hasPriorResult(batch, target.topicId) || hasLedgerEvidence(ledger, target.topicId, target, batch);
         if (!evidence) {
           return { topicId: target.topicId, path: target.path, basename: target.basename, state: ITEM_STATE.unknown, reason: 'E_NO_LEDGER_EVIDENCE' };
         }

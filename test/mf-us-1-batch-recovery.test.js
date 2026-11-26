@@ -91,7 +91,10 @@ test('boost reconcile uses the persisted absolute target and never a new delta',
     { topicId: ID1, path: 'A', basename: 'A', from: 50, to: 45 },
     { topicId: ID2, path: 'B', basename: 'B', from: 30, to: 25 },
   ];
-  const store = fakeStore([{ batchId: 'boost-1', kind: 'BOOST', status: 'prepared', targets }]);
+  const store = fakeStore([{
+    batchId: 'boost-1', kind: 'BOOST', status: 'prepared', targets,
+    eventIds: [{ topicId: ID1, eventId: '00000000-0000-4000-8000-000000000002' }],
+  }]);
 
   const appliedStorage = fakeStorage({
     [ID1]: topicEntry({ mf_id: ID1, priority: 45 }),
@@ -101,7 +104,7 @@ test('boost reconcile uses the persisted absolute target and never a new delta',
   const ledger = new PersistentEventLedger(new MemoryLedgerStore({
     '00000000-0000-4000-8000-000000000002': {
       eventId: '00000000-0000-4000-8000-000000000002', topicId: ID1, status: 'applied',
-      audit: { after: { priority: 45 } }, fingerprint: 'f', type: 'SET_PRIORITY',
+      audit: { before: { priority: 50 }, after: { priority: 45 } }, fingerprint: 'f', type: 'SET_PRIORITY',
     },
   }));
   const first = await reconcileBatches({ store, storage: appliedStorage, ledger });
@@ -180,10 +183,42 @@ test('boost recognises an applied target only with ledger evidence', async () =>
     },
   });
   const ledger = new PersistentEventLedger(ledgerStore);
-  const withEvidence = fakeStore([{ batchId: 'boost-3', kind: 'BOOST', status: 'prepared', targets }]);
+  const withEvidence = fakeStore([{
+    batchId: 'boost-3', kind: 'BOOST', status: 'prepared', targets,
+    eventIds: [{ topicId: ID1, eventId: '00000000-0000-4000-8000-000000000001' }],
+  }]);
   const second = await reconcileBatches({ store: withEvidence, storage, ledger });
   assert.equal(second.batches[0].items[0].state, ITEM_STATE.applied);
   assert.equal(second.batches[0].status, 'applied');
+});
+
+test('a same-value event of another type or another batch is not evidence', async () => {
+  const { PersistentEventLedger, MemoryLedgerStore } = require('../src/scheduling/index.js');
+  const targets = [{ topicId: ID1, path: 'A', basename: 'A', from: 50, to: 45 }];
+  const storage = fakeStorage({ [ID1]: topicEntry({ mf_id: ID1, priority: 45 }) });
+  const owned = '00000000-0000-4000-8000-0000000000aa';
+
+  // Same topic, same after.priority, but an ADVANCED event.
+  const advancedLedger = new PersistentEventLedger(new MemoryLedgerStore({
+    [owned]: { eventId: owned, topicId: ID1, status: 'applied', audit: { after: { priority: 45 } }, type: 'ADVANCED' },
+  }));
+  const advanced = await reconcileBatches({
+    store: fakeStore([{ batchId: 'b-adv', kind: 'BOOST', status: 'prepared', targets, eventIds: [{ topicId: ID1, eventId: owned }] }]),
+    storage, ledger: advancedLedger,
+  });
+  assert.equal(advanced.batches[0].items[0].state, ITEM_STATE.unknown);
+
+  // A SET_PRIORITY of another batch with the same target value.
+  const foreign = '00000000-0000-4000-8000-0000000000bb';
+  const foreignLedger = new PersistentEventLedger(new MemoryLedgerStore({
+    [foreign]: { eventId: foreign, topicId: ID1, status: 'applied', audit: { after: { priority: 45 } }, type: 'SET_PRIORITY' },
+  }));
+  const foreignRun = await reconcileBatches({
+    store: fakeStore([{ batchId: 'b-for', kind: 'BOOST', status: 'prepared', targets, eventIds: [{ topicId: ID1, eventId: owned }] }]),
+    storage, ledger: foreignLedger,
+  });
+  assert.equal(foreignRun.batches[0].items[0].state, ITEM_STATE.unknown);
+  assert.equal(foreignRun.batches[0].items[0].reason, 'E_NO_LEDGER_EVIDENCE');
 });
 
 test('reconcile refuses to run without store or storage', async () => {
