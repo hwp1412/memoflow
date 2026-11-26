@@ -32,14 +32,16 @@
 | 23 | SKIP（阅读条/Review） | 仅会话 | 仅会话 | 仅会话（无事件） | open | Lead | — | 否 | 是（会话指针） |
 | 24 | 新建 Source / 摘录 | 旧建 | 旧建 | 创建网关（synthetic token） | H | Lead | creation-host | 部分 | 否 |
 | 25 | Card 评阅（SR） | SR | SR | SR | 不涉及 | — | sr-boundary | — | 否 |
-| 26 | Dashboard / 队列 / Session 数据源 | legacy 字段 | legacy 字段 | 队列+会话已切权威投影；Dashboard 视图仍 legacy | 部分 | Lead | unified-queue-source / host-execution | 会话是，Dashboard 否 | 是 |
+| 26 | Dashboard / 队列 / Session 数据源 | legacy 字段 | legacy 字段 | 全部切权威投影（Dashboard 模型已用 `buildUnifiedQueue`） | H | Lead | dashboard-unified / host-execution | 是（Dashboard 模型 + 会话） | 否 |
 
 ## 累计
 
-- 已接线/批次执行：**13**（1–9、12、13、22、24）
+- 已接线/批次执行：**14**（1–9、12、13、22、24、26）
 - Unified 阻断待收编：**9**（10、11、14–21，其中 10 为显式语义阻断）
-- 部分完成：**2**（23、26）
+- 部分完成：**1**（23）
 - 不涉及：1（25）
+
+> 批次启动 reconcile（`batch-recovery.js`）是生命周期能力，不在入口计数内。
 
 ## 说明
 

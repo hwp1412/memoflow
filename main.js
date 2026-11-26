@@ -2940,6 +2940,19 @@ class IncrementalReadingPlugin extends Plugin {
         recovered: recovery.recovered || [],
         persisted: recovery.persisted !== false,
       };
+      // Batch reconcile runs after the single-topic ledger recovery. It is
+      // metadata-only: it classifies Mercy/Boost batches against the real topic
+      // state and never writes a topic.
+      try {
+        const { reconcileBatches } = require('./src/integration/batch-recovery.js');
+        this.mfUs1BatchRecovery = await reconcileBatches({ store: this.mfUs1BatchStore, storage });
+        const blocked = new Set(this.mfUs1Recovery.blockedTopicIds || []);
+        for (const topicId of this.mfUs1BatchRecovery.blockedTopicIds || []) blocked.add(topicId);
+        this.mfUs1Recovery.blockedTopicIds = [...blocked];
+      } catch (error) {
+        this.mfUs1BatchRecovery = { batches: [], blockedTopicIds: [], summary: { error: error && error.code ? error.code : 'E_BATCH_RECONCILE_FAILED' } };
+        console.error('[IR] MF-US-1 batch reconcile failed', error);
+      }
       if (this.mfUs1Recovery.blockedTopicIds.length) {
         console.warn('[IR] MF-US-1 recovery left blocked topics', this.mfUs1Recovery.blockedTopicIds);
       }
@@ -3966,6 +3979,7 @@ class IncrementalReadingPlugin extends Plugin {
       `待恢复事件：${(recovery.recovered || []).length}`,
       `阻断 Topic：${(recovery.blockedTopicIds || []).length}`,
       `Unified 队列源：${this.settings && this.settings.mf_queue_source === 'unified' ? '统一投影' : '旧字段（未切换）'}`,
+      `批次恢复：${this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && !this.mfUs1BatchRecovery.summary.error ? `检查 ${this.mfUs1BatchRecovery.summary.checked} · 需人工 ${this.mfUs1BatchRecovery.summary.manual}` : (this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error) || '未运行'}`,
     ];
     new Notice(lines.join('\n'), 12000);
     return lines.join('\n');

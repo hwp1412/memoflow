@@ -380,3 +380,20 @@ test/*.test.js                                      见最终交付报告
 - Mercy 的 Dashboard/自动过载入口（`spreadOverdue`）仍阻断。
 - 检查点、划词/图片摘录、导入、拆分、A-Factor、日期迁移仍被 guard 阻断（需 1.0 决策）。
 - 迁移激活 UI、模式切换 UI、Shadow observer、账本诊断面板。
+
+
+## 第三轮进展（恢复与 Dashboard）
+
+- **批次启动 reconcile**：`src/integration/batch-recovery.js`。启动顺序：单 Topic ledger recover → 扫描
+  `mfUs1Batches` 未终结批次 → 以真实 Topic 状态（`mf_not_before` / `priority`）对照**持久绝对目标**判定
+  每项 applied / pending / conflict / unknown → 仅持久化批次元数据并阻断冲突 Topic，**绝不写 Topic**。
+  Boost 使用持久 `to` 值，不会按新当前值重算增量；Mercy 使用持久 `notBefore/currentNotBefore`。
+  已接 onload，诊断菜单显示"批次恢复：检查 N · 需人工 M"。
+- **Dashboard 数据源**：`src/data/model.js` 在 Unified 下改用 `buildUnifiedQueue`
+  （`mf_*` 权威投影），Legacy/Shadow 保持原 selector。Card 计数继续走 SR。
+- 新增测试：batch-recovery 7 项、dashboard-unified 3 项；全量 1366 pass。
+
+### 仍未完成
+- 剩余 guard 入口（reset/检查点/摘录/导入/拆分/A-Factor/日期迁移/Mercy 过载入口）。
+- 迁移激活 UI、模式 UI、Shadow observer、账本诊断面板。
+- 批次恢复的"安全重放"（当前只判定、不补写；需要授权后的显式恢复命令）。

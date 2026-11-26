@@ -12,7 +12,7 @@
 // deterministic.
 
 const BATCH_KEY = 'mfUs1Batches';
-const UNFINISHED = new Set(['prepared', 'uncertain', 'requires-manual-recovery']);
+const UNFINISHED = new Set(['prepared', 'uncertain', 'partial', 'requires-manual-recovery']);
 
 function createBatchStore({ coordinator, key = BATCH_KEY } = {}) {
   if (!coordinator || typeof coordinator.reservedStore !== 'function') {
