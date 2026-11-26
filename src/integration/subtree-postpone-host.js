@@ -40,6 +40,25 @@ function planSubtreePostpone({ nodes, rootTopicId, days, today } = {}) {
   if (typeof today !== 'string' || !today) throw Object.assign(new Error('today must be fixed for the whole batch'), { code: 'E_TODAY_REQUIRED' });
 
   const ordered = [...nodes].sort(compareNodes);
+
+  // A stable id must appear at most once: two different notes sharing an id
+  // would make "postpone this subtree" ambiguous, so the whole batch refuses
+  // before any write. (Same rule as the queue's duplicate-id guard; no new
+  // persistent identity index is introduced.)
+  const seen = new Map();
+  for (const node of ordered) {
+    if (!node.topicId) continue;
+    const key = String(node.topicId).toLowerCase();
+    const previous = seen.get(key);
+    if (previous) {
+      throw Object.assign(
+        new Error(`duplicate stable id in subtree: ${node.topicId}`),
+        { code: 'E_DUPLICATE_SUBTREE_ID', details: { topicId: node.topicId, paths: [previous.path, node.path] } },
+      );
+    }
+    seen.set(key, node);
+  }
+
   const batchId = sha256Hex(`subtree-postpone:${rootTopicId}:${days}:${today}:${ordered.map(node => node.stableId || node.path).join(',')}`);
 
   const runnable = [];

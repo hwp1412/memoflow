@@ -49,8 +49,8 @@ root main.js:3138 / src/main.js:192 高级菜单「Postpone subtree」
 ## 4. 测试
 
 ```
-test/mf-us-1-host-subtree.test.js   17 pass
-test/*.test.js                    1260 pass（基线 1243 + 17）
+test/mf-us-1-host-subtree.test.js   20 pass
+test/*.test.js                    1263 pass（基线 1243 + 20）
 validate-release                  valid
 build --dry-run                   no files written
 ```
@@ -71,3 +71,52 @@ Legacy 字段对照、Shadow 不写账本、静态接线断言。
 
 未启用 Unified 生产写入；未访问真实 Vault / `MemoFlow-Test` / `phase2 test`；未启动 Obsidian；
 未迁移；未创建 PR/Merge；Phase 1 与 SR 未触碰。
+
+---
+
+## PR #37 审查闭合
+
+### 1. 重复 `mf_id` → 整批 fail-closed
+
+`planSubtreePostpone()` 在排序后立即做**批次写前身份唯一性检查**：不同路径共用同一非空 `topicId`
+→ 抛 `E_DUPLICATE_SUBTREE_ID`，`postponeSubtreeHost` 捕获后返回 `{status:'refused'}`，
+**零节点写入**。沿用队列的"同一稳定 ID 只能出现一次"规则，不建立新的持久身份索引。
+
+测试：`two files sharing one stable id refuse the whole batch before any write`。
+
+### 2. 父子关系变化与真实写入的一致性
+
+原先 `_mfUs1VerifySubtreeNode()` 只基于 MetadataCache，校验与 CAS 之间存在窗口。现在把
+**关系前置条件推进到真实字节的 CAS 内**：
+
+```
+postponeFile(..., { expectations: { relationKey } })
+  → descriptor.expectations
+  → _mfUs1UnifiedRequest().expectations
+  → executeUnifiedEventAsync（读取磁盘最新内容）
+  → storage.compareAndSwap(..., expectedRelation)
+  → Vault.process 回调内：hash/mf_id/revision/version/type/status + parent|source 复核
+     └ 不一致 → E_SUBTREE_CHANGED（写入前抛出，零字节变化）
+```
+
+`E_SUBTREE_CHANGED` 归类为 `conflict`。MetadataCache 仍是第一道快速检查（未变化的场景更早拒绝），
+但最终一致性由真实字节保证。
+
+测试：`a parent change with a stale MetadataCache blocks that node only` —— 计划后直接改磁盘
+`source`、保留陈旧缓存，该节点 `conflict / E_SUBTREE_CHANGED` 且 `mf_not_before` 仍为空，
+其余节点正常延期，汇总 `partial`。
+
+### 3. 多级 Extract 夹具（parent + source 正式约定）
+
+新增测试 `parent/source convention: a mid-level Extract root…`：`source` 始终指向原始 Source、
+`parent` 指向直接父节点；以中间 Extract 为根，只写自身与后代，**祖先 Source、父节点与兄弟节点零写入**。
+复用 `walkSubtree(strict)`，未修改 Phase 1 关系算法。
+
+### 4. 回归
+
+```
+node --test test/mf-us-1-host-subtree.test.js   20 pass
+node --test test/*.test.js                    1263 pass
+validate-release                              valid
+build --dry-run                               no files written
+```

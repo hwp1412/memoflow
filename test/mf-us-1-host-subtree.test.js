@@ -351,7 +351,77 @@ test('the subtree entry plans first and routes every node through postponeFile',
   const mainSource = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
   assert.match(mainSource, /async postponeSubtreeHost\(rootFile, days, rootFm = null\)/);
   assert.match(mainSource, /planSubtreePostpone\(\{ nodes, rootTopicId: fm\.mf_id, days, today \}\)/);
-  assert.match(mainSource, /this\.postponeFile\(file, days, \{ quiet: true, today \}\)/);
+  assert.match(mainSource, /expectations: \{ relationKey: node\.relationKey \}/);
+  assert.match(mainSource, /return this\.postponeFile\(file, days, \{[\s\S]{0,400}?quiet: true/);
   assert.match(mainSource, /_mfUs1VerifySubtreeNode/);
   assert.match(mainSource, /_postponeSubtreeLegacy\(root, choice\)/);
+});
+
+// ---- PR #37 evidence closure --------------------------------------------
+
+test('two files sharing one stable id refuse the whole batch before any write', async () => {
+  const { plugin, app } = await harness();
+  const shared = uuid(130);
+  const source = addSource(app, 'S', shared);
+  makeFile(app, 'Extracts/Clone.md', topicFm(shared, { type: 'extract', source: '[[S]]' }), '# clone\n');
+  const before = app.vault.readContent(source);
+  const result = await plugin.postponeSubtreeHost(source, 2);
+  assert.equal(result.status, 'refused');
+  assert.equal(result.reason, 'E_DUPLICATE_SUBTREE_ID');
+  assert.equal(app.vault.readContent(source), before, 'no node may be written');
+  assert.match(getNotices(app).join('\n'), /refused before any write/);
+});
+
+test('a parent change with a stale MetadataCache blocks that node only', async () => {
+  const { plugin, app } = await harness();
+  const source = addSource(app, 'S', uuid(140));
+  const first = addExtract(app, 'E1', uuid(141), 'S');
+  const second = addExtract(app, 'E2', uuid(142), 'S');
+  const third = addExtract(app, 'E3', uuid(143), 'E2');
+
+  const realPostpone = plugin.postponeFile.bind(plugin);
+  let mutated = false;
+  plugin.postponeFile = async (file, days, options) => {
+    if (!mutated) {
+      mutated = true;
+      // E3 leaves E2's subtree on disk; MetadataCache is left stale on purpose.
+      const entry = app.vault.entries.get(third.path);
+      entry.content = entry.content.replace('source: [[E2]]', 'source: [[S]]');
+    }
+    return realPostpone(file, days, options);
+  };
+
+  const result = await plugin.postponeSubtreeHost(source, 2);
+  plugin.postponeFile = realPostpone;
+
+  assert.equal(result.status, 'partial');
+  const blocked = result.results.find(item => item.topicId === uuid(143));
+  assert.ok(blocked, 'the moved node must be reported');
+  assert.ok(['conflict', 'failed'].includes(blocked.status), blocked.status);
+  assert.equal(blocked.reason, 'E_SUBTREE_CHANGED');
+  assert.equal(fmOf(app, third).mf_not_before, null, 'the moved node must not be postponed');
+  assert.ok(app.vault.readContent(third).includes('source: [[S]]'), 'the external relation change is preserved');
+  for (const file of [source, first, second]) {
+    assert.ok(fmOf(app, file).mf_not_before, `${file.path} should still be postponed`);
+  }
+});
+
+test('parent/source convention: a mid-level Extract root stays inside its own subtree', async () => {
+  const { plugin, app } = await harness();
+  // Phase 1 convention: `source` always points at the original Source,
+  // `parent` at the direct parent.
+  const source = addSource(app, 'S', uuid(150));
+  const first = addExtract(app, 'E1', uuid(151), 'S', { source: '[[S]]' });
+  const second = addExtract(app, 'E2', uuid(152), 'E1', { parent: '[[E1]]', source: '[[S]]' });
+  const third = addExtract(app, 'E3', uuid(153), 'E2', { parent: '[[E2]]', source: '[[S]]' });
+  const sibling = addExtract(app, 'E9', uuid(154), 'E1', { parent: '[[E1]]', source: '[[S]]' });
+
+  const result = await plugin.postponeSubtreeHost(second, 2);
+  assert.equal(result.status, 'applied');
+  assert.deepEqual(result.results.map(item => item.topicId).sort(), [uuid(152), uuid(153)].sort());
+  assert.ok(fmOf(app, second).mf_not_before);
+  assert.ok(fmOf(app, third).mf_not_before);
+  assert.equal(fmOf(app, first).mf_not_before, null, 'the parent must not be touched');
+  assert.equal(fmOf(app, source).mf_not_before, null, 'the source must not be touched');
+  assert.equal(fmOf(app, sibling).mf_not_before, null, 'a sibling must not be touched');
 });

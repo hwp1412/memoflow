@@ -3849,6 +3849,7 @@ class IncrementalReadingPlugin extends Plugin {
       calendarDate: descriptor.calendarDate ?? descriptor.today,
       algorithmVersion: ALGORITHM_VERSION,
       dateFormat,
+      expectations: descriptor.expectations ?? null,
     };
   }
 
@@ -3914,7 +3915,7 @@ class IncrementalReadingPlugin extends Plugin {
     return parsed ? this._mfUs1IsoDate(parsed) : null;
   }
 
-  async postponeFile(file, days, { legacy = null, quiet = false, today = null } = {}) {
+  async postponeFile(file, days, { legacy = null, quiet = false, today = null, expectations = null } = {}) {
     const { buildEventPayload } = require('./src/integration/reading-actions-host.js');
     const target = this._mfUs1HostActionTarget(file);
     if (!target.ok) {
@@ -3929,6 +3930,9 @@ class IncrementalReadingPlugin extends Plugin {
     const descriptor = this._mfUs1EventDescriptor(
       built.type, file, target.fm, today || this._todayKey(), built.payload
     );
+    // Optional write-time preconditions (e.g. subtree membership) are carried
+    // next to the event, not inside its validated payload.
+    if (expectations) descriptor.expectations = expectations;
     const legacyWrite = typeof legacy === 'function'
       ? legacy
       : () => this._postponeLegacyWrite({ tfile: file, fm: target.fm }, built.value.days);
@@ -5012,14 +5016,26 @@ class IncrementalReadingPlugin extends Plugin {
         relationKey: `${nodeFm.parent ?? ''}|${nodeFm.source ?? ''}`,
       };
     });
-    const plan = planSubtreePostpone({ nodes, rootTopicId: fm.mf_id, days, today });
+    let plan;
+    try {
+      plan = planSubtreePostpone({ nodes, rootTopicId: fm.mf_id, days, today });
+    } catch (error) {
+      new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
+      return { status: 'refused', reason: error.code || 'E_SUBTREE_PLAN' };
+    }
     const outcome = await runSubtreePostpone({
       plan,
       verifyNode: node => this._mfUs1VerifySubtreeNode(node),
       runNode: async node => {
         const file = this.app.vault.getAbstractFileByPath(node.path);
         if (!file) return { status: 'failed', reason: 'E_FILE_MISSING' };
-        return this.postponeFile(file, days, { quiet: true, today });
+        return this.postponeFile(file, days, {
+          quiet: true,
+          today,
+          // Enforced inside the CAS on the bytes being written, so a stale
+          // MetadataCache cannot sneak a moved node past the plan check.
+          expectations: { relationKey: node.relationKey },
+        });
       },
     });
     this._mfUs1ReportBatch(describeBatchOutcome(outcome));
