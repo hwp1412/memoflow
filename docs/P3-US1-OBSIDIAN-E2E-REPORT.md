@@ -187,3 +187,29 @@ Card 无 `mf_*`、Ledger applied 记录对应真实 Topic、Batch（Boost eventI
 
 测试：`test/e2e-audit.test.js` 9 项（干净库、重复 ID、parent/root 错误、缺父、Card 泄漏、Ledger 孤儿、Boost 证据/目标、基线 diff、空库含旧格式）。
 配套手动清单：`docs/P3-US1-E2E-CHECKLIST.md`（每步命令、预期、停止条件、证据归档）。
+
+
+## 17. 真实 Obsidian 自动化 E2E（本轮实际执行，Pass）
+
+执行方式：在该一次性测试 Vault 中安装一个**仅测试用的 Harness 插件**（`e2e-artifacts/harness-plugin/`，运行在 Obsidian 内部、调用真实 Obsidian API 与插件命令/方法，不依赖 macOS 辅助功能权限）。流程与结果：
+
+| 步骤 | 结果 | 证据 |
+|---|---|---|
+| Obsidian 1.15.1 打开 `E2E-Empty-Vault`，MemoFlow 0.1.0 加载 | **Pass** | `e2e-artifacts/harness-result.json` `version=0.1.0` |
+| 种子化一个已迁移 Topic（`mf_id/mf_revision/mf_*`） | Pass | 审计 `Source 1` |
+| `E2E: activate Unified (test build)`（真实门禁 + 确认弹窗） | **Pass** | `authorized=true`、`writeEnabled=true`、`activationBlockers=[]`、`migrationNotRequired=true` |
+| 真实评阅一次（ADVANCED） | **Pass** | `status=applied`；Revision `0→1`；Ledger 1 条；`mf_last_event_id` 写入；`mf_interval_days 8→12`、`mf_ideal_due 2026-12-09`；revision/hash/before-after audit 完整 |
+| 紧急撤销 `E2E: revoke Unified authorization` | **Pass** | `authorized=false`、`suspended=true` |
+| 撤销后再评阅 | **Pass（被拒绝）** | `E_UNIFIED_NOT_AUTHORIZED`；Revision `1→1`；Ledger 仍 1 条（零写入） |
+| 只读审计脚本 | **Pass** | `e2e-artifacts/audit-empty-after.json`：`PLUGIN_OK`、`LEDGER_READABLE`、`TOPICS_SCANNED`、`MIGRATION_NOT_REQUIRED` |
+
+### 17.1 实机发现并修复的 P1 缺陷
+
+真实 Obsidian（默认 `DD-MM-YYYY` 显示格式）中，评阅命令传入的 `today` 是**显示格式日期**，被直接写入 Unified 事件描述符，运行时拒绝：`explicit valid today is required`。这会导致**所有 Unified 评阅在真实 Vault（非 ISO 日期设置）失败**，而 Mock 测试因使用 ISO 设置未暴露。
+
+修复：新增 `_mfUs1IsoToday()/_mfUs1IsoTodayFrom()`；所有 Unified 描述符/宿主动作/批量/创建/恢复路径统一转 ISO，Legacy 路径继续使用显示格式。新增回归测试（`DD-MM-YYYY` 下评阅、postpone 均成功写事件）。全量 **1447 pass**。
+
+### 17.2 说明
+
+- 本轮实机覆盖：插件加载、激活、真实评阅写入（Event→Intent→CAS→Readback→Ledger）、撤销、撤销后零写入、审计。**尚未覆盖**：真实 UI 菜单创建 Source/Extract（需 GUI 自动化或人工点击）、Legacy/Shadow 交互、批量/恢复实机、Card/SR 实机、关闭重开。这些仍按 §4–§9 清单由人工或后续 UI 自动化完成。
+- Harness 仅在测试 Vault 内、仅用于本轮证据；运行后已从 `community-plugins.json` 移除，不会在用户环境出现。

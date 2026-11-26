@@ -236,3 +236,30 @@ test('resume reuses the planned event id and reconcile survives a final-save fai
   });
   assert.equal(recovered.batches[0].items[0].state, 'applied', 'reconcile recognises the original identity');
 });
+
+test('grading in unified mode uses an ISO today even with a DD-MM-YYYY setting', async () => {
+  const { plugin, app } = await harness();
+  plugin.settings.misc = { ...(plugin.settings.misc || {}), date_format: 'DD-MM-YYYY' };
+  const file = addTopic(app, 'Sources/G1.md', uuid(41));
+  app.activeFile = file;
+  const result = await plugin.endSession();
+  assert.ok(result, 'grading returned a host outcome');
+  const fm = fmOf(app, file);
+  assert.equal(Number(fm.mf_revision), 1, 'unified ADVANCED applied');
+  assert.ok(fm.mf_last_event_id && fm.mf_last_event_id !== 'null');
+  const ledger = Object.values(plugin.__ledger.store.dump());
+  assert.equal(ledger.length, 1);
+  assert.equal(String(fm.mf_interval_days) === String(fmOf(app, file).mf_interval_days), true);
+});
+
+test('host scheduling actions use ISO today under a DD-MM-YYYY setting', async () => {
+  const { plugin, app } = await harness();
+  plugin.settings.misc = { ...(plugin.settings.misc || {}), date_format: 'DD-MM-YYYY' };
+  const file = addTopic(app, 'Sources/G2.md', uuid(42));
+  app.activeFile = file;
+  await plugin.postponeFile(file, 3);
+  const fm = fmOf(app, file);
+  assert.equal(Number(fm.mf_revision), 1, 'postpone event applied');
+  assert.ok(fm.mf_not_before && fm.mf_not_before !== 'null');
+  assert.equal(Object.values(plugin.__ledger.store.dump()).length, 1);
+});

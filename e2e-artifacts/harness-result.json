@@ -1,0 +1,425 @@
+{
+  "ok": true,
+  "phases": {
+    "activation": {
+      "activationBlockers": [],
+      "conditions": {
+        "migrationComplete": true,
+        "migrationNotRequired": true,
+        "pendingRecovery": false,
+        "singleWriterReady": true,
+        "backupVerified": true,
+        "userConfirmed": true,
+        "storageSupportsCas": true
+      },
+      "transportSource": "lifecycle-runtime",
+      "transportAvailable": true,
+      "runtime": {
+        "present": true,
+        "mode": "unified",
+        "allowed": true,
+        "writeEnabled": true,
+        "blockers": []
+      },
+      "authorized": true,
+      "suspended": false,
+      "unresolved": {
+        "pendingEvents": 0,
+        "pendingBatch": 0,
+        "blockedTopics": 0,
+        "unsafe": false
+      },
+      "migrationPreviewed": false,
+      "recoveryHealthy": true,
+      "batchRecoveryError": null,
+      "duplicateIds": [],
+      "blockedTopicIds": [],
+      "topicCount": 0,
+      "legacyTopicCount": 0,
+      "migrationNotRequired": true
+    },
+    "grade": {
+      "result": {
+        "status": "applied",
+        "duplicate": false,
+        "recovered": false,
+        "writesPerformed": true,
+        "record": {
+          "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+          "topicId": "00000000-0000-4000-8000-0000000000a1",
+          "fingerprint": "a15f7178f261ca819df201c1e4a4defbf1344accb4ae75f92e4bc5891cbb4e96",
+          "type": "ADVANCED",
+          "algorithmVersion": 1,
+          "expectedRevision": 0,
+          "today": "2026-11-27",
+          "eventDate": "2026-11-27",
+          "payload": null,
+          "status": "applied",
+          "beforeHash": "3f06c5336d519df8f84c6b834abd3dacad35b45b82b3bb1cb9d9840407a8cbeb",
+          "expectedAfterHash": "f6f1f043e9bd462efd5e612023fa93cb492444a61a592a71baf0062fc5e43b70",
+          "afterHash": "f6f1f043e9bd462efd5e612023fa93cb492444a61a592a71baf0062fc5e43b70",
+          "actualRevision": 1,
+          "fields": {
+            "mf_revision": 1,
+            "mf_last_event_id": "00000000-0000-4000-8000-e586e1ffe89d",
+            "mf_interval_days": 12,
+            "mf_ideal_due": "2026-12-09",
+            "review_count": 2,
+            "last_reviewed": "2026-11-27",
+            "next_review": "09-12-2026"
+          },
+          "audit": {
+            "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+            "topicId": "00000000-0000-4000-8000-0000000000a1",
+            "algorithmVersion": 1,
+            "type": "ADVANCED",
+            "today": "2026-11-27",
+            "expectedRevision": 0,
+            "actualRevision": 1,
+            "before": {
+              "priority": 50,
+              "intervalDays": 8,
+              "aFactor": 1.5,
+              "idealDue": "2026-11-20",
+              "notBefore": null,
+              "effectiveDue": "2026-11-20",
+              "reviewCount": 1,
+              "status": "active"
+            },
+            "after": {
+              "priority": 50,
+              "intervalDays": 12,
+              "aFactor": 1.5,
+              "idealDue": "2026-12-09",
+              "notBefore": null,
+              "effectiveDue": "2026-12-09",
+              "reviewCount": 2,
+              "status": "active"
+            },
+            "writesPerformed": true,
+            "result": "applied",
+            "reason": null,
+            "requiresManualRecovery": false
+          },
+          "result": "applied",
+          "reason": null,
+          "writeAttempted": true,
+          "writesPerformed": true
+        },
+        "audit": {
+          "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+          "topicId": "00000000-0000-4000-8000-0000000000a1",
+          "algorithmVersion": 1,
+          "type": "ADVANCED",
+          "today": "2026-11-27",
+          "expectedRevision": 0,
+          "actualRevision": 1,
+          "before": {
+            "priority": 50,
+            "intervalDays": 8,
+            "aFactor": 1.5,
+            "idealDue": "2026-11-20",
+            "notBefore": null,
+            "effectiveDue": "2026-11-20",
+            "reviewCount": 1,
+            "status": "active"
+          },
+          "after": {
+            "priority": 50,
+            "intervalDays": 12,
+            "aFactor": 1.5,
+            "idealDue": "2026-12-09",
+            "notBefore": null,
+            "effectiveDue": "2026-12-09",
+            "reviewCount": 2,
+            "status": "active"
+          },
+          "writesPerformed": true,
+          "result": "applied",
+          "reason": null,
+          "requiresManualRecovery": false
+        }
+      },
+      "error": null,
+      "before": {
+        "revision": 0,
+        "notBefore": null,
+        "idealDue": "2026-11-20",
+        "lastEvent": null
+      },
+      "after": {
+        "revision": 1,
+        "notBefore": null,
+        "idealDue": "2026-12-09",
+        "lastEvent": "00000000-0000-4000-8000-e586e1ffe89d"
+      }
+    },
+    "revoked": {
+      "activationBlockers": [],
+      "conditions": {
+        "migrationComplete": true,
+        "migrationNotRequired": true,
+        "pendingRecovery": false,
+        "singleWriterReady": true,
+        "backupVerified": true,
+        "userConfirmed": true,
+        "storageSupportsCas": true
+      },
+      "transportSource": "lifecycle-runtime",
+      "transportAvailable": true,
+      "runtime": {
+        "present": true,
+        "mode": "unified",
+        "allowed": true,
+        "writeEnabled": true,
+        "blockers": []
+      },
+      "authorized": false,
+      "suspended": true,
+      "unresolved": {
+        "pendingEvents": 0,
+        "pendingBatch": 0,
+        "blockedTopics": 0,
+        "unsafe": false
+      },
+      "migrationPreviewed": false,
+      "recoveryHealthy": true,
+      "batchRecoveryError": null,
+      "duplicateIds": [],
+      "blockedTopicIds": [],
+      "topicCount": 0,
+      "legacyTopicCount": 0,
+      "migrationNotRequired": true
+    },
+    "gradeAfterRevoke": {
+      "result": null,
+      "error": "Unified authorization was revoked",
+      "before": {
+        "revision": 1,
+        "notBefore": null,
+        "idealDue": "2026-12-09",
+        "lastEvent": "00000000-0000-4000-8000-e586e1ffe89d"
+      },
+      "after": {
+        "revision": 1,
+        "notBefore": null,
+        "idealDue": "2026-12-09",
+        "lastEvent": "00000000-0000-4000-8000-e586e1ffe89d"
+      }
+    }
+  },
+  "log": [
+    "2026-11-26T19:43:56.898Z click: 确定"
+  ],
+  "version": "0.1.0",
+  "fmDetected": {
+    "type": "source",
+    "mf_id": "00000000-0000-4000-8000-0000000000a1",
+    "mf_revision": 0
+  },
+  "modeBefore": {
+    "0": "l",
+    "1": "e",
+    "2": "g",
+    "3": "a",
+    "4": "c",
+    "5": "y"
+  },
+  "modeAfterActivation": "unified",
+  "ledgerAfterGrade": {
+    "00000000-0000-4000-8000-e586e1ffe89d": {
+      "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+      "topicId": "00000000-0000-4000-8000-0000000000a1",
+      "fingerprint": "a15f7178f261ca819df201c1e4a4defbf1344accb4ae75f92e4bc5891cbb4e96",
+      "type": "ADVANCED",
+      "algorithmVersion": 1,
+      "expectedRevision": 0,
+      "today": "2026-11-27",
+      "eventDate": "2026-11-27",
+      "payload": null,
+      "status": "applied",
+      "beforeHash": "3f06c5336d519df8f84c6b834abd3dacad35b45b82b3bb1cb9d9840407a8cbeb",
+      "expectedAfterHash": "f6f1f043e9bd462efd5e612023fa93cb492444a61a592a71baf0062fc5e43b70",
+      "afterHash": "f6f1f043e9bd462efd5e612023fa93cb492444a61a592a71baf0062fc5e43b70",
+      "actualRevision": 1,
+      "fields": {
+        "mf_revision": 1,
+        "mf_last_event_id": "00000000-0000-4000-8000-e586e1ffe89d",
+        "mf_interval_days": 12,
+        "mf_ideal_due": "2026-12-09",
+        "review_count": 2,
+        "last_reviewed": "2026-11-27",
+        "next_review": "09-12-2026"
+      },
+      "audit": {
+        "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+        "topicId": "00000000-0000-4000-8000-0000000000a1",
+        "algorithmVersion": 1,
+        "type": "ADVANCED",
+        "today": "2026-11-27",
+        "expectedRevision": 0,
+        "actualRevision": 1,
+        "before": {
+          "priority": 50,
+          "intervalDays": 8,
+          "aFactor": 1.5,
+          "idealDue": "2026-11-20",
+          "notBefore": null,
+          "effectiveDue": "2026-11-20",
+          "reviewCount": 1,
+          "status": "active"
+        },
+        "after": {
+          "priority": 50,
+          "intervalDays": 12,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-09",
+          "notBefore": null,
+          "effectiveDue": "2026-12-09",
+          "reviewCount": 2,
+          "status": "active"
+        },
+        "writesPerformed": true,
+        "result": "applied",
+        "reason": null,
+        "requiresManualRecovery": false
+      },
+      "result": "applied",
+      "reason": null,
+      "writeAttempted": true,
+      "writesPerformed": true
+    }
+  },
+  "ledgerCountAfterGrade": 1,
+  "ledgerAfterRevoke": {
+    "00000000-0000-4000-8000-e586e1ffe89d": {
+      "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+      "topicId": "00000000-0000-4000-8000-0000000000a1",
+      "fingerprint": "a15f7178f261ca819df201c1e4a4defbf1344accb4ae75f92e4bc5891cbb4e96",
+      "type": "ADVANCED",
+      "algorithmVersion": 1,
+      "expectedRevision": 0,
+      "today": "2026-11-27",
+      "eventDate": "2026-11-27",
+      "payload": null,
+      "status": "applied",
+      "beforeHash": "3f06c5336d519df8f84c6b834abd3dacad35b45b82b3bb1cb9d9840407a8cbeb",
+      "expectedAfterHash": "f6f1f043e9bd462efd5e612023fa93cb492444a61a592a71baf0062fc5e43b70",
+      "afterHash": "f6f1f043e9bd462efd5e612023fa93cb492444a61a592a71baf0062fc5e43b70",
+      "actualRevision": 1,
+      "fields": {
+        "mf_revision": 1,
+        "mf_last_event_id": "00000000-0000-4000-8000-e586e1ffe89d",
+        "mf_interval_days": 12,
+        "mf_ideal_due": "2026-12-09",
+        "review_count": 2,
+        "last_reviewed": "2026-11-27",
+        "next_review": "09-12-2026"
+      },
+      "audit": {
+        "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+        "topicId": "00000000-0000-4000-8000-0000000000a1",
+        "algorithmVersion": 1,
+        "type": "ADVANCED",
+        "today": "2026-11-27",
+        "expectedRevision": 0,
+        "actualRevision": 1,
+        "before": {
+          "priority": 50,
+          "intervalDays": 8,
+          "aFactor": 1.5,
+          "idealDue": "2026-11-20",
+          "notBefore": null,
+          "effectiveDue": "2026-11-20",
+          "reviewCount": 1,
+          "status": "active"
+        },
+        "after": {
+          "priority": 50,
+          "intervalDays": 12,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-09",
+          "notBefore": null,
+          "effectiveDue": "2026-12-09",
+          "reviewCount": 2,
+          "status": "active"
+        },
+        "writesPerformed": true,
+        "result": "applied",
+        "reason": null,
+        "requiresManualRecovery": false
+      },
+      "result": "applied",
+      "reason": null,
+      "writeAttempted": true,
+      "writesPerformed": true
+    }
+  },
+  "ledgerCountAfterRevoke": 1,
+  "ledgerAfterRejectedWrite": {
+    "00000000-0000-4000-8000-e586e1ffe89d": {
+      "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+      "topicId": "00000000-0000-4000-8000-0000000000a1",
+      "fingerprint": "a15f7178f261ca819df201c1e4a4defbf1344accb4ae75f92e4bc5891cbb4e96",
+      "type": "ADVANCED",
+      "algorithmVersion": 1,
+      "expectedRevision": 0,
+      "today": "2026-11-27",
+      "eventDate": "2026-11-27",
+      "payload": null,
+      "status": "applied",
+      "beforeHash": "3f06c5336d519df8f84c6b834abd3dacad35b45b82b3bb1cb9d9840407a8cbeb",
+      "expectedAfterHash": "f6f1f043e9bd462efd5e612023fa93cb492444a61a592a71baf0062fc5e43b70",
+      "afterHash": "f6f1f043e9bd462efd5e612023fa93cb492444a61a592a71baf0062fc5e43b70",
+      "actualRevision": 1,
+      "fields": {
+        "mf_revision": 1,
+        "mf_last_event_id": "00000000-0000-4000-8000-e586e1ffe89d",
+        "mf_interval_days": 12,
+        "mf_ideal_due": "2026-12-09",
+        "review_count": 2,
+        "last_reviewed": "2026-11-27",
+        "next_review": "09-12-2026"
+      },
+      "audit": {
+        "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+        "topicId": "00000000-0000-4000-8000-0000000000a1",
+        "algorithmVersion": 1,
+        "type": "ADVANCED",
+        "today": "2026-11-27",
+        "expectedRevision": 0,
+        "actualRevision": 1,
+        "before": {
+          "priority": 50,
+          "intervalDays": 8,
+          "aFactor": 1.5,
+          "idealDue": "2026-11-20",
+          "notBefore": null,
+          "effectiveDue": "2026-11-20",
+          "reviewCount": 1,
+          "status": "active"
+        },
+        "after": {
+          "priority": 50,
+          "intervalDays": 12,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-09",
+          "notBefore": null,
+          "effectiveDue": "2026-12-09",
+          "reviewCount": 2,
+          "status": "active"
+        },
+        "writesPerformed": true,
+        "result": "applied",
+        "reason": null,
+        "requiresManualRecovery": false
+      },
+      "result": "applied",
+      "reason": null,
+      "writeAttempted": true,
+      "writesPerformed": true
+    }
+  },
+  "ledgerCountAfterRejectedWrite": 1,
+  "rejectedWriteNoChange": true
+}

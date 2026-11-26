@@ -3887,7 +3887,7 @@ class IncrementalReadingPlugin extends Plugin {
       file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
       fm = file && this.app.metadataCache ? (this.app.metadataCache.getFileCache(file) || {}).frontmatter : null;
     } catch (error) { file = null; fm = null; }
-    return this._mfUs1EventDescriptor(action, file, fm, this._todayKey ? this._todayKey() : null, payload);
+    return this._mfUs1EventDescriptor(action, file, fm, this._mfUs1IsoToday ? this._mfUs1IsoToday() : null, payload);
   }
 
   _mfUs1HostService() {
@@ -3944,6 +3944,13 @@ class IncrementalReadingPlugin extends Plugin {
   // SET_PRIORITY). These are the single authoritative places that build an
   // event descriptor. Every UI surface (menu, reading bar, popover, dashboard)
   // calls them, so no surface can write scheduling fields on its own.
+  // Unified events always use ISO YYYY-MM-DD, independent of the user's
+  // display date format (real-Obsidian E2E found DD-MM-YYYY leaking into the
+  // unified descriptor and failing "explicit valid today").
+  _mfUs1IsoToday() {
+    return dateCore.formatDate(new Date(), 'YYYY-MM-DD');
+  }
+
   _mfUs1EffectiveMode() {
     return (this.settings && this.settings.mf_us1_mode) || 'legacy';
   }
@@ -4001,7 +4008,7 @@ class IncrementalReadingPlugin extends Plugin {
       type: 'REACTIVATE',
       file: active,
       fm,
-      today: this._todayKey(),
+      today: this._mfUs1IsoToday(),
       payload: { idealDue },
       legacy,
     });
@@ -4030,7 +4037,7 @@ class IncrementalReadingPlugin extends Plugin {
         type: 'COMPLETE',
         file,
         fm: getFm(this.app, file),
-        today: this._todayKey(),
+        today: this._mfUs1IsoToday(),
       });
       if (['applied', 'duplicate', 'legacy', 'no-op'].includes(result.status)) applied += 1;
       else problems.push(`${file.basename}: ${result.status}${result.reason ? `/${result.reason}` : ''}`);
@@ -4051,7 +4058,7 @@ class IncrementalReadingPlugin extends Plugin {
       type: 'DISMISS',
       file,
       fm,
-      today: this._todayKey(),
+      today: this._mfUs1IsoToday(),
     });
     this._mfUs1ShowActionResult(result);
     return ['applied', 'duplicate', 'legacy'].includes(result.status);
@@ -4128,7 +4135,7 @@ class IncrementalReadingPlugin extends Plugin {
           revision: projected.revision,
         };
       });
-      batch = planBoostBatch({ rows: items, rootTopicId: r.fm.mf_id, delta, today: this._todayKey() });
+      batch = planBoostBatch({ rows: items, rootTopicId: r.fm.mf_id, delta, today: this._mfUs1IsoToday() });
     } catch (error) {
       new Notice(`Boost 未执行：${error.message || error.code || '计划失败'}`, 9000);
       return null;
@@ -4138,7 +4145,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (!ok) return null;
     const rowsByPath = new Map(this.getIRRows().map(row => [row.tfile.path, row]));
     const eventById = new Map((batch.events || []).map(event => [event.topicId, event]));
-    const today = this._todayKey();
+    const today = this._mfUs1IsoTodayFrom(this._todayKey());
     const outcome = await applyBoostBatch({
       batch,
       getPriority: async node => Number((rowsByPath.get(node.path) || {}).fm?.priority) || 50,
@@ -4264,7 +4271,7 @@ class IncrementalReadingPlugin extends Plugin {
     }
     const chosenWindow = windowDays || await pickFromList(this.app, ['3 days', '7 days', '14 days', '30 days'], [3, 7, 14, 30], 'Mercy window');
     if (!chosenWindow) return null;
-    const today = this._todayKey();
+    const today = this._mfUs1IsoTodayFrom(this._todayKey());
     const rows = this.getIRRows();
     const projections = rows.map(row => projectTopic(row, { mode: this._mfUs1EffectiveMode() }));
     const topics = projections
@@ -4785,8 +4792,8 @@ class IncrementalReadingPlugin extends Plugin {
               eventId: item.eventId,
               topicId: item.topicId,
               expectedRevision: Number.isInteger(item.expectedRevision) ? item.expectedRevision : null,
-              today: this._todayKey(),
-              calendarDate: this._todayKey(),
+              today: this._mfUs1IsoToday(),
+              calendarDate: this._mfUs1IsoToday(),
               payload: { priority: item.priority },
               path: row.tfile.path,
             });
@@ -4938,7 +4945,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
-      built.type, file, target.fm, today || this._todayKey(), built.payload
+      built.type, file, target.fm, today || this._mfUs1IsoToday(), built.payload
     );
     // Optional write-time preconditions (e.g. subtree membership) are carried
     // next to the event, not inside its validated payload.
@@ -4964,7 +4971,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
-      built.type, file, target.fm, this._todayKey(), built.payload
+      built.type, file, target.fm, this._mfUs1IsoToday(), built.payload
     );
     const legacyWrite = typeof legacy === 'function'
       ? legacy
@@ -4992,7 +4999,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
-      built.type, file, target.fm, this._todayKey(), built.payload
+      built.type, file, target.fm, this._mfUs1IsoToday(), built.payload
     );
     const legacyWrite = typeof legacy === 'function'
       ? legacy
@@ -5068,7 +5075,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { handled: false };
     }
     const { planTopicCreation, composeCreationContent, executeTopicCreation } = require('./src/integration/topic-creation-host.js');
-    const today = typeof this._todayKey === 'function' ? this._todayKey() : todayDateString(this.settings);
+    const today = typeof this._mfUs1IsoToday === 'function' ? this._mfUs1IsoToday() : todayDateString(this.settings);
 
     let parentId = null;
     let rootId = null;
@@ -5140,9 +5147,19 @@ class IncrementalReadingPlugin extends Plugin {
     return { status: outcome.status || 'failed', reason: outcome.reason || outcome.status };
   }
 
+  _mfUs1IsoTodayFrom(value) {
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const parsed = value ? dateCore.parseDateExact(value, configuredDateFormat(this.settings)) : null;
+    return parsed ? dateCore.formatDate(parsed, 'YYYY-MM-DD') : this._mfUs1IsoToday();
+  }
+
   async _gradeTopic(file, fm, today) {
+    // Unified events require ISO `today` (MF-US-1 spec); the legacy path still
+    // needs the user-configured display date. `today` may arrive in display
+    // format from endSession (real-Obsidian E2E caught this for DD-MM-YYYY).
+    const unifiedToday = this._mfUs1IsoTodayFrom(today);
     return this._mfUs1RunLegacy(
-      this._mfUs1EventDescriptor('ADVANCED', file, fm, today),
+      this._mfUs1EventDescriptor('ADVANCED', file, fm, unifiedToday),
       () => this._gradeTopicLegacy(file, fm, today)
     );
   }
@@ -6033,7 +6050,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { status: 'blocked', reason: 'E_ROOT_ID_REQUIRED' };
     }
     // One date for the whole batch, even if the clock crosses midnight.
-    const today = this._todayKey();
+    const today = this._mfUs1IsoTodayFrom(this._todayKey());
     let subtree = null;
     try {
       subtree = walkSubtree(this.app, this.settings, rootFile.basename, rootFile.path, {
