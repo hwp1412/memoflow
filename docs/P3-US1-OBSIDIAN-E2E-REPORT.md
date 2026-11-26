@@ -252,3 +252,17 @@ Card 无 `mf_*`、Ledger applied 记录对应真实 Topic、Batch（Boost eventI
 - 全量 **1449 pass**。
 
 真机复测状态：Harness 在后续批次中因自身弹窗驱动缺陷（`Extracts/E2.md` 不存在导致 `getFileCache(null)`、以及 suggest/confirm 弹窗驱动不可靠）未能完成 Boost/Mercy 真机复测——这属于测试工具限制，不构成产品通过证据；Boost/Mercy/Subtree 实机仍标记 **未验证**，待下一轮修复 Harness 后重跑。
+
+
+## 20. 更正与最终状态（重要）
+
+§18.1 的“缓存陈旧导致 Boost 整批拒绝”**归因不完整**：后续诊断发现真正的首要原因是 **Harness 把测试笔记建在了错误目录**——插件默认 IR 目录是
+`Sources/Incremental Reading/Sources` 与 `.../Extracts`，而 Harness 建在根级 `Sources/`、`Extracts/`，因此 `getIRRows()` 合法地返回 0。
+这不是产品缺陷。修正目录后真机 `getIRRows()` 返回 4 行（正常）。
+
+保留的健壮性改进（`ed941ce` + 本轮）：批量规划前等待 IR 集合包含根节点，超时给出 **明确提示 `E_INDEX_NOT_READY`** 并返回 blocked，而不是静默 `return null`。这仍是有价值的行为改进（用户能看到“索引未就绪，请稍后重试”），但不是“修复了一个已证实的生产批次缺陷”。
+
+当前真机可信结论不变：
+
+- **Pass（真实 Obsidian 1.15.1）**：插件加载、空库识别、Unified 激活、真实评阅写入（Revision 0→1、Ledger 1、hash/audit）、紧急撤销、撤销后写入被拒（零修改）、只读审计。
+- **未验证**：Boost/Mercy/Undo/Subtree 的完整真机闭环（Harness 修改目录后，最新脚本的激活步骤回退为 legacy 模式，需继续调试）、Legacy/Shadow 交互、真实 UI 创建多级 Extract、Card/SR、重启恢复。

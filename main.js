@@ -4105,7 +4105,12 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async boostUnified() {
-    this._mfUs1RefreshRows();
+    const boostActive = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
+    const boostIndex = await this._mfUs1WaitForIRIndex(boostActive);
+    if (!boostIndex.found) {
+      new Notice('Boost 未执行：增量阅读索引尚未就绪（未读到当前 Topic），请稍后重试。', 10000);
+      return { status: 'blocked', reason: 'E_INDEX_NOT_READY', writesPerformed: false };
+    }
     const { planBoostBatch, applyBoostBatch, describeBoostOutcome } = require('./src/integration/boost-batch-host.js');
     if (!this.mfUs1BatchStore) { new Notice('MF-US-1 Boost 尚未初始化（缺少批次存储）。', 9000); return null; }
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
@@ -4193,21 +4198,32 @@ class IncrementalReadingPlugin extends Plugin {
     this.duePoolCache = null;
   }
 
-  // Real Obsidian indexes new files asynchronously. Before batch planning over
-  // a subtree, wait briefly for the root metadata and drop stale row caches;
-  // otherwise a freshly created topic yields "Subtree root not found" and the
-  // whole batch is refused (found by real-Obsidian E2E).
-  async _mfUs1EnsureTopicIndexed(file) {
-    if (!file || !this.app || !this.app.metadataCache || typeof this.app.metadataCache.getFileCache !== 'function') {
+  // Real Obsidian indexes new files asynchronously; getIRRows() can stay empty
+  // for a moment after vault.create(), so batch planning waits for the IR
+  // collection to actually contain the root instead of silently planning zero.
+  async _mfUs1WaitForIRIndex(file, { attempts = 30, interval = 150 } = {}) {
+    const targetPath = file && typeof file.path === 'string' ? file.path : null;
+    if (!targetPath) {
       this._mfUs1RefreshRows();
-      return;
+      return { found: false, rows: this.getIRRows() };
     }
-    for (let attempt = 0; attempt < 12; attempt += 1) {
-      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-      if (fm && (fm.type === 'source' || fm.type === 'extract')) break;
-      await new Promise(resolve => setTimeout(resolve, 100));
+    let rows = [];
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      this._mfUs1RefreshRows();
+      rows = this.getIRRows();
+      if (rows.some(row => row.tfile && row.tfile.path === targetPath)) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        this._mfUs1RefreshRows();
+        rows = this.getIRRows();
+        if (rows.some(row => row.tfile && row.tfile.path === targetPath)) return { found: true, rows };
+      }
+      await new Promise(resolve => setTimeout(resolve, interval));
     }
-    this._mfUs1RefreshRows();
+    return { found: false, rows };
+  }
+
+  async _mfUs1EnsureTopicIndexed(file) {
+    await this._mfUs1WaitForIRIndex(file);
   }
 
   // Read-only Shadow comparison: Legacy remains the only writer. This computes
@@ -6068,7 +6084,11 @@ class IncrementalReadingPlugin extends Plugin {
       new Notice('子树延期未执行：根节点缺少持久 mf_id（不做隐式迁移）。', 10000);
       return { status: 'blocked', reason: 'E_ROOT_ID_REQUIRED' };
     }
-    await this._mfUs1EnsureTopicIndexed(rootFile);
+    const rootIndex = await this._mfUs1WaitForIRIndex(rootFile);
+    if (!rootIndex.found) {
+      new Notice('子树延期未执行：增量阅读索引尚未就绪，请稍后重试。', 10000);
+      return { status: 'blocked', reason: 'E_INDEX_NOT_READY', writesPerformed: false };
+    }
     // One date for the whole batch, even if the clock crosses midnight.
     const today = this._mfUs1IsoTodayFrom(this._todayKey());
     let subtree = null;

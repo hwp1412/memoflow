@@ -291,3 +291,30 @@ test('subtree postpone refreshes a stale row cache before planning', async () =>
     assert.equal(Number(fm.mf_revision), 1);
   }
 });
+
+test('batch planning waits for the IR index and blocks with a clear reason on timeout', async () => {
+  const { plugin, app } = await harness();
+  const root = addTopic(app, 'Sources/IX.md', uuid(61));
+  app.activeFile = root;
+  const realRows = plugin.getIRRows.bind(plugin);
+  const realGet = plugin.getIRRows;
+  // Delayed index: first two reads are empty, then the real rows appear.
+  let reads = 0;
+  plugin.getIRRows = () => { reads += 1; return reads <= 2 ? [] : realRows(); };
+  const delayed = await plugin._mfUs1WaitForIRIndex(root, { attempts: 10, interval: 10 });
+  assert.equal(delayed.found, true, 'retries until the root is indexed');
+  assert.ok(delayed.rows.some(row => row.tfile && row.tfile.path === root.path));
+
+  plugin.getIRRows = () => [];
+  const missing = await plugin._mfUs1WaitForIRIndex(root, { attempts: 3, interval: 10 });
+  assert.equal(missing.found, false);
+  plugin.getIRRows = realGet;
+
+  // Boost with an index that never contains the topic returns a clear blocked outcome.
+  plugin.getIRRows = () => [];
+  const blocked = await plugin.boost();
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(blocked.reason, 'E_INDEX_NOT_READY');
+  assert.equal(blocked.writesPerformed, false);
+  plugin.getIRRows = realGet;
+});
