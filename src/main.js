@@ -400,7 +400,10 @@ class MemoFlowPlugin extends BasePlugin {
     }
   }
 
-  async _postponeReadingFile(file, days) {
+  // Legacy body kept verbatim: the reading bar / popover historically wrote
+  // next_review + interval with its own wording. The menu used a different
+  // writer, so each surface keeps its own legacy path behind the host entry.
+  async _postponeReadingFileLegacy(file, days) {
     const fmt = dateCore.normalizeDateFormat(this.settings?.misc?.date_format);
     const base = new Date();
     base.setHours(0, 0, 0, 0);
@@ -411,6 +414,10 @@ class MemoFlowPlugin extends BasePlugin {
       fmWriter.interval = days;
     });
     new Notice(`已延后 ${days} 天 · 下次：${next}`);
+  }
+
+  async _postponeReadingFile(file, days) {
+    return this.postponeFile(file, days, { legacy: () => this._postponeReadingFileLegacy(file, days) });
   }
 
   _confirmDestructive(title, body, confirmText = '确认') {
@@ -470,6 +477,9 @@ class MemoFlowPlugin extends BasePlugin {
         case 'priority':
           await this.openPriorityDialog(file);
           return;
+        case 'schedule':
+          await this._promptManualSchedule(file);
+          return;
         case 'open-pdf':
           await this.openPdfForSource(file);
           return;
@@ -489,11 +499,21 @@ class MemoFlowPlugin extends BasePlugin {
         case 'skip':
           await this.nextElement();
           return;
-        case 'postpone':
-          await this._postponeReadingFile(file, Math.max(1, Number(data.days) || 1));
-          await this.consumeSessionItem(file.path);
-          await this._openNextSessionTarget(next);
+        case 'postpone': {
+          const outcome = await this._postponeReadingFile(file, Math.max(1, Number(data.days) || 1));
+          // Only a confirmed (or legacy-applied) postpone may leave the current
+          // session topic. Conflict / uncertain / failed / no-op must keep the
+          // reader on this note so the user can retry or inspect it.
+          const advanced = !outcome
+            || outcome.status === 'legacy'
+            || outcome.status === 'applied'
+            || outcome.status === 'duplicate';
+          if (advanced) {
+            await this.consumeSessionItem(file.path);
+            await this._openNextSessionTarget(next);
+          }
           return;
+        }
         case 'dismiss':
           if (!(await this._confirmDestructive(
             '移出队列？',
@@ -605,6 +625,7 @@ class MemoFlowPlugin extends BasePlugin {
       }
       separator();
       add('设置优先级…', 'priority');
+      add('手动排期…', 'schedule');
       if (fm.type === 'source' && (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path)) {
         add('打开 PDF 阅读点', 'open-pdf');
       }
@@ -1000,17 +1021,33 @@ class MemoFlowPlugin extends BasePlugin {
           new Notice(`优先级保持 P${original}。`);
           return;
         }
-        await this.app.fileManager.processFrontMatter(file, fmw => {
-          if (result.boost && fmw.boost_from == null) fmw.boost_from = original;
-          fmw.priority = next;
+        const outcome = await this.setPriorityFile(file, next, {
+          quiet: true,
+          legacy: async () => {
+            await this.app.fileManager.processFrontMatter(file, fmw => {
+              if (result.boost && fmw.boost_from == null) fmw.boost_from = original;
+              fmw.priority = next;
+            });
+            // metadataCache may still hold the old frontmatter object for a tick;
+            // mutate it so the visible chip updates immediately.
+            fm.priority = next;
+            new Notice(`优先级 P${original} → P${next}`);
+            if (typeof this._invalidateIRCollection === 'function') this._invalidateIRCollection(true);
+            await this._syncReadingSurface();
+            await onApplied?.();
+          },
         });
-        // metadataCache may still hold the old frontmatter object for a tick;
-        // mutate it so the visible chip updates immediately.
-        fm.priority = next;
-        new Notice(`优先级 P${original} → P${next}`);
-        if (typeof this._invalidateIRCollection === 'function') this._invalidateIRCollection(true);
-        await this._syncReadingSurface();
-        await onApplied?.();
+        if (outcome.status === 'legacy') return; // legacy path already applied and notified
+        if (outcome.status === 'applied' || outcome.status === 'duplicate') {
+          // Only a confirmed write updates the visible state.
+          fm.priority = next;
+          this._mfUs1ShowActionResult(outcome);
+          if (typeof this._invalidateIRCollection === 'function') this._invalidateIRCollection(true);
+          await this._syncReadingSurface();
+          await onApplied?.();
+          return;
+        }
+        this._mfUs1ShowActionResult(outcome);
       },
     }).open();
   }

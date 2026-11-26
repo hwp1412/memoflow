@@ -182,12 +182,20 @@ function parseFrontmatter(content) {
   const match = String(content).match(/^---\n([\s\S]*?)\n---\n/);
   if (!match) return {};
   const fm = {};
+  let listKey = null;
   for (const line of match[1].split('\n')) {
+    const item = line.match(/^\s+-\s+(.*)$/);
+    if (item && listKey) {
+      if (!Array.isArray(fm[listKey])) fm[listKey] = [];
+      fm[listKey].push(item[1].trim());
+      continue;
+    }
     const m = line.match(/^([A-Za-z0-9_]+):\s*(.*)$/);
     if (!m) continue;
     const key = m[1];
     let value = m[2].trim();
-    if (value === '') { fm[key] = null; continue; }
+    if (value === '') { fm[key] = null; listKey = key; continue; }
+    listKey = null;
     if (value === 'true') { fm[key] = true; continue; }
     if (value === 'false') { fm[key] = false; continue; }
     if (/^-?\d+(?:\.\d+)?$/.test(value)) { fm[key] = Number(value); continue; }
@@ -320,6 +328,9 @@ function createApp() {
       const after = fn(before);
       if (typeof after !== 'string') throw new Error('vault.process must return a string');
       entry.content = after;
+      // Real Obsidian refreshes MetadataCache after a modify; the mock must too,
+      // otherwise a second host action would read a stale mf_revision.
+      entry.frontmatter = parseFrontmatter(after);
       this.processCalls.push({ file, before, after });
       return after;
     },
@@ -387,6 +398,10 @@ function createApp() {
       const next = clone(entry.frontmatter);
       mutator(next);
       entry.frontmatter = next;
+      // Real Obsidian rewrites the frontmatter block on disk; keep the mock's
+      // content string consistent so a later Vault.process sees the same state.
+      const body = String(entry.content).replace(/^---\n[\s\S]*?\n---\n/, '');
+      entry.content = frontmatterText(next) + body;
       this.writes.push({ file, before, after: clone(next) });
       return next;
     },
