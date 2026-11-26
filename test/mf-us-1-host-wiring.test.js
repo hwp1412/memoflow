@@ -14,14 +14,25 @@ const srcSource = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
 const baseSource = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
 
 test('every audited root entry delegates through the host scheduler service', () => {
+  // HOST-ACTIONS-01: postpone/schedule/setPriority now share one authoritative
+  // descriptor site (`*File`) so every UI surface goes through the same event.
+  const fileEntries = [
+    ['postpone', 'postponeFile('],
+    ['schedule', 'scheduleFile('],
+    ['setPriority', 'setPriorityFile('],
+  ];
+  for (const [method, delegated] of fileEntries) {
+    const start = mainSource.indexOf(`  async ${method}(`);
+    assert.ok(start >= 0, method);
+    const end = mainSource.indexOf('\n  async ', start + 10);
+    const body = mainSource.slice(start, end < 0 ? undefined : end);
+    assert.ok(body.includes(delegated), `${method} must delegate to ${delegated}`);
+  }
   for (const [method, action] of [
     ['_gradeTopic', 'ADVANCED'],
     ['markDone', 'COMPLETE'],
     ['resetCurrent', 'RESET_CURRENT'],
     ['dismiss', 'DISMISS'],
-    ['postpone', 'POSTPONE'],
-    ['schedule', 'MANUAL_SCHEDULE'],
-    ['setPriority', 'SET_PRIORITY'],
     ['postponeSubtree', 'POSTPONE_SUBTREE'],
     ['_createExtract', 'CREATE_EXTRACT'],
     ['newSource', 'CREATE_SOURCE'],
@@ -37,6 +48,13 @@ test('every audited root entry delegates through the host scheduler service', ()
       assert.ok(body.includes(`'${action}'`), `${method} must name its event action`);
     }
   }
+  // The shared entries name the action they build; the event type itself comes
+  // from the accepted reading-action map, not from a second literal table.
+  for (const kind of ['postpone', 'schedule', 'priority']) {
+    const occurrences = mainSource.split(`buildEventPayload('${kind}'`).length - 1;
+    assert.equal(occurrences, 1, `${kind} must be built in exactly one host entry`);
+  }
+  assert.match(mainSource, /_mfUs1RunLegacy\(/);
   assert.match(mainSource, /createHostSchedulerService/);
   assert.match(mainSource, /schedulerDashboardModel\(/);
 });
@@ -52,9 +70,9 @@ test('postpone, schedule and setPriority confirm UI parameters before routing', 
     const end = mainSource.indexOf('\n  async ', start + 10);
     const body = mainSource.slice(start, end < 0 ? undefined : end);
     const pickerIndex = body.indexOf(picker);
-    const routeIndex = body.indexOf('_mfUs1RunLegacy');
+    const routeIndex = body.indexOf(`${method}File(`);
     assert.ok(pickerIndex >= 0, `${method} must confirm parameters first`);
-    assert.ok(pickerIndex < routeIndex, `${method} must not route before confirmation`);
+    assert.ok(routeIndex > pickerIndex, `${method} must not route before confirmation`);
     assert.match(body, /return; \/\/ cancel: no event, no write|if \(!choice\) return;/);
   }
 });

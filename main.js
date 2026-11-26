@@ -3862,6 +3862,151 @@ class IncrementalReadingPlugin extends Plugin {
     return outcome.result;
   }
 
+  // ---- MF-US-1 daily action host entries (POSTPONE / MANUAL_SCHEDULE /
+  // SET_PRIORITY). These are the single authoritative places that build an
+  // event descriptor. Every UI surface (menu, reading bar, popover, dashboard)
+  // calls them, so no surface can write scheduling fields on its own.
+  _mfUs1EffectiveMode() {
+    return (this.settings && this.settings.mf_us1_mode) || 'legacy';
+  }
+
+  _mfUs1HostActionTarget(file) {
+    if (!file || file.extension !== 'md') {
+      return { ok: false, message: '请先打开来源或摘录笔记。' };
+    }
+    const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (!fm || (fm.type !== 'source' && fm.type !== 'extract')) {
+      return { ok: false, message: '只能对来源或摘录执行该操作（卡片由 Spaced Repetition 管理）。' };
+    }
+    return { ok: true, fm };
+  }
+
+  _mfUs1ShowActionResult(result) {
+    if (!result || result.status === 'legacy' || !result.message) return;
+    const timeout = result.status === 'applied' || result.status === 'duplicate' ? 5000 : 9000;
+    new Notice(result.message, timeout);
+  }
+
+  async _mfUs1RunHostAction(kind, descriptor, legacyWrite) {
+    const { describeOutcome } = require('./src/integration/reading-actions-host.js');
+    const outcome = await this._mfUs1RunLegacy(descriptor, legacyWrite);
+    return describeOutcome(kind, outcome);
+  }
+
+  _mfUs1IsoDate(date) {
+    const year = String(date.getFullYear()).padStart(4, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  _mfUs1ParseManualScheduleInput(input) {
+    const text = String(input || '').trim();
+    if (!text) return null;
+    const offset = text.match(/^([+-]?)(\d+)\s*d?$/i);
+    if (offset) {
+      const sign = offset[1] === '-' ? -1 : 1;
+      const date = todayDate();
+      date.setDate(date.getDate() + sign * parseInt(offset[2], 10));
+      return this._mfUs1IsoDate(date);
+    }
+    const parsed = dateCore.parseDateExact(text, configuredDateFormat(this.settings));
+    return parsed ? this._mfUs1IsoDate(parsed) : null;
+  }
+
+  async postponeFile(file, days, { legacy = null, quiet = false } = {}) {
+    const { buildEventPayload } = require('./src/integration/reading-actions-host.js');
+    const target = this._mfUs1HostActionTarget(file);
+    if (!target.ok) {
+      new Notice(target.message);
+      return { status: 'failed', message: target.message, reason: 'E_TOPIC_NOT_SCHEDULABLE' };
+    }
+    const built = buildEventPayload('postpone', { days });
+    if (!built.ok) {
+      new Notice(built.message);
+      return { status: 'failed', message: built.message, reason: built.code };
+    }
+    const descriptor = this._mfUs1EventDescriptor(
+      built.type, file, target.fm, this._todayKey(), built.payload
+    );
+    const legacyWrite = typeof legacy === 'function'
+      ? legacy
+      : () => this._postponeLegacyWrite({ tfile: file, fm: target.fm }, built.value.days);
+    const result = await this._mfUs1RunHostAction('postpone', descriptor, legacyWrite);
+    if (!quiet) this._mfUs1ShowActionResult(result);
+    return result;
+  }
+
+  async scheduleFile(file, idealDue, { reason = 'manual-schedule', legacy = null, quiet = false } = {}) {
+    const { buildEventPayload } = require('./src/integration/reading-actions-host.js');
+    const target = this._mfUs1HostActionTarget(file);
+    if (!target.ok) {
+      new Notice(target.message);
+      return { status: 'failed', message: target.message, reason: 'E_TOPIC_NOT_SCHEDULABLE' };
+    }
+    const built = buildEventPayload('schedule', { idealDue, reason });
+    if (!built.ok) {
+      new Notice(built.message);
+      return { status: 'failed', message: built.message, reason: built.code };
+    }
+    const descriptor = this._mfUs1EventDescriptor(
+      built.type, file, target.fm, this._todayKey(), built.payload
+    );
+    const legacyWrite = typeof legacy === 'function'
+      ? legacy
+      : () => {
+        const parsed = dateCore.parseDateExact(built.value.idealDue, 'YYYY-MM-DD');
+        const vaultDate = formatDateValue(parsed, this.settings);
+        const current = target.fm.next_review || '(unscheduled)';
+        return this._scheduleLegacyWrite({ tfile: file, fm: target.fm }, current, vaultDate);
+      };
+    const result = await this._mfUs1RunHostAction('schedule', descriptor, legacyWrite);
+    if (!quiet) this._mfUs1ShowActionResult(result);
+    return result;
+  }
+
+  async setPriorityFile(file, priority, { legacy = null, quiet = false } = {}) {
+    const { buildEventPayload } = require('./src/integration/reading-actions-host.js');
+    const target = this._mfUs1HostActionTarget(file);
+    if (!target.ok) {
+      new Notice(target.message);
+      return { status: 'failed', message: target.message, reason: 'E_TOPIC_NOT_SCHEDULABLE' };
+    }
+    const built = buildEventPayload('priority', { priority });
+    if (!built.ok) {
+      new Notice(built.message);
+      return { status: 'failed', message: built.message, reason: built.code };
+    }
+    const descriptor = this._mfUs1EventDescriptor(
+      built.type, file, target.fm, this._todayKey(), built.payload
+    );
+    const legacyWrite = typeof legacy === 'function'
+      ? legacy
+      : () => this._setPriorityLegacyWrite({ tfile: file, fm: target.fm }, built.value.priority);
+    const result = await this._mfUs1RunHostAction('priority', descriptor, legacyWrite);
+    if (!quiet) this._mfUs1ShowActionResult(result);
+    return result;
+  }
+
+  async _promptManualSchedule(file) {
+    const target = this._mfUs1HostActionTarget(file);
+    if (!target.ok) {
+      new Notice(target.message);
+      return null;
+    }
+    const current = target.fm.next_review || '(unscheduled)';
+    const format = configuredDateFormat(this.settings);
+    const raw = await askText(this.app, `排期到（${format} 或 +Nd/-Nd；当前：${current}）`, '');
+    if (!raw || !raw.trim()) return null; // cancel: no event, no write
+    const iso = this._mfUs1ParseManualScheduleInput(raw);
+    if (!iso) {
+      new Notice(`无效日期：${raw.trim()}`);
+      return null;
+    }
+    const result = await this.scheduleFile(file, iso);
+    return result;
+  }
+
   // ---- MF-US-1 topic creation host wiring -------------------------------
   // Creation is an initialization (SPEC A3.3/A3.4), not an event, so it does
   // not pass through the event WAL. The write path below is reachable only with
@@ -4536,10 +4681,7 @@ class IncrementalReadingPlugin extends Plugin {
       'Postpone how long?'
     );
     if (!choice) return; // cancel: no event, no write
-    return this._mfUs1RunLegacy(
-      this._mfUs1EventDescriptor('POSTPONE', r.tfile, r.fm, this._todayKey(), { days: choice }),
-      () => this._postponeLegacyWrite(r, choice)
-    );
+    return this.postponeFile(r.tfile, choice, { legacy: () => this._postponeLegacyWrite(r, choice) });
   }
 
   async _postponeLegacyWrite(r, choice) {
@@ -4560,22 +4702,14 @@ class IncrementalReadingPlugin extends Plugin {
     if (!raw || raw.trim() === '') return; // cancel: no event, no write
     const input = raw.trim();
 
-    let newDate = null;
-    const offset = input.match(/^([+-]?)(\d+)\s*d?$/i);
-    if (offset) {
-      const sign = offset[1] === '-' ? -1 : 1;
-      newDate = futureDateString(sign * parseInt(offset[2], 10), this.settings);
-    } else {
-      const parsed = dateCore.parseDateExact(input, dateFormat);
-      if (!parsed) { new Notice(`Invalid ${dateFormat} date: ${input}`); return; }
-      newDate = formatDateValue(parsed, this.settings);
-    }
-    return this._mfUs1RunLegacy(
-      this._mfUs1EventDescriptor('MANUAL_SCHEDULE', r.tfile, r.fm, this._todayKey(), {
-        idealDue: newDate, reason: 'manual-schedule',
-      }),
-      () => this._scheduleLegacyWrite(r, cur, newDate)
-    );
+    const isoDate = this._mfUs1ParseManualScheduleInput(input);
+    if (!isoDate) { new Notice(`Invalid ${dateFormat} date: ${input}`); return; }
+    // Legacy keeps writing the Vault-formatted date and recalculating interval;
+    // Unified writes mf_ideal_due and clears mf_not_before via applyEvent.
+    const legacyDate = formatDateValue(dateCore.parseDateExact(isoDate, 'YYYY-MM-DD'), this.settings);
+    return this.scheduleFile(r.tfile, isoDate, {
+      legacy: () => this._scheduleLegacyWrite(r, cur, legacyDate),
+    });
   }
 
   async _scheduleLegacyWrite(r, cur, newDate) {
@@ -4599,10 +4733,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (!/^\d+$/.test(raw.trim())) { new Notice('Invalid priority — integer 1-100.'); return; }
     const p = Number(raw);
     if (!Number.isInteger(p) || p < 1 || p > 100) { new Notice('Invalid priority — integer 1-100.'); return; }
-    return this._mfUs1RunLegacy(
-      this._mfUs1EventDescriptor('SET_PRIORITY', r.tfile, r.fm, this._todayKey(), { priority: p }),
-      () => this._setPriorityLegacyWrite(r, p)
-    );
+    return this.setPriorityFile(r.tfile, p, { legacy: () => this._setPriorityLegacyWrite(r, p) });
   }
 
   async _setPriorityLegacyWrite(r, p) {
@@ -4611,6 +4742,12 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async boost() {
+    // Boost is a batch delta, not one SET_PRIORITY event. Until a batch event
+    // protocol exists it must not bypass the single writer in Unified mode.
+    if (this._mfUs1EffectiveMode() === 'unified') {
+      new Notice('Boost 尚未支持 Unified 批量优先级；请使用「设置优先级」逐项修改。', 9000);
+      return { status: 'failed', reason: 'E_BOOST_REQUIRES_BATCH_EVENTS', writesPerformed: false };
+    }
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const amount = await pickFromList(
