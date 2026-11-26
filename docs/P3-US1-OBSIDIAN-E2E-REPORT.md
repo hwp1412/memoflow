@@ -325,3 +325,25 @@ after      = S/E1/E2 的 mf_not_before 均为 2026-11-30
 ### Shadow — 部分
 
 Legacy 写入正常（`next_review` 更新 11-11→05-12-2026，未产生 `mf_*`，Ledger 仍 3 条），但 `mfUs1ShadowLast` 为 null，说明 Shadow observer 在真实设备没有记录对照（需查 mode 判定/observer 调用条件）。
+
+
+## 24. 重启恢复修复 + Shadow 真机 Pass
+
+### 重启 lifecycle 失败 — 已修复（根因：持久化的 mode 损坏）
+
+诊断发现 `data.json` 里的 `mf_us1_mode` 被存成了 **char-map 对象**（`{"0":"s","1":"h",...}`）。重启后 onload 用它初始化 lifecycle：
+`E_MODE_INVALID: unknown scheduler mode "[object Object]"`，异常被 catch 后 `mfUs1AsyncLifecycle=null`（ledger 本身是好的）。
+
+修复：`_mfUs1NormalizeMode()` 统一规范化（String 对象 / char-map / 未知值→legacy），onload 装配设置时立即修复；
+host getMode、lifecycle 初始化、dashboard 全部改用 `_mfUs1EffectiveMode()`。新增回归测试（String 对象、char-map、非法值）。
+真机复核：重启后 `lifecycle=true`、`recovery={healthy:true}`、`mode` 恢复为正常字符串。**重启恢复 Pass。**
+
+### Shadow — 真机 Pass
+
+真实 Obsidian、shadow 模式下对已迁移 Topic 执行 Legacy 评阅：
+
+- Legacy 写入正常：`interval 8→12`、`next_review 30-11-2026→09-12-2026`；
+- `mf_*` 未改动（`mf_revision 1→1`）；Ledger 保持 3 条；
+- `mfUs1ShadowLast` 正确记录只读对照差异（`mf_ideal_due 2026-11-10→2026-12-09`、`mf_not_before`、`mf_interval_days 8→12`、`review_count 1→2`、`mf_revision`）。
+
+**Shadow 真机 Pass。**

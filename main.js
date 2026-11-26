@@ -2877,6 +2877,8 @@ class IncrementalReadingPlugin extends Plugin {
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       this.settings[key] = Object.assign({}, DEFAULT_SETTINGS[key], this.settings[key] || {});
     }
+    // Repair any previously mis-serialised mode before anything reads it.
+    this.settings.mf_us1_mode = this._mfUs1NormalizeMode(this.settings.mf_us1_mode);
     this.settings.session.types = { ...(this.settings.session.types || {}) };
     this.settings.session.readPoints = { ...(this.settings.session.readPoints || {}) };
     this.cardDueCache = new Map();
@@ -2900,7 +2902,7 @@ class IncrementalReadingPlugin extends Plugin {
       const { initializeHostLifecycle } = require('./src/integration/host-lifecycle.js');
       this.mfUs1Lifecycle = await initializeHostLifecycle({
         plugin: this,
-        mode: this.settings.mf_us1_mode || 'legacy',
+        mode: this._mfUs1EffectiveMode(),
         conditions: {},
         // Ledger writes share the coordinator queue with settings/session.
         dataStore: this.pluginData.ledgerStore(),
@@ -3898,7 +3900,7 @@ class IncrementalReadingPlugin extends Plugin {
       // runtime it points at re-checks its own authorization.
       const transport = this._mfUs1TransportInfo().transport;
       this._mfUs1HostInstance = createHostSchedulerService({
-        getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
+        getMode: () => this._mfUs1EffectiveMode(),
         unified: typeof transport === 'function'
           ? descriptor => {
             if (this.mfUs1Suspended) {
@@ -3951,8 +3953,20 @@ class IncrementalReadingPlugin extends Plugin {
     return dateCore.formatDate(new Date(), 'YYYY-MM-DD');
   }
 
+  _mfUs1NormalizeMode(value) {
+    let raw = value;
+    if (raw instanceof String) raw = String(raw);
+    if (raw && typeof raw === 'object') {
+      // Repair a char-map object produced by a bad serialisation of a String.
+      const keys = Object.keys(raw).filter(key => /^\d+$/.test(key)).sort((a, b) => Number(a) - Number(b));
+      if (keys.length) raw = keys.map(key => raw[key]).join('');
+    }
+    const mode = typeof raw === 'string' ? raw : '';
+    return ['legacy', 'shadow', 'unified'].includes(mode) ? mode : 'legacy';
+  }
+
   _mfUs1EffectiveMode() {
-    return (this.settings && this.settings.mf_us1_mode) || 'legacy';
+    return this._mfUs1NormalizeMode(this.settings && this.settings.mf_us1_mode);
   }
 
   // Guard for residual direct writers that are not yet routed through the host.
@@ -4428,7 +4442,7 @@ class IncrementalReadingPlugin extends Plugin {
 
   async _mfUs1RebuildAsyncLifecycle({ storage = null, mode = null, conditions = {}, authorization = null, capability = null } = {}) {
     const { initializeAsyncHostLifecycle } = require('./src/integration/host-lifecycle.js');
-    const effectiveMode = mode || (this.settings && this.settings.mf_us1_mode) || 'legacy';
+    const effectiveMode = mode || this._mfUs1EffectiveMode();
     const activeStorage = storage || this.mfUs1HostStorage;
     this.mfUs1AsyncLifecycle = await initializeAsyncHostLifecycle({
       plugin: this,
@@ -5175,7 +5189,7 @@ class IncrementalReadingPlugin extends Plugin {
       topics,
       today,
       queueConfig: this.settings && this.settings.queueConfig ? this.settings.queueConfig : undefined,
-      mode: { mode: this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy' },
+      mode: { mode: this._mfUs1EffectiveMode() },
       dateFormat,
     });
   }
