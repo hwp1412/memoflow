@@ -361,6 +361,8 @@ const HL_CLOZE_SRC = '==((?:[^=]|=(?!=))+)==';
 // ============================================================================
 
 const DEFAULT_SETTINGS = {
+  // Legacy is the only mode users get without an explicit activation.
+  mf_us1_mode: 'legacy',
   scheduling: {
     a_factor_min: 1.05,
     a_factor_max: 5.0,
@@ -2893,6 +2895,7 @@ class IncrementalReadingPlugin extends Plugin {
     this.mfUs1Lifecycle = null;
     this.mfUs1AsyncLifecycle = null;
     this.mfUs1Recovery = null;
+    this.mfUs1Suspended = false;
     try {
       const { initializeHostLifecycle } = require('./src/integration/host-lifecycle.js');
       this.mfUs1Lifecycle = await initializeHostLifecycle({
@@ -2909,57 +2912,11 @@ class IncrementalReadingPlugin extends Plugin {
       this.mfUs1Lifecycle = null;
     }
     // Real async lifecycle: only this transport can reconcile a durable ledger
-    // against real Markdown bytes. It stays non-writable (no production
-    // authorization); recovery only updates the ledger, never topic content.
+    // against real Markdown bytes. It stays non-writable until the activation
+    // coordinator hands in an explicitly issued session token.
     try {
-      const { initializeAsyncHostLifecycle } = require('./src/integration/host-lifecycle.js');
-      const { createObsidianAsyncTopicStorage, createVaultTopicResolver } = require('./src/integration/host-async-storage.js');
-      const storage = createObsidianAsyncTopicStorage({
-        app: this.app,
-        resolveFile: createVaultTopicResolver({ app: this.app }),
-        dateFormat: configuredDateFormat(this.settings),
-      });
-      this.mfUs1HostStorage = storage;
-      const { createBatchStore } = require('./src/integration/batch-store.js');
-      const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
-      this.mfUs1BatchStore = createBatchStore({ coordinator: this.pluginData });
-      // No production authorization token exists: the writer stays read-only
-      // until a separately approved activation supplies one.
-      this.mfUs1AdminWriter = createProtectedAdminWriter({ storage, authorization: this.__mfUs1AdminAuthorization || null });
-      this.mfUs1AsyncLifecycle = await initializeAsyncHostLifecycle({
-        plugin: this,
-        mode: this.settings.mf_us1_mode || 'legacy',
-        conditions: {},
-        storage,
-        dataStore: this.pluginData.ledgerStore(),
-      });
-      const recovery = this.mfUs1AsyncLifecycle.recovery || {};
-      this.mfUs1Recovery = {
-        healthy: this.mfUs1AsyncLifecycle.healthy !== false,
-        blockedTopicIds: this.mfUs1AsyncLifecycle.blockedTopicIds || [],
-        recovered: recovery.recovered || [],
-        persisted: recovery.persisted !== false,
-      };
-      // Batch reconcile runs after the single-topic ledger recovery. It is
-      // metadata-only: it classifies Mercy/Boost batches against the real topic
-      // state and never writes a topic.
-      try {
-        const { reconcileBatches } = require('./src/integration/batch-recovery.js');
-        this.mfUs1BatchRecovery = await reconcileBatches({
-          store: this.mfUs1BatchStore,
-          storage,
-          ledger: this.mfUs1AsyncLifecycle ? this.mfUs1AsyncLifecycle.ledger : null,
-        });
-        const blocked = new Set(this.mfUs1Recovery.blockedTopicIds || []);
-        for (const topicId of this.mfUs1BatchRecovery.blockedTopicIds || []) blocked.add(topicId);
-        this.mfUs1Recovery.blockedTopicIds = [...blocked];
-      } catch (error) {
-        this.mfUs1BatchRecovery = { batches: [], blockedTopicIds: [], summary: { error: error && error.code ? error.code : 'E_BATCH_RECONCILE_FAILED' } };
-        console.error('[IR] MF-US-1 batch reconcile failed', error);
-      }
-      if (this.mfUs1Recovery.blockedTopicIds.length) {
-        console.warn('[IR] MF-US-1 recovery left blocked topics', this.mfUs1Recovery.blockedTopicIds);
-      }
+      const storage = this._mfUs1EnsureStorageAndStores();
+      await this._mfUs1RebuildAsyncLifecycle({ storage });
     } catch (error) {
       console.error('[IR] MF-US-1 async lifecycle unavailable', error);
       this.mfUs1AsyncLifecycle = null;
@@ -3928,13 +3885,17 @@ class IncrementalReadingPlugin extends Plugin {
       // The unified transport is injected only by an isolated harness; the
       // service itself still refuses unified when it is absent, and the
       // runtime it points at re-checks its own authorization.
-      const transport = this.__mfUs1UnifiedTransport
-        || (this.mfUs1AsyncLifecycle && this.mfUs1AsyncLifecycle.runtime
-          ? (request) => this.mfUs1AsyncLifecycle.runtime.execute(request)
-          : null);
+      const transport = this._mfUs1TransportInfo().transport;
       this._mfUs1HostInstance = createHostSchedulerService({
         getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
-        unified: typeof transport === 'function' ? descriptor => transport(this._mfUs1UnifiedRequest(descriptor)) : null,
+        unified: typeof transport === 'function'
+          ? descriptor => {
+            if (this.mfUs1Suspended) {
+              throw Object.assign(new Error('Unified authorization was revoked'), { code: 'E_UNIFIED_NOT_AUTHORIZED' });
+            }
+            return transport(this._mfUs1UnifiedRequest(descriptor));
+          }
+          : null,
         shadowObserver: (descriptor) => this._mfUs1ShadowObserve(descriptor),
       });
     }
@@ -3991,6 +3952,7 @@ class IncrementalReadingPlugin extends Plugin {
       `批次恢复：${this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && !this.mfUs1BatchRecovery.summary.error ? `检查 ${this.mfUs1BatchRecovery.summary.checked} · 需人工 ${this.mfUs1BatchRecovery.summary.manual}` : (this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error) || '未运行'}`,
       `Shadow 最近差异：${this.mfUs1ShadowLast ? `${this.mfUs1ShadowLast.action} · ${this.mfUs1ShadowLast.changes.length} 项 · ${this.mfUs1ShadowLast.status}` : '无'}`,
       `迁移预检：${this.mfUs1MigrationPreviewCache ? `共 ${this.mfUs1MigrationPreviewCache.summary.total} · 可迁移 ${this.mfUs1MigrationPreviewCache.summary.migratable} · 冲突 ${this.mfUs1MigrationPreviewCache.summary.conflict}` : '未运行'}`,
+      `激活状态：${(() => { try { const d = this.mfUs1ActivationDiagnostics(); return `transport=${d.transportSource} · runtime=${d.runtime.present ? (d.runtime.writeEnabled ? '已授权' : '未授权') : '无'} · blockers=${d.activationBlockers.join(',') || '无'}`; } catch (e) { return '未初始化'; } })()}`,
     ];
     new Notice(lines.join('\n'), 12000);
     return lines.join('\n');
@@ -4280,6 +4242,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mercyUnified({ windowDays = null } = {}) {
+    if (this.mfUs1Suspended) { new Notice('Unified 授权已撤销；Mercy 写入被拒绝。', 12000); return { status: 'blocked', reason: 'E_UNIFIED_NOT_AUTHORIZED' }; }
     this._mfUs1RefreshRows();
     const { buildMercyPreview, confirmMercyPreview, applyMercyHost, describeMercyOutcome } = require('./src/integration/mercy-host.js');
     const { projectTopic, toQueueTopic } = require('./src/integration/topic-projection.js');
@@ -4386,39 +4349,321 @@ class IncrementalReadingPlugin extends Plugin {
     return plan;
   }
 
-  // Mode status and safe switching. Unified stays fail-closed: selecting it
-  // never grants a token and is refused while activation conditions are unmet.
+  // ---------------------------------------------------------------------
+  // P3-02A activation wiring (G1/G2/G4)
+  // ---------------------------------------------------------------------
+
+  _mfUs1EnsureStorageAndStores() {
+    if (this.mfUs1HostStorage) return this.mfUs1HostStorage;
+    const { createObsidianAsyncTopicStorage, createVaultTopicResolver } = require('./src/integration/host-async-storage.js');
+    const { createBatchStore } = require('./src/integration/batch-store.js');
+    const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
+    const storage = createObsidianAsyncTopicStorage({
+      app: this.app,
+      resolveFile: createVaultTopicResolver({ app: this.app }),
+      dateFormat: configuredDateFormat(this.settings),
+    });
+    this.mfUs1HostStorage = storage;
+    this.mfUs1BatchStore = createBatchStore({ coordinator: this.pluginData });
+    this.mfUs1AdminWriter = createProtectedAdminWriter({
+      storage,
+      authorization: this.__mfUs1AdminAuthorization || null,
+    });
+    return storage;
+  }
+
+  async _mfUs1RebuildAsyncLifecycle({ storage = null, mode = null, conditions = {}, authorization = null, capability = null } = {}) {
+    const { initializeAsyncHostLifecycle } = require('./src/integration/host-lifecycle.js');
+    const effectiveMode = mode || (this.settings && this.settings.mf_us1_mode) || 'legacy';
+    const activeStorage = storage || this.mfUs1HostStorage;
+    this.mfUs1AsyncLifecycle = await initializeAsyncHostLifecycle({
+      plugin: this,
+      mode: effectiveMode,
+      conditions,
+      authorization,
+      capability,
+      storage: activeStorage,
+      dataStore: this.pluginData.ledgerStore(),
+    });
+    const recovery = this.mfUs1AsyncLifecycle.recovery || {};
+    this.mfUs1Recovery = {
+      healthy: this.mfUs1AsyncLifecycle.healthy !== false,
+      blockedTopicIds: this.mfUs1AsyncLifecycle.blockedTopicIds || [],
+      recovered: recovery.recovered || [],
+      persisted: recovery.persisted !== false,
+    };
+    this._mfUs1HostInstance = null;
+    if (this.mfUs1BatchStore && activeStorage) {
+      try {
+        const { reconcileBatches } = require('./src/integration/batch-recovery.js');
+        this.mfUs1BatchRecovery = await reconcileBatches({
+          store: this.mfUs1BatchStore,
+          storage: activeStorage,
+          ledger: this.mfUs1AsyncLifecycle.ledger || null,
+        });
+        const blocked = new Set(this.mfUs1Recovery.blockedTopicIds || []);
+        for (const topicId of this.mfUs1BatchRecovery.blockedTopicIds || []) blocked.add(topicId);
+        this.mfUs1Recovery.blockedTopicIds = [...blocked];
+      } catch (error) {
+        this.mfUs1BatchRecovery = { batches: [], blockedTopicIds: [], summary: { error: (error && error.code) || 'E_BATCH_RECONCILE_FAILED' } };
+        console.error('[IR] MF-US-1 batch reconcile failed', error);
+      }
+    }
+    return this.mfUs1AsyncLifecycle;
+  }
+
+  _mfUs1TransportInfo() {
+    if (typeof this.__mfUs1UnifiedTransport === 'function') {
+      return { available: true, source: 'test-injected', transport: this.__mfUs1UnifiedTransport };
+    }
+    const runtime = this.mfUs1AsyncLifecycle && this.mfUs1AsyncLifecycle.runtime;
+    if (runtime && typeof runtime.execute === 'function') {
+      return { available: true, source: 'lifecycle-runtime', runtime, transport: request => runtime.execute(request) };
+    }
+    return { available: false, source: 'none', transport: null };
+  }
+
+  _mfUs1RuntimeView() {
+    const runtime = this.mfUs1AsyncLifecycle && this.mfUs1AsyncLifecycle.runtime;
+    if (!runtime || typeof runtime.view !== 'function') return null;
+    try {
+      return runtime.view();
+    } catch (error) {
+      return null;
+    }
+  }
+
+  _mfUs1ActivationCoordinator() {
+    if (!this.mfUs1Activation) {
+      const { createActivationCoordinator } = require('./src/integration/activation-coordinator.js');
+      this.mfUs1Activation = createActivationCoordinator({
+        // Production passes no approval provider: activation is always denied.
+        approvalProvider: evaluation => (typeof this.__mfUs1ActivationApproval === 'function'
+          ? this.__mfUs1ActivationApproval(evaluation) === true
+          : false),
+      });
+    }
+    return this.mfUs1Activation;
+  }
+
+  _mfUs1ActivationEvidence() {
+    const recovery = this.mfUs1Recovery || {};
+    const rows = this.getIRRows ? this.getIRRows() : [];
+    const counts = new Map();
+    for (const row of rows) {
+      if (row.type !== undefined) continue;
+      const fm = row.fm || {};
+      if (fm.type === 'card') continue;
+      const id = fm.mf_id;
+      if (typeof id !== 'string' || !id) continue;
+      const key = id.toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const duplicateIds = [...counts.entries()].filter(([, count]) => count > 1).map(([id]) => id);
+    return {
+      migrationPlan: this.mfUs1MigrationPreviewCache || null,
+      pendingEvents: recovery.recovered || [],
+      recoveryHealthy: recovery.healthy !== false,
+      blockedTopicIds: recovery.blockedTopicIds || [],
+      batchRecoveryError: this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error
+        ? this.mfUs1BatchRecovery.summary.error
+        : null,
+      duplicateIds,
+      backupVerified: this.__mfUs1BackupVerified === true,
+      userConfirmed: this.__mfUs1ActivationConfirmed === true,
+      singleWriterReady: true,
+    };
+  }
+
+  mfUs1ActivationStatus() {
+    const evidence = this._mfUs1ActivationEvidence();
+    const coordinator = this._mfUs1ActivationCoordinator();
+    const evaluation = coordinator.evaluate(evidence, { storageSupportsCas: true });
+    const transport = this._mfUs1TransportInfo();
+    const runtimeView = this._mfUs1RuntimeView();
+    return {
+      evaluation,
+      evidence,
+      transport: { available: transport.available, source: transport.source },
+      runtime: runtimeView
+        ? {
+          present: true,
+          mode: runtimeView.mode,
+          allowed: runtimeView.allowed === true,
+          writeEnabled: runtimeView.writeEnabled === true,
+          blockers: (runtimeView.blockers || []).map(blocker => blocker.code || blocker),
+        }
+        : { present: false },
+      authorized: coordinator.isAuthorized(),
+      suspended: this.mfUs1Suspended === true,
+      unresolved: this._mfUs1UnresolvedState ? this._mfUs1UnresolvedState() : null,
+      session: coordinator.currentSession(),
+    };
+  }
+
   mfUs1ActivationBlockers() {
-    const blockers = [];
-    if (!this.__mfUs1UnifiedTransport) blockers.push('E_NO_HOST_TRANSPORT');
-    if (!this.mfUs1Recovery || this.mfUs1Recovery.healthy === false) blockers.push('E_RECOVERY_UNHEALTHY');
-    if (!this.mfUs1BatchRecovery || (this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error)) blockers.push('E_BATCH_RECOVERY_UNKNOWN');
-    if (this.mfUs1Recovery && Array.isArray(this.mfUs1Recovery.blockedTopicIds) && this.mfUs1Recovery.blockedTopicIds.length) blockers.push('E_BLOCKED_TOPICS');
-    const plan = this.mfUs1MigrationPreviewCache;
-    if (!plan) blockers.push('E_MIGRATION_NOT_PREVIEWED');
-    else if (plan.summary && (plan.summary.migratable > 0 || plan.summary.manualReview > 0 || plan.summary.conflict > 0)) blockers.push('E_MIGRATION_INCOMPLETE');
-    return blockers;
+    return this.mfUs1ActivationStatus().evaluation.blockers;
+  }
+
+  // G4: diagnostics must distinguish transport/runtime/migration/ledger states.
+  mfUs1ActivationDiagnostics() {
+    const status = this.mfUs1ActivationStatus();
+    return {
+      activationBlockers: status.evaluation.blockers,
+      conditions: status.evaluation.conditions,
+      transportSource: status.transport.source,
+      transportAvailable: status.transport.available,
+      runtime: status.runtime,
+      authorized: status.authorized,
+      suspended: status.suspended === true,
+      unresolved: status.unresolved || null,
+      migrationPreviewed: Boolean(this.mfUs1MigrationPreviewCache),
+      recoveryHealthy: status.evidence.recoveryHealthy,
+      batchRecoveryError: status.evidence.batchRecoveryError,
+      duplicateIds: status.evidence.duplicateIds,
+      blockedTopicIds: status.evidence.blockedTopicIds,
+    };
+  }
+
+  async mfUs1ActivateUnified() {
+    const coordinator = this._mfUs1ActivationCoordinator();
+    const evidence = this._mfUs1ActivationEvidence();
+    const result = coordinator.authorize(evidence, { storageSupportsCas: true });
+    if (!result.ok) {
+      new Notice(`Unified 不可激活：${result.blockers.join('、')}`, 14000);
+      return result;
+    }
+    const storage = this.mfUs1HostStorage || this._mfUs1EnsureStorageAndStores();
+    const { issueSyntheticUnifiedCapability } = require('./src/scheduling/index.js');
+    await this._mfUs1RebuildAsyncLifecycle({
+      storage,
+      mode: 'unified',
+      conditions: result.session.conditions,
+      authorization: result.authorization,
+      // Synthetic capability for the isolated harness only; production never
+      // reaches this branch because it has no approval provider.
+      capability: issueSyntheticUnifiedCapability(),
+    });
+    this.settings.mf_us1_mode = 'unified';
+    this.mfUs1Suspended = false;
+    this.__mfUs1SuspendedNotified = null;
+    if (typeof this.saveSettings === 'function') await this.saveSettings();
+    new Notice('Unified 已激活（会话级授权）；可随时撤销。', 12000);
+    return { ok: true, session: coordinator.currentSession() };
+  }
+
+  _mfUs1UnresolvedState() {
+    const evidence = this._mfUs1ActivationEvidence();
+    const summary = (this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary) || {};
+    const pendingBatch = Number(summary.manual || 0) + Number(summary.pending || 0) + Number(summary.uncertain || 0);
+    const pendingEvents = (evidence.pendingEvents || []).length;
+    const blockedTopics = (evidence.blockedTopicIds || []).length;
+    return {
+      pendingEvents,
+      pendingBatch,
+      blockedTopics,
+      unsafe: pendingEvents > 0 || pendingBatch > 0 || blockedTopics > 0,
+    };
+  }
+
+  // Emergency action #1: revoke the capability immediately. This only touches
+  // in-memory authorization state: it never writes a Topic, the Ledger or a
+  // Batch record.
+  async mfUs1RevokeUnifiedAuthorization() {
+    const coordinator = this._mfUs1ActivationCoordinator();
+    const revoked = coordinator.revoke();
+    this.mfUs1Suspended = true;
+    this._mfUs1HostInstance = null;
+    new Notice('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
+    return { ok: true, tokenRevoked: true, hadSession: revoked.revoked, suspended: true };
+  }
+
+  // Emergency action #2: switch back to Legacy. Only allowed when no unresolved
+  // events/batches/blocks remain; otherwise Legacy scheduling writes stay blocked.
+  async mfUs1SwitchToLegacy() {
+    const state = this._mfUs1UnresolvedState();
+    if (state.unsafe) {
+      const coordinator = this._mfUs1ActivationCoordinator();
+      coordinator.revoke();
+      this.mfUs1Suspended = true;
+      this._mfUs1HostInstance = null;
+      new Notice(
+        `无法切回 Legacy：未决事件 ${state.pendingEvents} / 未决批次 ${state.pendingBatch} / 阻断 Topic ${state.blockedTopics}。`
+        + '已保持写入阻断并保留现场，请先完成恢复核验。',
+        15000,
+      );
+      return { ok: false, reason: 'E_RECOVERY_PENDING', legacyWritesBlocked: true, state };
+    }
+    const coordinator = this._mfUs1ActivationCoordinator();
+    coordinator.revoke();
+    this.mfUs1Suspended = false;
+    this.__mfUs1SuspendedNotified = null;
+    const storage = this.mfUs1HostStorage;
+    if (storage) {
+      await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'legacy', conditions: {}, authorization: null });
+    }
+    this.settings.mf_us1_mode = 'legacy';
+    if (typeof this.saveSettings === 'function') await this.saveSettings();
+    new Notice('已核对无未决项：授权已撤销并切回 Legacy。', 12000);
+    return { ok: true, mode: 'legacy' };
+  }
+
+  // Backwards-compatible name used by earlier tests: switch semantics.
+  async mfUs1RevokeActivation() {
+    return this.mfUs1SwitchToLegacy();
   }
 
   async mfUs1ModeMenu() {
     const modes = await pickFromList(this.app, ['Legacy', 'Shadow', 'Unified（需要激活条件）'], ['legacy', 'shadow', 'unified'], 'MF-US-1 mode');
     if (!modes) return null;
     if (modes === 'unified') {
-      const blockers = this.mfUs1ActivationBlockers();
-      new Notice(`Unified 不可激活：${blockers.length ? blockers.join('、') : '缺少生产授权 Token'}。生产写入保持锁定。`, 12000);
-      return { ok: false, mode: this._mfUs1EffectiveMode(), blockers };
+      return this.mfUs1ActivateUnified();
+    }
+    if (this.mfUs1Suspended) {
+      const state = this._mfUs1UnresolvedState();
+      if (state.unsafe) {
+        new Notice('Legacy/Shadow 调度写入保持阻断：存在未决事件/批次或阻断 Topic，需先完成恢复核验。', 15000);
+        return { ok: false, reason: 'E_RECOVERY_PENDING', legacyWritesBlocked: true, state };
+      }
+      this.mfUs1Suspended = false;
+      this.__mfUs1SuspendedNotified = null;
     }
     this.settings.mf_us1_mode = modes;
-    if (typeof this.saveSettings === 'function') await this.saveSettings();
     this._mfUs1HostInstance = null;
+    if (this.mfUs1HostStorage) {
+      await this._mfUs1RebuildAsyncLifecycle({ storage: this.mfUs1HostStorage, mode: modes, conditions: {}, authorization: null });
+    }
+    if (typeof this.saveSettings === 'function') await this.saveSettings();
     new Notice(`MF-US-1 模式已切换为 ${modes}（Legacy/Shadow 写入行为不变）。`);
     return { ok: true, mode: modes };
+  }
+
+  // G3: synthetic migration drill. Production has no authorization, and the
+  // snapshots must be supplied explicitly (never read from a real vault here).
+  async mfUs1SyntheticMigrationDrill({ snapshots = null, batchId = 'synthetic-batch' } = {}) {
+    if (!this.__mfUs1MigrationAuthorization) {
+      new Notice('迁移执行未开放：生产迁移尚未授权（合成环境需显式注入测试能力）。', 14000);
+      return { ok: false, reason: 'E_MIGRATION_NOT_OPEN' };
+    }
+    if (!Array.isArray(snapshots) || !snapshots.length) {
+      new Notice('迁移演练需要显式合成快照（不读取真实 Vault）。', 12000);
+      return { ok: false, reason: 'E_SNAPSHOTS_REQUIRED' };
+    }
+    const { runSyntheticMigration } = require('./src/integration/migration-host.js');
+    const result = await runSyntheticMigration({ snapshots, batchId });
+    this.mfUs1MigrationDrillResult = result;
+    new Notice(`迁移演练：plan ${String(result.plan.planId).slice(0, 8)} · batch ${result.batch.status} · rollback ${result.rollback.result.status}`, 14000);
+    return result;
   }
 
   async resumePendingBatches() {
     const { resumeBatch } = require('./src/integration/batch-resume.js');
     if (this._mfUs1EffectiveMode() !== 'unified') {
       new Notice('批次恢复只在 Unified 模式可用。');
+      return null;
+    }
+    if (this.mfUs1Suspended) {
+      new Notice('Unified 授权已撤销；批次恢复被拒绝。', 12000);
       return null;
     }
     if (!this.mfUs1BatchStore || !this.mfUs1AdminWriter) {
@@ -4550,6 +4795,16 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   _mfUs1GuardLegacyWrite(feature) {
+    if (this.mfUs1Suspended) {
+      // Emergency revoke: Legacy scheduling writes stay blocked until the owner
+      // explicitly switches back after recovery checks.
+      if (!this.__mfUs1SuspendedNotified) this.__mfUs1SuspendedNotified = new Set();
+      if (!this.__mfUs1SuspendedNotified.has(feature)) {
+        this.__mfUs1SuspendedNotified.add(feature);
+        new Notice(`写入已暂停：Unified 授权已撤销且存在未决状态，「${feature}」未执行。`, 12000);
+      }
+      return true;
+    }
     const { guardLegacySchedulingWrite } = require('./src/integration/host-write-guard.js');
     const verdict = guardLegacySchedulingWrite(this, feature);
     if (verdict.blocked && verdict.first) new Notice(verdict.message, 9000);
@@ -4730,6 +4985,10 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async _mfUs1CreateTopicFromHost({ requestId, kind, priority, parentFile = null, path, content }) {
+    if (this.mfUs1Suspended) {
+      new Notice('Unified 授权已撤销；创建被拒绝（未写入）。', 12000);
+      return { handled: true, outcome: { status: 'blocked', reason: 'E_UNIFIED_NOT_AUTHORIZED' } };
+    }
     const authorization = this._mfUs1CreationAuthorization();
     if (!authorization) {
       if (this._mfUs1EffectiveMode() === 'unified') {
