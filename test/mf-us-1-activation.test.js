@@ -20,7 +20,39 @@ const COMPLETE_EVIDENCE = {
   duplicateIds: [],
   backupVerified: true,
   userConfirmed: true,
+  // Mixed vault: two legacy topics require a complete migration plan.
+  legacyTopicCount: 2,
 };
+
+test('a brand-new empty vault needs no migration plan or backup', () => {
+  const coordinator = createActivationCoordinator({ approvalProvider: () => true });
+  const empty = {
+    legacyTopicCount: 0,
+    topicCount: 0,
+    pendingEvents: [],
+    recoveryHealthy: true,
+    blockedTopicIds: [],
+    batchRecoveryError: null,
+    duplicateIds: [],
+    backupVerified: false,
+    userConfirmed: true,
+  };
+  const evaluation = coordinator.evaluate(empty);
+  assert.equal(evaluation.migration.notRequired, true);
+  assert.equal(evaluation.allowed, true);
+  assert.equal(coordinator.authorize(empty).ok, true);
+  // The other safety gates still apply to an empty vault.
+  assert.ok(coordinator.evaluate({ ...empty, userConfirmed: false }).blockers.includes('USER_CONFIRMATION_REQUIRED'));
+  assert.ok(coordinator.evaluate({ ...empty, pendingEvents: ['x'] }).blockers.includes('PENDING_RECOVERY'));
+  assert.ok(coordinator.evaluate({ ...empty, recoveryHealthy: false }).blockers.includes('RECOVERY_UNHEALTHY'));
+  assert.ok(coordinator.evaluate({ ...empty, duplicateIds: ['id'] }).blockers.includes('TOPIC_ID_CONFLICT'));
+});
+
+test('an unknown legacy count stays conservative about migration', () => {
+  const coordinator = createActivationCoordinator({ approvalProvider: () => true });
+  const unknown = { ...COMPLETE_EVIDENCE, legacyTopicCount: undefined, migrationPlan: null };
+  assert.ok(coordinator.evaluate(unknown).blockers.includes('MIGRATION_INCOMPLETE'));
+});
 
 test('activation is denied without every evidence condition', () => {
   const coordinator = createActivationCoordinator({ approvalProvider: () => true });
@@ -241,4 +273,29 @@ test('the mode menu cannot bypass approval to issue synthetic capabilities', asy
   const menuBody = source.slice(source.indexOf('async mfUs1ModeMenu()'), source.indexOf('// G3: synthetic migration drill'));
   assert.equal(/issueSyntheticUnifiedCapability|issueSyntheticHostAuthorization/.test(menuBody), false);
   assert.equal(/__mfUs1ActivationApproval\s*=/.test(menuBody), false, 'menu never sets the approval provider itself');
+});
+
+
+test('an empty vault can activate without a migration preview or backup', async () => {
+  const { plugin } = setupPlugin();
+  plugin.mfUs1MigrationPreviewCache = null;
+  plugin.__mfUs1BackupVerified = false;
+  plugin.__mfUs1ActivationApproval = () => true;
+  const result = await plugin.mfUs1ActivateUnified();
+  assert.equal(result.ok, true, JSON.stringify(result.blockers || []));
+  const diagnostics = plugin.mfUs1ActivationDiagnostics();
+  assert.equal(diagnostics.legacyTopicCount, 0);
+  assert.equal(diagnostics.migrationNotRequired, true);
+  assert.equal(diagnostics.authorized, true);
+});
+
+test('a vault with legacy topics still requires a completed migration plan', async () => {
+  const { plugin, app } = setupPlugin();
+  plugin.mfUs1MigrationPreviewCache = null;
+  plugin.__mfUs1ActivationApproval = () => true;
+  makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, interval: 8, next_review: '2026-11-20' }, '# legacy\n');
+  const result = await plugin.mfUs1ActivateUnified();
+  assert.equal(result.ok, false);
+  assert.ok(result.blockers.includes('MIGRATION_INCOMPLETE'));
+  assert.equal(plugin.mfUs1ActivationDiagnostics().legacyTopicCount, 1);
 });

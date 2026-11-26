@@ -3952,6 +3952,7 @@ class IncrementalReadingPlugin extends Plugin {
       `批次恢复：${this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && !this.mfUs1BatchRecovery.summary.error ? `检查 ${this.mfUs1BatchRecovery.summary.checked} · 需人工 ${this.mfUs1BatchRecovery.summary.manual}` : (this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error) || '未运行'}`,
       `Shadow 最近差异：${this.mfUs1ShadowLast ? `${this.mfUs1ShadowLast.action} · ${this.mfUs1ShadowLast.changes.length} 项 · ${this.mfUs1ShadowLast.status}` : '无'}`,
       `迁移预检：${this.mfUs1MigrationPreviewCache ? `共 ${this.mfUs1MigrationPreviewCache.summary.total} · 可迁移 ${this.mfUs1MigrationPreviewCache.summary.migratable} · 冲突 ${this.mfUs1MigrationPreviewCache.summary.conflict}` : '未运行'}`,
+      `迁移需求：${(() => { try { const s = this.mfUs1ActivationStatus(); return s.evaluation.migration && s.evaluation.migration.notRequired ? '全新库，无需迁移' : (this.mfUs1MigrationPreviewCache ? '需迁移（已预览）' : '需迁移（未预览）'); } catch (e) { return '未初始化'; } })()}`,
       `激活状态：${(() => { try { const d = this.mfUs1ActivationDiagnostics(); return `transport=${d.transportSource} · runtime=${d.runtime.present ? (d.runtime.writeEnabled ? '已授权' : '未授权') : '无'} · blockers=${d.activationBlockers.join(',') || '无'}`; } catch (e) { return '未初始化'; } })()}`,
     ];
     new Notice(lines.join('\n'), 12000);
@@ -4450,12 +4451,17 @@ class IncrementalReadingPlugin extends Plugin {
     const recovery = this.mfUs1Recovery || {};
     const rows = this.getIRRows ? this.getIRRows() : [];
     const counts = new Map();
+    let topicCount = 0;
+    let legacyTopicCount = 0;
     for (const row of rows) {
-      if (row.type !== undefined) continue;
       const fm = row.fm || {};
-      if (fm.type === 'card') continue;
+      if (fm.type !== 'source' && fm.type !== 'extract') continue;
+      topicCount += 1;
       const id = fm.mf_id;
-      if (typeof id !== 'string' || !id) continue;
+      if (typeof id !== 'string' || !id) {
+        legacyTopicCount += 1;
+        continue;
+      }
       const key = id.toLowerCase();
       counts.set(key, (counts.get(key) || 0) + 1);
     }
@@ -4469,6 +4475,8 @@ class IncrementalReadingPlugin extends Plugin {
         ? this.mfUs1BatchRecovery.summary.error
         : null,
       duplicateIds,
+      topicCount,
+      legacyTopicCount,
       backupVerified: this.__mfUs1BackupVerified === true,
       userConfirmed: this.__mfUs1ActivationConfirmed === true,
       singleWriterReady: true,
@@ -4522,6 +4530,9 @@ class IncrementalReadingPlugin extends Plugin {
       batchRecoveryError: status.evidence.batchRecoveryError,
       duplicateIds: status.evidence.duplicateIds,
       blockedTopicIds: status.evidence.blockedTopicIds,
+      topicCount: status.evidence.topicCount,
+      legacyTopicCount: status.evidence.legacyTopicCount,
+      migrationNotRequired: Boolean(status.evaluation.migration && status.evaluation.migration.notRequired),
     };
   }
 
