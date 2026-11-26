@@ -80,7 +80,12 @@ test('postpone, schedule and setPriority confirm UI parameters before routing', 
 test('the default host mode remains legacy and unified has no authorization path', () => {
   assert.match(mainSource, /getMode: \(\) => \(this\.settings && this\.settings\.mf_us1_mode \? this\.settings\.mf_us1_mode : 'legacy'\)/);
   assert.equal(/issueSyntheticRuntimeAuthorization/.test(mainSource), false);
-  assert.equal(/mode: 'unified'/.test(mainSource), false);
+  // P3-02A: a unified path now exists but is only reachable through the
+  // approval-gated activation coordinator; production has no approval provider.
+  assert.match(mainSource, /mfUs1ActivateUnified\(/);
+  assert.match(mainSource, /approvalProvider/);
+  assert.match(mainSource, /__mfUs1ActivationApproval/);
+  assert.match(mainSource, /mf_us1_mode: 'legacy'/);
 });
 
 test('the legacy bodies are preserved behind distinct methods', () => {
