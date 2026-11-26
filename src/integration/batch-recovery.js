@@ -45,29 +45,53 @@ function boostItemState(target, entry) {
   return { state: ITEM_STATE.conflict, reason: 'E_PRIORITY_CHANGED' };
 }
 
-function classifyBatch(batch, entriesByTopicId) {
+function hasPriorResult(batch, topicId) {
+  const wanted = String(topicId || '').toLowerCase();
+  return (Array.isArray(batch.results) ? batch.results : []).some(result =>
+    result && String(result.topicId || '').toLowerCase() === wanted && result.status === 'applied');
+}
+
+function hasLedgerEvidence(ledger, topicId, target) {
+  if (!ledger || !ledger.store || typeof ledger.store.dump !== 'function') return false;
+  const wanted = String(topicId || '').toLowerCase();
+  return Object.values(ledger.store.dump()).some(record => {
+    if (!record || String(record.topicId || '').toLowerCase() !== wanted) return false;
+    if (record.status !== 'applied') return false;
+    const after = record.audit && record.audit.after;
+    return Boolean(after) && Number(after.priority) === Number(target.to);
+  });
+}
+
+function classifyBatch(batch, entriesByTopicId, { ledger = null } = {}) {
   if (!batch || typeof batch !== 'object' || typeof batch.batchId !== 'string') {
     return { reason: 'E_BATCH_RECORD_INVALID', items: [], state: ITEM_STATE.unknown };
   }
   if (batch.kind === 'MERCY') {
     if (!Array.isArray(batch.items)) return { reason: 'E_BATCH_RECORD_INCOMPLETE', items: [], state: ITEM_STATE.unknown };
-    const items = batch.items.map(item => ({
-      topicId: item.topicId,
-      path: item.path,
-      basename: item.basename,
-      ...mercyItemState(item, entriesByTopicId.get(String(item.topicId || '').toLowerCase())),
-    }));
+    const items = batch.items.map(item => {
+      const classified = mercyItemState(item, entriesByTopicId.get(String(item.topicId || '').toLowerCase()));
+      // A value that happens to equal the target is NOT proof: without a
+      // persisted applied result for this batch the item stays unknown.
+      if (classified.state === ITEM_STATE.applied && !hasPriorResult(batch, item.topicId)) {
+        return { topicId: item.topicId, path: item.path, basename: item.basename, state: ITEM_STATE.unknown, reason: 'E_NO_BATCH_EVIDENCE' };
+      }
+      return { topicId: item.topicId, path: item.path, basename: item.basename, ...classified };
+    });
     return { reason: null, items };
   }
   if (batch.kind === 'BOOST') {
     const targets = Array.isArray(batch.targets) ? batch.targets : null;
     if (!targets) return { reason: 'E_BATCH_RECORD_INCOMPLETE', items: [], state: ITEM_STATE.unknown };
-    const items = targets.map(target => ({
-      topicId: target.topicId,
-      path: target.path,
-      basename: target.basename,
-      ...boostItemState(target, entriesByTopicId.get(String(target.topicId || '').toLowerCase())),
-    }));
+    const items = targets.map(target => {
+      const classified = boostItemState(target, entriesByTopicId.get(String(target.topicId || '').toLowerCase()));
+      if (classified.state === ITEM_STATE.applied) {
+        const evidence = hasPriorResult(batch, target.topicId) || hasLedgerEvidence(ledger, target.topicId, target);
+        if (!evidence) {
+          return { topicId: target.topicId, path: target.path, basename: target.basename, state: ITEM_STATE.unknown, reason: 'E_NO_LEDGER_EVIDENCE' };
+        }
+      }
+      return { topicId: target.topicId, path: target.path, basename: target.basename, ...classified };
+    });
     return { reason: null, items };
   }
   return { reason: 'E_BATCH_KIND_UNKNOWN', items: [] };
@@ -83,7 +107,7 @@ function deriveStatus(batch, items, recordProblem) {
   return { status: batch.status === 'uncertain' ? 'uncertain' : 'prepared', reason: null };
 }
 
-async function reconcileBatches({ store, storage, batches = null } = {}) {
+async function reconcileBatches({ store, storage, ledger = null, batches = null } = {}) {
   if (!store || typeof store.listBatches !== 'function') {
     return { batches: [], blockedTopicIds: [], summary: { error: 'E_BATCH_STORE_REQUIRED' } };
   }
@@ -119,7 +143,7 @@ async function reconcileBatches({ store, storage, batches = null } = {}) {
 
     const classified = recordProblem
       ? { reason: recordProblem, items: [] }
-      : classifyBatch(batch, itemsByKey);
+      : classifyBatch(batch, itemsByKey, { ledger });
     const derived = deriveStatus(batch, classified.items || [], classified.reason);
 
     for (const item of classified.items || []) {
@@ -163,4 +187,13 @@ async function reconcileBatches({ store, storage, batches = null } = {}) {
   };
 }
 
-module.exports = { ITEM_STATE, reconcileBatches, classifyBatch, mercyItemState, boostItemState, normalizeNotBefore };
+module.exports = {
+  ITEM_STATE,
+  reconcileBatches,
+  classifyBatch,
+  mercyItemState,
+  boostItemState,
+  hasPriorResult,
+  hasLedgerEvidence,
+  normalizeNotBefore,
+};

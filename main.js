@@ -2945,7 +2945,11 @@ class IncrementalReadingPlugin extends Plugin {
       // state and never writes a topic.
       try {
         const { reconcileBatches } = require('./src/integration/batch-recovery.js');
-        this.mfUs1BatchRecovery = await reconcileBatches({ store: this.mfUs1BatchStore, storage });
+        this.mfUs1BatchRecovery = await reconcileBatches({
+          store: this.mfUs1BatchStore,
+          storage,
+          ledger: this.mfUs1AsyncLifecycle ? this.mfUs1AsyncLifecycle.ledger : null,
+        });
         const blocked = new Set(this.mfUs1Recovery.blockedTopicIds || []);
         for (const topicId of this.mfUs1BatchRecovery.blockedTopicIds || []) blocked.add(topicId);
         this.mfUs1Recovery.blockedTopicIds = [...blocked];
@@ -3204,6 +3208,7 @@ class IncrementalReadingPlugin extends Plugin {
       { label: 'MF-US-1 diagnostics', run: () => this.mfUs1Diagnostics() },
       { label: 'Reactivate current…', run: () => this.reactivateCurrent() },
       { label: 'Undo last Mercy', run: () => this.mercyUndoLast() },
+      { label: 'Resume pending batches…', run: () => this.resumePendingBatches() },
     ]);
   }
 
@@ -4195,6 +4200,56 @@ class IncrementalReadingPlugin extends Plugin {
     const report = describeMercyOutcome(outcome);
     new Notice(report.message, report.nonAtomic ? 14000 : 7000);
     return outcome;
+  }
+
+  async resumePendingBatches() {
+    const { resumeBatch } = require('./src/integration/batch-resume.js');
+    if (this._mfUs1EffectiveMode() !== 'unified') {
+      new Notice('批次恢复只在 Unified 模式可用。');
+      return null;
+    }
+    if (!this.mfUs1BatchStore || !this.mfUs1AdminWriter) {
+      new Notice('批次存储尚未初始化。');
+      return null;
+    }
+    const pending = await this.mfUs1BatchStore.listBatches({ unfinishedOnly: true });
+    if (!pending.length) { new Notice('没有未决批次。'); return null; }
+    const label = pending.slice(0, 3).map(batch => `${batch.kind}/${String(batch.batchId).slice(0, 8)}(${batch.status})`).join('、');
+    const ok = await confirmDialog(this.app, '恢复未决批次',
+      `${pending.length} 个未决批次：${label}。将按持久绝对目标继续未完成项（不会重算增量），确认？`);
+    if (!ok) return null;
+    const { projectTopic } = require('./src/integration/topic-projection.js');
+    const results = [];
+    for (const batch of pending) {
+      const outcome = await resumeBatch({
+        store: this.mfUs1BatchStore,
+        batchId: batch.batchId,
+        authorization: this.__mfUs1ResumeAuthorization || null,
+        readTopic: async topicId => {
+          const row = this._mfUs1RowByTopicId(topicId);
+          if (!row) return { entry: null };
+          const projected = projectTopic(row, { mode: this._mfUs1EffectiveMode() });
+          return { entry: { frontmatter: { mf_not_before: projected.notBefore, priority: projected.priority } } };
+        },
+        runItem: async item => {
+          const row = this._mfUs1RowByTopicId(item.topicId);
+          if (!row) return { status: 'conflict', reason: 'E_TOPIC_NOT_FOUND' };
+          if (batch.kind === 'MERCY') {
+            return this.mfUs1AdminWriter.write({
+              topicId: item.topicId,
+              updates: { mf_not_before: item.notBefore },
+              expectedNotBefore: item.currentNotBefore,
+            });
+          }
+          const file = this.app.vault.getAbstractFileByPath(row.tfile.path);
+          if (!file) return { status: 'failed', reason: 'E_FILE_MISSING' };
+          return this.setPriorityFile(file, item.priority, { quiet: true });
+        },
+      });
+      results.push({ batchId: batch.batchId, kind: batch.kind, status: outcome.status, reason: outcome.reason });
+    }
+    new Notice(`批次恢复：${results.map(item => `${item.kind}=${item.status}`).join('、')}`, 12000);
+    return results;
   }
 
   async mercyUndoLast() {

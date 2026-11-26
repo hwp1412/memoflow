@@ -59,7 +59,7 @@ function mercyBatch(overrides = {}) {
 }
 
 test('mercy reconcile marks already-applied items and leaves the rest pending', async () => {
-  const store = fakeStore([mercyBatch()]);
+  const store = fakeStore([mercyBatch({ results: [{ topicId: ID1, status: 'applied' }] })]);
   const storage = fakeStorage({
     [ID1]: topicEntry({ mf_id: ID1, mf_not_before: '2026-11-28' }),
     [ID2]: topicEntry({ mf_id: ID2, mf_not_before: null }),
@@ -97,7 +97,14 @@ test('boost reconcile uses the persisted absolute target and never a new delta',
     [ID1]: topicEntry({ mf_id: ID1, priority: 45 }),
     [ID2]: topicEntry({ mf_id: ID2, priority: 30 }),
   });
-  const first = await reconcileBatches({ store, storage: appliedStorage });
+  const { PersistentEventLedger, MemoryLedgerStore } = require('../src/scheduling/index.js');
+  const ledger = new PersistentEventLedger(new MemoryLedgerStore({
+    '00000000-0000-4000-8000-000000000002': {
+      eventId: '00000000-0000-4000-8000-000000000002', topicId: ID1, status: 'applied',
+      audit: { after: { priority: 45 } }, fingerprint: 'f', type: 'SET_PRIORITY',
+    },
+  }));
+  const first = await reconcileBatches({ store, storage: appliedStorage, ledger });
   assert.deepEqual(first.batches[0].items.map(item => item.state), [ITEM_STATE.applied, ITEM_STATE.pending]);
   assert.equal(first.batches[0].status, 'partial');
 
@@ -112,7 +119,7 @@ test('boost reconcile uses the persisted absolute target and never a new delta',
 });
 
 test('a second reconcile does not advance state again', async () => {
-  const store = fakeStore([mercyBatch()]);
+  const store = fakeStore([mercyBatch({ results: [{ topicId: ID1, status: 'applied' }, { topicId: ID2, status: 'applied' }] })]);
   const storage = fakeStorage({
     [ID1]: topicEntry({ mf_id: ID1, mf_not_before: '2026-11-28' }),
     [ID2]: topicEntry({ mf_id: ID2, mf_not_before: '2026-11-29' }),
@@ -142,6 +149,41 @@ test('a missing topic is unknown, blocked, and never written', async () => {
   assert.equal(result.blockedTopicIds.length, 2);
   assert.equal(storage.reads, 2);
   assert.equal(typeof storage.compareAndSwap, 'undefined', 'reconcile must not need a CAS channel');
+});
+
+test('a value equal to the target without batch evidence stays unknown', async () => {
+  const store = fakeStore([mercyBatch()]);
+  const storage = fakeStorage({
+    [ID1]: topicEntry({ mf_id: ID1, mf_not_before: '2026-11-28' }),
+    [ID2]: topicEntry({ mf_id: ID2, mf_not_before: null }),
+  });
+  const result = await reconcileBatches({ store, storage });
+  assert.equal(result.batches[0].items[0].state, ITEM_STATE.unknown);
+  assert.equal(result.batches[0].items[0].reason, 'E_NO_BATCH_EVIDENCE');
+  assert.equal(result.batches[0].status, 'requires-manual-recovery');
+  assert.ok(result.blockedTopicIds.includes(ID1.toLowerCase()));
+});
+
+test('boost recognises an applied target only with ledger evidence', async () => {
+  const { PersistentEventLedger, MemoryLedgerStore } = require('../src/scheduling/index.js');
+  const targets = [{ topicId: ID1, path: 'A', basename: 'A', from: 50, to: 45 }];
+  const withoutEvidence = fakeStore([{ batchId: 'boost-2', kind: 'BOOST', status: 'prepared', targets }]);
+  const storage = fakeStorage({ [ID1]: topicEntry({ mf_id: ID1, priority: 45 }) });
+  const first = await reconcileBatches({ store: withoutEvidence, storage });
+  assert.equal(first.batches[0].items[0].state, ITEM_STATE.unknown);
+  assert.equal(first.batches[0].items[0].reason, 'E_NO_LEDGER_EVIDENCE');
+
+  const ledgerStore = new MemoryLedgerStore({
+    '00000000-0000-4000-8000-000000000001': {
+      eventId: '00000000-0000-4000-8000-000000000001', topicId: ID1, status: 'applied',
+      audit: { after: { priority: 45 } }, fingerprint: 'f', type: 'SET_PRIORITY',
+    },
+  });
+  const ledger = new PersistentEventLedger(ledgerStore);
+  const withEvidence = fakeStore([{ batchId: 'boost-3', kind: 'BOOST', status: 'prepared', targets }]);
+  const second = await reconcileBatches({ store: withEvidence, storage, ledger });
+  assert.equal(second.batches[0].items[0].state, ITEM_STATE.applied);
+  assert.equal(second.batches[0].status, 'applied');
 });
 
 test('reconcile refuses to run without store or storage', async () => {

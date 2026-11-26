@@ -397,3 +397,27 @@ test/*.test.js                                      见最终交付报告
 - 剩余 guard 入口（reset/检查点/摘录/导入/拆分/A-Factor/日期迁移/Mercy 过载入口）。
 - 迁移激活 UI、模式 UI、Shadow observer、账本诊断面板。
 - 批次恢复的"安全重放"（当前只判定、不补写；需要授权后的显式恢复命令）。
+
+## 第四轮进展（证据恢复、显式恢复命令、Dashboard View）
+
+- **批次判定证据**：`reconcileBatches` 现在要求 `batch.results` 的 applied 记录（Mercy）或
+  已确认的 Event Ledger 记录（Boost，`SET_PRIORITY` 且 `audit.after.priority === 目标`）才能判为 applied。
+  仅"当前值恰好等于目标"→ `unknown / E_NO_LEDGER_EVIDENCE`（Mercy 为 `E_NO_BATCH_EVIDENCE`），
+  保持人工恢复并阻断 Topic。
+- **显式恢复**：`src/integration/batch-resume.js`（需 `issueSyntheticBatchResumeAuthorization()` 令牌）。
+  Mercy 只补写仍等于 `currentNotBefore` 的项；Boost 使用持久绝对目标 `to`；已达标项不重写；
+  结果落盘失败 → uncertain。菜单「Resume pending batches…」只有在 Unified 且持有授权令牌时才会真正写入。
+- **Dashboard View**：新增真实 `MemoFlowDashboardView.refresh()` 测试（ui 渲染层打桩，模型/数据链路真实）：
+  权威 `mf_ideal_due` 决定候选、优先级排序、外部写入后 refresh 反映新顺序、legacy 模式保持原队列。
+- 测试：`1379 pass / 0 fail`（新增 batch-resume 5、dashboard-view 3、证据规则 2）。
+
+### 仍需裁决（一次集中提出）
+
+| # | 入口 | 原语义 | 影响 | 最小可行方案 |
+|---|---|---|---|---|
+| R1 | `resetPaths` / `resetCurrent` | 清空排期并恢复 active（卡片还清 SR 注释） | 会改写全部调度历史，无 A8 等价事件 | 定义为"管理/迁移操作"，在 Unified 下继续阻断，另起迁移流程（需产品裁决） |
+| R2 | 父级 A-Factor bump | 建摘录后奖励父节点 | A3.4 未定义、属隐式调度写 | Unified 创建路径去掉 bump（需裁决是否保留 Legacy） |
+| R3 | 检查点 | 写 `interval` + `next_review`（阅读元数据） | 不是 A8 事件，但会改调度字段 | 拆为"阅读位置元数据"（不写调度）或新增事件（需裁决） |
+| R4 | Dashboard / 自动过载 Mercy | 直接摊平并覆盖 interval | 与 A7.2 冲突 | 接入统一 Mercy 前继续阻断；自动路径需显式确认 |
+| R5 | 日期格式迁移 | 全库改写日期字段 | 与 `mf_*` 不同步 | 并入受控迁移流程，禁止直接运行 |
+| R6 | 摘录创建/划词/图片/导入/拆分 | 创建文件与初始排期 | 非 A8 事件，但产生新 Topic | 复用创建网关（需支持真实 token 的授权路径），当前 Unified 阻断 |
