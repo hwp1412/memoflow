@@ -114,7 +114,7 @@ function createObsidianProcessAdapter({ vault, resolveFile, dateFormat, verifyAf
     supportsAtomicCas: true,
     dateFormat,
 
-    async compareAndSwap(topicId, { expectedHash, expectedRevision, updates } = {}) {
+    async compareAndSwap(topicId, { expectedHash, expectedRevision, updates, expectedRelation = null } = {}) {
       if (!isPersistentUuid(topicId)) return { ok: false, code: 'E_TOPIC_ID_INVALID' };
       if (typeof expectedHash !== 'string' || !HASH_RE.test(expectedHash)) return { ok: false, code: 'E_HASH_REQUIRED' };
       if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return { ok: false, code: 'E_REVISION_REQUIRED' };
@@ -148,6 +148,14 @@ function createObsidianProcessAdapter({ vault, resolveFile, dateFormat, verifyAf
           const type = readScalar(parsed, 'type');
           if (type !== 'source' && type !== 'extract') throw Object.assign(new Error('type'), { code: 'E_TOPIC_TYPE' });
           if (readScalar(parsed, 'status') !== 'active') throw Object.assign(new Error('status'), { code: 'E_TOPIC_NOT_ACTIVE' });
+          if (expectedRelation != null) {
+            // Planned membership may be stale (MetadataCache lag). The relation
+            // is re-checked on the bytes that are about to be written.
+            const relation = `${readScalar(parsed, 'parent') ?? ''}|${readScalar(parsed, 'source') ?? ''}`;
+            if (relation !== expectedRelation) {
+              throw Object.assign(new Error('subtree relation changed'), { code: 'E_SUBTREE_CHANGED' });
+            }
+          }
 
           const next = applyEdits(data, { ...updates, mf_revision: expectedRevision + 1 }, { allowNestedBlocks });
           outcome = { beforeHash: sha256Hex(data), afterHash: sha256Hex(next) };

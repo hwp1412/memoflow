@@ -203,16 +203,21 @@ async function executeUnifiedEventAsync(request, dependencies = {}) {
     return { status: 'failed', duplicate: false, writesPerformed: false, reason: intent.code, intentPersisted: false, record: ledger.get(request.eventId) };
   }
 
+  const expectedRelation = request.expectations && typeof request.expectations.relationKey === 'string'
+    ? request.expectations.relationKey
+    : null;
   const cas = await store.compareAndSwap(request.topicId, {
     expectedHash: currentHash,
     expectedRevision: request.expectedRevision,
     updates: { ...changed, mf_revision: request.expectedRevision + 1 },
+    expectedRelation,
   });
   if (!cas || !cas.ok) {
     const code = (cas && cas.code) || 'E_STORAGE_WRITE_FAILED';
     if (code === 'E_SNAPSHOT_MISMATCH' || code === 'E_REVISION_MISMATCH' || code === 'E_ID_NOT_PERSISTED'
       || code === 'E_TOPIC_ID_MISMATCH' || code === 'E_TOPIC_NOT_ACTIVE' || code === 'E_TOPIC_TYPE'
-      || code === 'E_REVISION_NOT_PERSISTED' || code === 'E_VERSION_NOT_PERSISTED') {
+      || code === 'E_REVISION_NOT_PERSISTED' || code === 'E_VERSION_NOT_PERSISTED'
+      || code === 'E_SUBTREE_CHANGED') {
       ledger.markConflict(request.eventId, code, record.audit);
       return { status: 'conflict', duplicate: false, writesPerformed: false, reason: code, record: ledger.get(request.eventId) };
     }
