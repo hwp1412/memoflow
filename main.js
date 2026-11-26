@@ -3045,6 +3045,17 @@ class IncrementalReadingPlugin extends Plugin {
     cmd('current-actions',    'Current element actions…',         () => this.currentElementActions());
     cmd('open-toolkit-view',  'Open Toolkit view…',               () => this.openToolkitView());
     cmd('advanced-tools',     'Advanced tools…',                  () => this.advancedTools());
+    // E2E-only commands: compiled in ONLY for test builds (build flag
+    // `--e2e` defines __MF_E2E_TEST_BUILD__ = true). The production build has
+    // this constant false, so the commands do not exist there.
+    // <MF_E2E_START>
+    // Build strips this marker block in non-e2e builds; `define` also folds it.
+    if (__MF_E2E_TEST_BUILD__ === true) {
+      cmd('e2e-activate-unified', 'E2E: activate Unified (test build)', () => this.mfUs1E2EActivateUnified());
+      cmd('e2e-revoke-unified', 'E2E: revoke Unified authorization (test build)', () => this.mfUs1RevokeUnifiedAuthorization());
+      cmd('e2e-status', 'E2E: activation status (test build)', () => new Notice(this.mfUs1E2EStatusText(), 15000));
+    }
+    // <MF_E2E_END>
     this.app.workspace.onLayoutReady(() => {
       this._refreshExcerptViews();
       const count = this._legacyCardFiles().length;
@@ -4439,9 +4450,15 @@ class IncrementalReadingPlugin extends Plugin {
       const { createActivationCoordinator } = require('./src/integration/activation-coordinator.js');
       this.mfUs1Activation = createActivationCoordinator({
         // Production passes no approval provider: activation is always denied.
-        approvalProvider: evaluation => (typeof this.__mfUs1ActivationApproval === 'function'
-          ? this.__mfUs1ActivationApproval(evaluation) === true
-          : false),
+        approvalProvider: evaluation => {
+          if (typeof this.__mfUs1ActivationApproval === 'function' && this.__mfUs1ActivationApproval(evaluation) === true) {
+            return true;
+          }
+          // Test build only: the E2E activation command arms this flag for a
+          // single activation attempt. Production builds cannot reach it.
+          const e2eBuild = typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true;
+          return e2eBuild && this.__mfUs1E2EApprovalArmed === true;
+        },
       });
     }
     return this.mfUs1Activation;
@@ -4534,6 +4551,48 @@ class IncrementalReadingPlugin extends Plugin {
       legacyTopicCount: status.evidence.legacyTopicCount,
       migrationNotRequired: Boolean(status.evaluation.migration && status.evaluation.migration.notRequired),
     };
+  }
+
+  // ---------------------------------------------------------------------
+  // E2E test-build activation entry (never present in production builds)
+  // ---------------------------------------------------------------------
+  mfUs1E2EStatusText() {
+    try {
+      const status = this.mfUs1ActivationStatus();
+      return [
+        `E2E 构建：${typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true ? '是' : '否'}`,
+        `模式：${this._mfUs1EffectiveMode()} · 已授权：${status.authorized ? '是' : '否'} · 暂停：${status.suspended ? '是' : '否'}`,
+        `Topic 数：${status.evidence.topicCount} · 旧格式：${status.evidence.legacyTopicCount} · 迁移：${status.evaluation.migration && status.evaluation.migration.notRequired ? '不需要' : '需要'}`,
+        `阻断项：${status.evaluation.blockers.join('、') || '无'}`,
+      ].join('\n');
+    } catch (error) {
+      return `诊断失败：${(error && error.message) || error}`;
+    }
+  }
+
+  async mfUs1E2EActivateUnified() {
+    if (!(typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true)) {
+      new Notice('E2E 激活命令仅存在于测试构建中。', 12000);
+      return { ok: false, reason: 'E_E2E_NOT_TEST_BUILD' };
+    }
+    const evidence = this._mfUs1ActivationEvidence();
+    const needsMigration = (evidence.legacyTopicCount || 0) > 0;
+    if (needsMigration) {
+      const backedUp = await confirmDialog(this.app, 'E2E：Vault 备份已确认？', '存在旧格式 Topic，需要迁移计划与已验证备份。仅在已备份的一次性测试 Vault 中继续。');
+      if (!backedUp) { new Notice('已取消：未确认备份。'); return { ok: false, reason: 'E_BACKUP_NOT_CONFIRMED' }; }
+      this.__mfUs1BackupVerified = true;
+    }
+    const ok = await confirmDialog(this.app, 'E2E：激活 Unified（测试构建）', '将执行全部真实激活门禁（恢复/批次/身份/CAS/用户确认）并签发会话级测试授权。仅在一次性测试 Vault 中使用。继续？');
+    if (!ok) { new Notice('已取消激活。'); return { ok: false, reason: 'E_CANCELLED' }; }
+    this.__mfUs1ActivationConfirmed = true;
+    this.__mfUs1E2EApprovalArmed = true;
+    try {
+      const result = await this.mfUs1ActivateUnified();
+      this.mfUs1E2ELastResult = result;
+      return result;
+    } finally {
+      this.__mfUs1E2EApprovalArmed = false;
+    }
   }
 
   async mfUs1ActivateUnified() {

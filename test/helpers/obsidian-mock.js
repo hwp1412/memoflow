@@ -1,5 +1,8 @@
 'use strict';
 
+// Build-time constant used by esbuild `define`; tests run the source directly.
+if (typeof globalThis.__MF_E2E_TEST_BUILD__ === 'undefined') globalThis.__MF_E2E_TEST_BUILD__ = false;
+
 // Test-only Obsidian API mock for M03 write-regression tests.
 // It intentionally lives outside production code and never touches a real Vault.
 

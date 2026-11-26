@@ -15,16 +15,25 @@ const withInstall = process.argv.includes('--install-test');
 const dryRun = process.argv.includes('--dry-run');
 const require = createRequire(import.meta.url);
 const { localizeBaseSource } = require(path.join(root, 'src', 'i18n', 'base-zh.js'));
-const localizeBasePlugin = {
+const localizeBasePlugin = ({ includeE2E = false } = {}) => ({
   name: 'memoflow-base-zh',
   setup(buildApi) {
     buildApi.onLoad({ filter: /main\.js$/ }, async args => {
       if (path.resolve(args.path) !== path.join(root, 'main.js')) return undefined;
       const source = await readFile(args.path, 'utf8');
-      return { contents: localizeBaseSource(source), loader: 'js' };
+      let contents = localizeBaseSource(source);
+      if (!includeE2E) {
+        // E2E-only commands are physically absent from release bundles.
+        const start = contents.indexOf('// <MF_E2E_START>');
+        const end = contents.indexOf('// <MF_E2E_END>');
+        if (start !== -1 && end > start) {
+          contents = contents.slice(0, start) + contents.slice(end + '// <MF_E2E_END>'.length);
+        }
+      }
+      return { contents, loader: 'js' };
     });
   },
-};
+});
 
 async function ensureEmpty(dir) {
   await rm(dir, { recursive: true, force: true });
@@ -32,9 +41,11 @@ async function ensureEmpty(dir) {
 }
 
 async function buildPlugin() {
+  const e2eTestBuild = process.argv.includes('--e2e');
   await ensureEmpty(distDir);
   await build({
     entryPoints: [path.join(root, 'src', 'main.js')],
+    define: { __MF_E2E_TEST_BUILD__: e2eTestBuild ? 'true' : 'false' },
     outfile: path.join(distDir, 'main.js'),
     bundle: true,
     platform: 'node',
@@ -42,12 +53,14 @@ async function buildPlugin() {
     target: ['es2022'],
     charset: 'utf8',
     external: ['obsidian', 'fs', 'url'],
-    plugins: [localizeBasePlugin],
+    plugins: [localizeBasePlugin({ includeE2E: e2eTestBuild })],
     sourcemap: false,
     legalComments: 'none',
     logLevel: 'info',
     banner: {
-      js: '/* MemoFlow 0.1.0 — paper-and-ink study console. Forked from Incremental Reading Toolkit 1.1.8 (MIT). */',
+      js: e2eTestBuild
+        ? '/* MemoFlow 0.1.0 — E2E TEST BUILD (not for release). Forked from Incremental Reading Toolkit 1.1.8 (MIT). */'
+        : '/* MemoFlow 0.1.0 — paper-and-ink study console. Forked from Incremental Reading Toolkit 1.1.8 (MIT). */',
     },
   });
 

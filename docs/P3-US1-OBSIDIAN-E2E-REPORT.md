@@ -16,8 +16,10 @@
 | P3-02A 合并 | PR #39（`f90da41`、`031f461` 祖先已核实） |
 | Obsidian | **1.15.1**（`/Applications/Obsidian.app`） |
 | OS | macOS 27.0.1 |
-| 构建 | `node scripts/build.mjs` 成功（从 7c2cf9b 构建，非 tracked 陈旧 dist） |
-| 产物 | `main.js` 1,213,649 B（sha256 `7192292ac893ee5121ecb7c87e83871815e70aee`）、`manifest.json`（`id: memoflow` / `0.1.0` / `minAppVersion 1.12.7`）、`styles.css` |
+| 构建 | `node scripts/build.mjs`（正式构建，**E2E 命令被物理剔除**）与 `node scripts/build.mjs --e2e`（测试构建，含 E2E 命令）均成功 |
+| 正式产物 | `main.js` sha256 `…`（无 `e2e-activate-unified` 字符串） |
+| **E2E 测试产物** | `main.js` 1,213,649 B，sha256 **`d0ffa5990a4c0a1ccdd8d832a144b8f85973757f`**（含 3 个 E2E 命令；banner 标记 E2E TEST BUILD） |
+| manifest | `id: memoflow` / `0.1.0` / `minAppVersion 1.12.7` |
 | 自动化 | `node --test test/*.test.js` **1433 pass / 0 fail**；`TZ=UTC` 同样通过；`validate-release` valid；`build --dry-run` 干净 |
 
 ## 2. 测试 Vault 与备份
@@ -25,7 +27,8 @@
 | Vault | 状态 | 证据 |
 |---|---|---|
 | `MemoFlow-Test` | 存在，已备份，新构建已安装 | 路径 `/Users/Admin/Documents/插件开发/MemoFlow-Test`；45 个文件 / 15 MB；marker `vaultId 78896b66-c7a1-4e9d-a1aa-edba1b082dcb`；备份 `插件开发/backups/MemoFlow-Test-20261127-032549`（45 文件，备份与新文件 main.js 哈希一致）；安装后 `main.js` = 新构建哈希 `7192292a…`；`data.json` 时间戳未变（Nov 25），未被覆盖 |
-| `phase2 test` | **未找到（Blocked）** | `~/Library/Application Support/obsidian/obsidian.json` 仅注册 3 个 Vault：`HWP的知识仓库`、`supermemo`、`MemoFlow-Test`；`find /Users/Admin -maxdepth 6 -iname "*phase*test*"` 无匹配。**需要项目负责人提供实际路径** |
+| `E2E-Phase2-Test-Vault`（新建一次性副本） | 已就绪 | 从 MemoFlow-Test 备份完整复制（15 MB），安装 E2E 测试构建，用于批量/恢复/故障注入；**可随时删除重建** |
+| `phase2 test` | **未找到（Blocked；已用一次性副本替代执行渠道）** | `~/Library/Application Support/obsidian/obsidian.json` 仅注册 3 个 Vault：`HWP的知识仓库`、`supermemo`、`MemoFlow-Test`；`find /Users/Admin -maxdepth 6 -iname "*phase*test*"` 无匹配。**需要项目负责人提供实际路径** |
 | 一次性空库（新建） | 已创建，等待实机 | `插件开发/E2E-Empty-Vault`（含新构建插件、空 `Sources/`、`Extracts/`、disposable marker） |
 
 > 本轮未触碰任何真实用户 Vault；`supermemo`、`HWP的知识仓库` 未安装/未访问。
@@ -72,7 +75,7 @@
 
 自动化结果：`1433 pass`（含新增 4 项空库用例）。
 
-### 6.2 GUI 激活仍 Blocked（P1，需授权的最小接线）
+### 6.2 GUI 激活接线：已按批准实现（P1-2 关闭）
 
 生产门禁设计为无 approval provider 不签发 token；测试构建也没有可用的 GUI 审批入口（只能通过测试实例字段注入）。任务禁止"手动改写私有变量/注入 Token"来完成实机验收，因此**在 Obsidian 内激活 Unified 目前没有合规入口**。
 
@@ -127,20 +130,33 @@
 | ID | 级别 | 描述 | 状态 |
 |---|---|---|---|
 | P1-1 | P1 | 空库被错误要求迁移/备份，全新用户无法激活 Unified | **已修复**（本分支，含测试） |
-| P1-2 | P1 | 测试构建缺少合规的 GUI 激活审批入口，无法在 Obsidian 内完成 E2E 激活 | **Open，需授权最小接线** |
-| P1-3 | P1 | `phase2 test` Vault 不存在/未注册，批量与恢复实机无法执行 | **Open，需提供路径或授权使用一次性 Vault** |
+| P1-2 | P1 | 测试构建缺少合规的 GUI 激活审批入口 | **已修复**（`--e2e` 构建 + 3 个测试构建限定命令；正式构建物理剔除） |
+| P1-3 | P1 | `phase2 test` Vault 不存在/未注册 | **已缓解**：按批准创建 `E2E-Phase2-Test-Vault`（MemoFlow-Test 备份副本）承载批量/恢复/故障注入；真实 `phase2 test` 仍可提供路径后替换 |
 | P2-1 | P2 | 迁移只支持内存存储，无 Obsidian 真实迁移适配器 | Open（旧版本升级发布决策） |
 | P0 | — | 未发现（自动化层） | — |
 
 ## 13. 是否具备进入下一阶段安全激活审批的条件
 
-**尚不具备。** 需要：
+**代码与测试环境已就绪，仅剩 GUI 实机执行（Owner）。**
 
-1. 项目负责人提供 `phase2 test` 实际路径，或明确授权用 `E2E-Empty-Vault` / 一次性空库执行；
-2. 批准 P1-2 的最小测试构建激活接线（仅测试构建可见，不影响生产门禁），由 Lead 实现后重跑 E2E；
-3. 在上述环境执行 §4–§9 手动清单，形成 Pass/Fail 实机记录（含截图/日志/前后文件哈希）；
-4. 空库激活 + 一次真实 Unified 写入 + 撤销 + 重新审批闭环通过后，方可进入生产激活审批。
+1. ✅ 自动构建/测试/诊断接线完成（1436 pass）；
+2. ✅ E2E 测试构建已安装到 3 个测试 Vault（哈希一致）；
+3. ⏳ 需项目负责人打开 Obsidian 执行 §4–§9 手动清单，形成 Pass/Fail 记录（截图/日志/前后文件哈希）；
+4. ⏳ 空库激活 → 一次真实 Unified 写入 → 撤销 → 重新审批闭环通过后，方可进入生产激活审批；
+5. 若需使用真实 `phase2 test` Vault，提供路径后在同一清单上复跑批量/恢复组。
 
 ## 14. 安全边界
 
 未访问/修改真实用户 Vault；未对 `supermemo`、`HWP的知识仓库` 做任何操作；未执行真实迁移；未启用生产 Unified；未创建/合并 PR；未改写 Git 历史。所有测试均使用已备份的指定测试 Vault 或一次性空库。
+
+
+## 15. E2E 测试构建与安装（本轮补记）
+
+| Vault | 路径 | 构建 | main.js sha256 |
+|---|---|---|---|
+| MemoFlow-Test | `插件开发/MemoFlow-Test` | E2E (`--e2e`) | `d0ffa5990a4c0a1ccdd8d832a144b8f85973757f` |
+| E2E-Empty-Vault | `插件开发/E2E-Empty-Vault` | E2E (`--e2e`) | 同上 |
+| E2E-Phase2-Test-Vault | `插件开发/E2E-Phase2-Test-Vault`（备份副本） | E2E (`--e2e`) | 同上 |
+
+备份：`插件开发/backups/MemoFlow-Test-20261127-032549`（45 文件，哈希已复核）。
+正式构建（`node scripts/build.mjs`）中 E2E 命令出现 0 次；`--e2e` 构建中为 1 次——构建门控已验证。

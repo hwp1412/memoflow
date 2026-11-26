@@ -102,7 +102,12 @@ test('the Toolkit registers three core commands and nine commands total', () => 
   assert.match(main, /cmd\('next-element'/);
   assert.match(main, /cmd\('end-session',\s*'Grade current reading topic'/);
   assert.doesNotMatch(main, /cmd\('random-due'|cmd\('review-cards'|cmd\('review-cards-in-note'/);
-  assert.equal((main.match(/\bcmd\('/g) || []).length, 9);
+  // 9 user-facing commands + 3 E2E-only commands that exist only in --e2e
+  // test builds (gated by the build-defined constant).
+  assert.equal((main.match(/\bcmd\('/g) || []).length, 12);
+  for (const id of ['e2e-activate-unified', 'e2e-revoke-unified', 'e2e-status']) {
+    assert.ok(main.includes(`cmd('${id}'`), id);
+  }
   for (const id of ['capture-more', 'current-actions', 'open-toolkit-view', 'advanced-tools']) {
     assert.match(main, new RegExp(`cmd\\('${id}'`));
   }
