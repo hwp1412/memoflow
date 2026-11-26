@@ -3209,6 +3209,8 @@ class IncrementalReadingPlugin extends Plugin {
       { label: 'Reactivate current…', run: () => this.reactivateCurrent() },
       { label: 'Undo last Mercy', run: () => this.mercyUndoLast() },
       { label: 'Resume pending batches…', run: () => this.resumePendingBatches() },
+      { label: 'Migration preview (read-only)…', run: () => this.mfUs1MigrationPreview() },
+      { label: 'MF-US-1 mode…', run: () => this.mfUs1ModeMenu() },
     ]);
   }
 
@@ -3987,6 +3989,8 @@ class IncrementalReadingPlugin extends Plugin {
       `阻断 Topic：${(recovery.blockedTopicIds || []).length}`,
       `Unified 队列源：${this.settings && this.settings.mf_queue_source === 'unified' ? '统一投影' : '旧字段（未切换）'}`,
       `批次恢复：${this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && !this.mfUs1BatchRecovery.summary.error ? `检查 ${this.mfUs1BatchRecovery.summary.checked} · 需人工 ${this.mfUs1BatchRecovery.summary.manual}` : (this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error) || '未运行'}`,
+      `Shadow 最近差异：${this.mfUs1ShadowLast ? `${this.mfUs1ShadowLast.action} · ${this.mfUs1ShadowLast.changes.length} 项 · ${this.mfUs1ShadowLast.status}` : '无'}`,
+      `迁移预检：${this.mfUs1MigrationPreviewCache ? `共 ${this.mfUs1MigrationPreviewCache.summary.total} · 可迁移 ${this.mfUs1MigrationPreviewCache.summary.migratable} · 冲突 ${this.mfUs1MigrationPreviewCache.summary.conflict}` : '未运行'}`,
     ];
     new Notice(lines.join('\n'), 12000);
     return lines.join('\n');
@@ -4300,6 +4304,69 @@ class IncrementalReadingPlugin extends Plugin {
     const report = describeMercyOutcome(outcome);
     new Notice(report.message, report.nonAtomic ? 14000 : 7000);
     return outcome;
+  }
+
+  // Read-only migration precheck (R5). Never writes a topic; the resulting plan
+  // is kept only for the diagnostics menu.
+  async mfUs1MigrationPreview() {
+    const { previewMigration } = require('./src/scheduling/migration-plan.js');
+    const rows = this.getIRRows().filter(row => row.fm && (row.fm.type === 'source' || row.fm.type === 'extract'));
+    const snapshots = rows.map(row => ({
+      ...row.fm,
+      path: row.tfile.path,
+      basename: row.tfile.basename,
+      content: null,
+    }));
+    let plan;
+    try {
+      plan = previewMigration(snapshots, { dateFormat: configuredDateFormat(this.settings) });
+    } catch (error) {
+      new Notice(`迁移预检失败：${error.code || error.message || '未知错误'}`, 9000);
+      return null;
+    }
+    this.mfUs1MigrationPreviewCache = plan;
+    const summary = plan.summary;
+    const examples = plan.entries
+      .filter(entry => entry.status !== 'already-migrated')
+      .slice(0, 4)
+      .map(entry => `${entry.basename || entry.path}:${entry.status}`)
+      .join('；');
+    new Notice(
+      `迁移预检（只读，未写入）：共 ${summary.total} · 可迁移 ${summary.migratable} · 需人工 ${summary.manualReview} · 冲突 ${summary.conflict} · 已迁移 ${summary.alreadyMigrated}` +
+        (examples ? `
+例：${examples}` : ''),
+      14000,
+    );
+    return plan;
+  }
+
+  // Mode status and safe switching. Unified stays fail-closed: selecting it
+  // never grants a token and is refused while activation conditions are unmet.
+  mfUs1ActivationBlockers() {
+    const blockers = [];
+    if (!this.__mfUs1UnifiedTransport) blockers.push('E_NO_HOST_TRANSPORT');
+    if (!this.mfUs1Recovery || this.mfUs1Recovery.healthy === false) blockers.push('E_RECOVERY_UNHEALTHY');
+    if (!this.mfUs1BatchRecovery || (this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error)) blockers.push('E_BATCH_RECOVERY_UNKNOWN');
+    if (this.mfUs1Recovery && Array.isArray(this.mfUs1Recovery.blockedTopicIds) && this.mfUs1Recovery.blockedTopicIds.length) blockers.push('E_BLOCKED_TOPICS');
+    const plan = this.mfUs1MigrationPreviewCache;
+    if (!plan) blockers.push('E_MIGRATION_NOT_PREVIEWED');
+    else if (plan.summary && (plan.summary.migratable > 0 || plan.summary.manualReview > 0 || plan.summary.conflict > 0)) blockers.push('E_MIGRATION_INCOMPLETE');
+    return blockers;
+  }
+
+  async mfUs1ModeMenu() {
+    const modes = await pickFromList(this.app, ['Legacy', 'Shadow', 'Unified（需要激活条件）'], ['legacy', 'shadow', 'unified'], 'MF-US-1 mode');
+    if (!modes) return null;
+    if (modes === 'unified') {
+      const blockers = this.mfUs1ActivationBlockers();
+      new Notice(`Unified 不可激活：${blockers.length ? blockers.join('、') : '缺少生产授权 Token'}。生产写入保持锁定。`, 12000);
+      return { ok: false, mode: this._mfUs1EffectiveMode(), blockers };
+    }
+    this.settings.mf_us1_mode = modes;
+    if (typeof this.saveSettings === 'function') await this.saveSettings();
+    this._mfUs1HostInstance = null;
+    new Notice(`MF-US-1 模式已切换为 ${modes}（Legacy/Shadow 写入行为不变）。`);
+    return { ok: true, mode: modes };
   }
 
   async resumePendingBatches() {

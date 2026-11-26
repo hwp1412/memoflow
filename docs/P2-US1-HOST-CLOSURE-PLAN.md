@@ -451,3 +451,20 @@ test/*.test.js                                      见最终交付报告
 - 剪藏导入、文章拆分、书籍拆分接创建网关（当前 Unified 阻断）。
 - 迁移预检/预览、模式切换 UI、Ledger/Batch 诊断面板。
 - R1 Reset 与 R5 日期迁移保持阻断（已裁决为 Unified 1.0 不支持/并入迁移）。
+
+
+## 第七轮进展（迁移预检 / 模式与诊断 UI）
+
+- **迁移预检（只读）**：菜单「Migration preview (read-only)…」用 `previewMigration()` 生成
+  只读计划（总数/可迁移/需人工/冲突/已迁移 + 示例），不写 Topic、不创建文件；
+  结果缓存供诊断使用。
+- **模式状态与安全切换**：菜单「MF-US-1 mode…」可在 Legacy/Shadow 间切换；
+  选择 Unified 时先计算激活阻断项（transport/recovery/batch/migration/blocked topics），
+  **永远拒绝并说明原因**，不发放 token，不绕过双重门禁。
+- **诊断增强**：诊断菜单新增 Shadow 最近差异、迁移预检摘要。
+- 测试：`1387 pass`（新增 migration-mode-ui 3）。
+
+### 仍未完成（唯一代码缺口）
+- 剪藏导入、文章拆分、书籍拆分仍未接创建网关（Unified 下继续阻断）。
+  - 导入剪藏本质是"已有笔记的 Identity 迁移"，应按 R5 受控迁移流程处理，而不是创建网关。
+  - 文章/书籍拆分需要把 legacy 拆分子笔记的内容构建接到创建网关（含 parent/source/root），未实现。

@@ -50,3 +50,11 @@
 - `G` 是安全兜底，不是 1.0 终态；对应入口仍需以统一事件或受保护写入恢复功能。
 - Mercy 的 Dashboard 过载入口（14）尚未接入新批次执行；菜单入口（13）已接。
 - Dashboard 视图（26）仍需切换到 `buildUnifiedDashboardModel`；会话队列已切。
+
+
+## 迁移/模式 UI（第七轮）
+
+- 迁移预检：`mfUs1MigrationPreview()`（只读计划，`previewMigration`）。
+- 模式切换：`mfUs1ModeMenu()`（Legacy/Shadow 可切；Unified 仅显示阻断原因，fail-closed）。
+- 诊断：`mfUs1Diagnostics()` 增加 Shadow 差异与迁移预检摘要。
+- 仍未接线：`importClipping`（Identity 迁移类）、`splitArticle` / `splitBook`（创建网关类）。
