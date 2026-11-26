@@ -494,3 +494,15 @@ test/*.test.js                                      见最终交付报告
    缺证据的旧批次拒绝 Undo。
 4. **拆分身份校验**：目标路径已存在时，只有具备 `mf_id` + `type=source` + `parent` 指向当前父级的文件
    才视为本次创建结果；否则 `E_IDENTITY_CONFLICT`，不添加链接、不静默跳过。splitBook 同步处理。
+
+## PR #38 最终增量复核修复（相对 648b069）
+
+1. **Boost 证据接线**：`planBoostBatch` 现在把每个节点的 from/to 纳入 batchId（不同绝对计划不再同 id），
+   并预计算确定性 `eventId`（SET_PRIORITY + 原始 revision + today + 目标 priority）；
+   `applyBoostBatch` 在**任何 Topic 写入之前**把 `{targets, eventIds}` 作为 prepared 记录持久化；
+   若已有同 id 记录但 targets 不同 → `E_BATCH_PLAN_CONFLICT`，零写入。
+   `main.js` 的 Boost 执行改用预计算 eventId 的事件描述符；`resumePendingBatches` 传入真实 Ledger。
+2. **拆分身份**：不再用 `.includes(parentTitle)`；要求 parent 精确等于 `[[父级]]`，且文件正文包含本次请求的
+   `<!-- mf-split:<requestId> -->` 创建标记，才视为同一批次的重复创建；否则 `E_IDENTITY_CONFLICT`。
+3. **Mercy Revision 证据**：撤销凭证（revisions）保存失败时在 outcome 标记
+   `revisionEvidencePersisted:false` 并给出明确 Notice；Undo 在缺证据时继续拒绝，不暗示可用。

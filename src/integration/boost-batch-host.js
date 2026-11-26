@@ -96,7 +96,7 @@ function planBoostBatch({ rows, rootTopicId, delta, today, maxPriority = 1 } = {
   // The batch id is a pure digest of the immutable plan (params + sorted node
   // keys), so a retry of the same batch reuses it and an edited batch cannot
   // masquerade as the previous one.
-  const batchId = sha256Hex(stableStringify({
+  const provisionalId = sha256Hex(stableStringify({
     kind: 'BOOST',
     rootTopicId,
     delta,
@@ -107,7 +107,7 @@ function planBoostBatch({ rows, rootTopicId, delta, today, maxPriority = 1 } = {
 
   // Shared protocol: duplicate ids refuse the whole batch; cards and terminal
   // statuses (done / dismissed / container) are skipped before execution.
-  const basePlan = planBatch({ kind: 'BOOST', batchId, today, items: rows });
+  const basePlan = planBatch({ kind: 'BOOST', batchId: provisionalId, today, items: rows });
 
   const runnable = [];
   const skipped = [...basePlan.skipped];
@@ -124,19 +124,53 @@ function planBoostBatch({ rows, rootTopicId, delta, today, maxPriority = 1 } = {
     runnable.push(item);
   }
 
-  const plan = { ...basePlan, items: runnable, skipped };
   const targets = runnable.map(item => {
     const from = observedPriority(item);
-    return {
+    const target = {
       topicId: item.topicId,
       path: item.path,
       basename: item.basename,
       from,
       to: Math.max(maxPriority, from - delta),
     };
+    if (Number.isInteger(item.revision)) target.revision = item.revision;
+    return target;
   });
 
-  return { batchId, today, delta, plan, targets };
+  // The batch identity includes each node's from/to transition, so a different
+  // absolute plan can never reuse (and overwrite) another batch record.
+  const batchId = sha256Hex(stableStringify({
+    kind: 'BOOST',
+    rootTopicId,
+    delta,
+    today,
+    maxPriority,
+    targets: targets.map(target => ({ topicId: target.topicId, from: target.from, to: target.to })),
+  }));
+
+  // Event identities are deterministic and are persisted BEFORE any topic write,
+  // so a crash still lets the ledger prove which events this batch produced.
+  const events = targets.map(target => {
+    if (!Number.isInteger(target.revision) || typeof target.topicId !== 'string') {
+      return { topicId: target.topicId, eventId: null, expectedRevision: target.revision ?? null };
+    }
+    const digest = sha256Hex(JSON.stringify({
+      action: 'SET_PRIORITY',
+      topicId: target.topicId,
+      expectedRevision: target.revision,
+      today,
+      payload: { priority: target.to },
+    }));
+    return {
+      topicId: target.topicId,
+      eventId: `00000000-0000-4000-8000-${digest.slice(0, 12)}`,
+      expectedRevision: target.revision,
+    };
+  });
+
+  const plan = { ...planBatch({ kind: 'BOOST', batchId, today, items: rows }), items: runnable, skipped };
+
+  return { batchId, today, delta, plan, targets, events };
 }
 
 async function saveBatchRecord(save, batchId, record) {
@@ -227,9 +261,31 @@ async function applyBoostBatch({ batch, getPriority, applyItem, store } = {}) {
 
   // Durability first: no target may be written unless the prepared intent was
   // accepted by the store. A store failure is a definite zero-write failure.
+  if (typeof store.getBatch === 'function') {
+    const existing = await store.getBatch(batch.batchId);
+    if (existing && JSON.stringify(existing.targets) !== JSON.stringify(batch.targets)) {
+      return {
+        batchId: batch.batchId,
+        kind: 'BOOST',
+        today: batch.today,
+        status: 'failed',
+        counts: emptyCounts(),
+        results: [],
+        skipped,
+        total: batch.targets.length,
+        durable: false,
+        reason: 'E_BATCH_PLAN_CONFLICT',
+        message: 'an existing batch record has different absolute targets',
+        writesPerformed: false,
+      };
+    }
+  }
+
   const intent = await saveBatchRecord(save, batch.batchId, {
     status: 'prepared',
     targets: batch.targets,
+    // Written before any topic write: the crash-recovery ledger pointer.
+    eventIds: Array.isArray(batch.events) ? batch.events : [],
   });
   if (!intent.ok) {
     return storeFailure(batch, skipped, {
@@ -247,6 +303,7 @@ async function applyBoostBatch({ batch, getPriority, applyItem, store } = {}) {
 
   const writesPerformed = outcome.counts.applied + outcome.counts.duplicate > 0;
   const finalRecord = {
+    eventIds: Array.isArray(batch.events) ? batch.events : [],
     status: outcome.status,
     targets: batch.targets,
     results: outcome.results,

@@ -114,6 +114,10 @@ test('unified boost lowers priorities through per-node events and records the ba
   assert.ok(Number(rootAfter.mf_revision) >= 1, 'written through the event path');
   const batch = Object.values(plugin.__data[BATCH_KEY] || {}).find(item => item.kind === 'BOOST');
   assert.ok(batch, 'boost batch record persisted');
+  assert.ok(Array.isArray(batch.eventIds) && batch.eventIds.length >= 1, 'event identities persisted for recovery');
+  assert.ok(batch.eventIds[0].eventId, 'event id recorded before/with the batch');
+  const ledgerRecords = Object.values(plugin.__ledger.store.dump());
+  assert.ok(ledgerRecords.some(record => record.eventId === batch.eventIds[0].eventId), 'ledger owns the recorded event id');
 });
 
 test('unified COMPLETE / DISMISS use events and never touch learning history', async () => {
@@ -168,4 +172,25 @@ test('mercy undo CASes on the applied revision and conflicts after an external w
   assert.equal(result.counts.conflict, 1, JSON.stringify(result.counts));
   assert.notEqual(result.status, 'applied');
   assert.equal(app.vault.readContent(file), beforeUndo, 'undo writes nothing after an external change');
+});
+
+
+test('a failed revision-evidence save is surfaced and undo stays blocked', async () => {
+  const { plugin, app } = await harness();
+  const file = addTopic(app, 'Sources/U2.md', uuid(12));
+  const store = plugin.mfUs1BatchStore;
+  const original = store.saveBatch.bind(store);
+  let saves = 0;
+  store.saveBatch = async record => {
+    saves += 1;
+    if (saves === 3) return { ok: false, code: 'E_SAVE' };
+    return original(record);
+  };
+  const outcome = await plugin.mercy();
+  assert.equal(outcome.revisionEvidencePersisted, false);
+  assert.match(getNotices(app).join('\n'), /撤销凭证保存失败/);
+  const before = app.vault.readContent(file);
+  const undo = await plugin.mercyUndoLast();
+  assert.equal(undo.status, 'blocked');
+  assert.equal(app.vault.readContent(file), before);
 });

@@ -140,7 +140,7 @@ test('a previously created child is a legitimate duplicate on re-run', async () 
     parent: '[[Article]]',
     mf_id: uuid(21),
     mf_revision: 0,
-  }, '# saved intro\n');
+  }, '\n<!-- mf-split:split-article:Sources/Article.md:Intro -->\n');
   const result = await plugin.splitArticle();
   assert.equal(result.failed, 0, JSON.stringify(result));
   assert.equal(app.vault.createCalls.length, 1, 'only Body is newly created');
@@ -158,4 +158,28 @@ test('book split treats a same-named unrelated chapter as an identity conflict',
   assert.ok(result.failed >= 1, JSON.stringify(result));
   assert.ok(result.failures.join(' ').includes('E_IDENTITY_CONFLICT'));
   assert.equal(app.vault.createCalls.length, 1, 'only the genuinely new chapter is created');
+});
+
+
+test('a child of another parent is not a duplicate of this split', async () => {
+  const { plugin, app } = setup('unified');
+  plugin.__mfUs1CreationAuthorization = issueSyntheticCreationAuthorization();
+  makeFile(app, 'Sources/Article - Intro.md', {
+    type: 'source', status: 'active', parent: '[[Other Article]]', mf_id: uuid(22), mf_revision: 0,
+  }, '\n<!-- mf-split:split-article:Sources/Article.md:Intro -->\n');
+  const result = await plugin.splitArticle();
+  assert.ok(result.failed >= 1, JSON.stringify(result));
+  assert.ok(result.failures.join(' ').includes('E_IDENTITY_CONFLICT'));
+  assert.equal(app.vault.createCalls.length, 1);
+});
+
+test('same parent and mf_id without the creation marker is still a conflict', async () => {
+  const { plugin, app } = setup('unified');
+  plugin.__mfUs1CreationAuthorization = issueSyntheticCreationAuthorization();
+  makeFile(app, 'Sources/Article - Intro.md', {
+    type: 'source', status: 'active', parent: '[[Article]]', mf_id: uuid(23), mf_revision: 0,
+  }, '# unrelated content, no creation marker\n');
+  const result = await plugin.splitArticle();
+  assert.ok(result.failed >= 1, JSON.stringify(result));
+  assert.ok(result.failures.join(' ').includes('E_IDENTITY_CONFLICT'));
 });

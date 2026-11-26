@@ -4151,6 +4151,7 @@ class IncrementalReadingPlugin extends Plugin {
           type: projected.type,
           status: projected.status,
           priority: projected.priority,
+          revision: projected.revision,
         };
       });
       batch = planBoostBatch({ rows: items, rootTopicId: r.fm.mf_id, delta, today: this._todayKey() });
@@ -4162,15 +4163,40 @@ class IncrementalReadingPlugin extends Plugin {
     const ok = await confirmDialog(this.app, 'Boost 优先级', `将对 ${batch.targets.length} 个主题各提交一次 SET_PRIORITY（绝对目标值），确认执行？`);
     if (!ok) return null;
     const rowsByPath = new Map(this.getIRRows().map(row => [row.tfile.path, row]));
+    const eventById = new Map((batch.events || []).map(event => [event.topicId, event]));
+    const today = this._todayKey();
     const outcome = await applyBoostBatch({
       batch,
       getPriority: async node => Number((rowsByPath.get(node.path) || {}).fm?.priority) || 50,
       applyItem: async (node, change) => {
         const file = this.app.vault.getAbstractFileByPath(node.path);
         if (!file) return { status: 'failed', reason: 'E_FILE_MISSING' };
-        return this.setPriorityFile(file, change.priority, { quiet: true });
+        const plannedEvent = eventById.get(node.topicId);
+        if (!plannedEvent || !plannedEvent.eventId) {
+          // Without a durable event identity the batch can never prove what it
+          // wrote after a crash: refuse instead of emitting an anonymous event.
+          return { status: 'blocked', reason: 'E_BOOST_EVENT_ID_REQUIRED' };
+        }
+        try {
+          const outcome = await this._mfUs1RunLegacy({
+            action: 'SET_PRIORITY',
+            eventId: plannedEvent.eventId,
+            topicId: node.topicId,
+            expectedRevision: plannedEvent.expectedRevision,
+            today,
+            calendarDate: today,
+            payload: { priority: change.priority },
+            path: node.path,
+          });
+          return outcome || { status: 'failed', reason: 'E_BOOST_WRITE_FAILED' };
+        } catch (error) {
+          return { status: 'failed', reason: (error && error.code) || 'E_BOOST_WRITE_FAILED' };
+        }
       },
-      store: { save: (batchId, record) => this.mfUs1BatchStore.saveBatch({ batchId, kind: 'BOOST', ...record }) },
+      store: {
+        getBatch: batchId => this.mfUs1BatchStore.getBatch(batchId),
+        save: (batchId, record) => this.mfUs1BatchStore.saveBatch({ batchId, kind: 'BOOST', ...record }),
+      },
     });
     const report = describeBoostOutcome(outcome);
     new Notice(report.message, report.nonAtomic ? 14000 : 7000);
@@ -4311,10 +4337,14 @@ class IncrementalReadingPlugin extends Plugin {
       // them so an external scheduler write is a conflict, not a silent undo.
       const record = await this.mfUs1BatchStore.getBatch(outcome.batchId);
       if (record) {
-        await this.mfUs1BatchStore.saveBatch({
+        const saved = await this.mfUs1BatchStore.saveBatch({
           ...record,
           revisions: [...appliedRevisions.entries()].map(([topicId, revision]) => ({ topicId, revision })),
         });
+        outcome.revisionEvidencePersisted = Boolean(saved && saved.ok);
+        if (!saved || !saved.ok) {
+          new Notice('Mercy 已应用，但撤销凭证保存失败；Undo 不可用，请核对批次记录后再操作。', 14000);
+        }
       }
     }
     const report = describeMercyOutcome(outcome);
@@ -4407,6 +4437,7 @@ class IncrementalReadingPlugin extends Plugin {
       const outcome = await resumeBatch({
         store: this.mfUs1BatchStore,
         batchId: batch.batchId,
+        ledger: this.mfUs1AsyncLifecycle ? this.mfUs1AsyncLifecycle.ledger : null,
         authorization: this.__mfUs1ResumeAuthorization || null,
         readTopic: async topicId => {
           const row = this._mfUs1RowByTopicId(topicId);
@@ -6673,14 +6704,15 @@ tags:
 ${sectionBody}
 `;
       const p = `${folder}/${noteTitle}.md`;
+      const requestId = `split-article:${active.path}:${h.title}`;
       if (!this.app.vault.getAbstractFileByPath(p)) {
         const created = await this._mfUs1CreateSplitNote({
           path: p,
-          content: noteContent,
+          content: `${noteContent}\n<!-- mf-split:${requestId} -->\n`,
           kind: 'source',
           priority,
           parentFile: active,
-          requestId: `split-article:${active.path}:${h.title}`,
+          requestId,
         });
         if (created.status === 'applied' || created.status === 'duplicate' || created.status === 'created') {
           links.push(`- [[${noteTitle}]]`);
@@ -6690,11 +6722,15 @@ ${sectionBody}
       } else {
         const existing = this.app.vault.getAbstractFileByPath(p);
         const existingFm = existing ? getFm(this.app, existing) : null;
-        const looksLikeCreatedChild = existingFm
-          && typeof existingFm.mf_id === 'string'
-          && existingFm.mf_id
-          && existingFm.type === 'source'
-          && String(existingFm.parent || '').includes(parentTitle);
+        let looksLikeCreatedChild = false;
+        if (existingFm && typeof existingFm.mf_id === 'string' && existingFm.mf_id && existingFm.type === 'source') {
+          // Exact Phase 1 parent relation, not a substring match.
+          const parentLink = String(existingFm.parent || '').trim();
+          if (parentLink === `[[${parentTitle}]]` || parentLink === JSON.stringify(`[[${parentTitle}]]`)) {
+            const existingText = await this.app.vault.read(existing);
+            looksLikeCreatedChild = existingText.includes(`<!-- mf-split:${requestId} -->`);
+          }
+        }
         if (!unified || looksLikeCreatedChild) {
           links.push(`- [[${noteTitle}]]`);
         } else {
@@ -6792,14 +6828,18 @@ ${sectionBody}
       const safeTitle = slugifyForFolder(ch.title) || `Chapter ${i + 1}`;
       const name = slugifyForFolder(`${parentTitle} - Ch${num} ${safeTitle}`);
       const path = `${folder}/${name}.md`;
+      const requestId = `split-book:${active.path}:${i + 1}:${ch.title}`;
       const existingChapter = this.app.vault.getAbstractFileByPath(path);
       if (existingChapter) {
         const existingFm = getFm(this.app, existingChapter);
-        const looksLikeCreatedChapter = existingFm
-          && typeof existingFm.mf_id === 'string'
-          && existingFm.mf_id
-          && existingFm.type === 'source'
-          && String(existingFm.parent || '').includes(parentTitle);
+        let looksLikeCreatedChapter = false;
+        if (existingFm && typeof existingFm.mf_id === 'string' && existingFm.mf_id && existingFm.type === 'source') {
+          const parentLink = String(existingFm.parent || '').trim();
+          if (parentLink === `[[${parentTitle}]]` || parentLink === JSON.stringify(`[[${parentTitle}]]`)) {
+            const existingText = await this.app.vault.read(existingChapter);
+            looksLikeCreatedChapter = existingText.includes(`<!-- mf-split:${requestId} -->`);
+          }
+        }
         if (!unified || looksLikeCreatedChapter) { skipped.push(name); continue; }
         failures.push(`${ch.title}:E_IDENTITY_CONFLICT`);
         continue;
@@ -6848,11 +6888,11 @@ tags:
       if (unified) {
         const createdNote = await this._mfUs1CreateSplitNote({
           path,
-          content,
+          content: `${content}\n<!-- mf-split:${requestId} -->\n`,
           kind: 'source',
           priority,
           parentFile: active,
-          requestId: `split-book:${active.path}:${i + 1}:${ch.title}`,
+          requestId,
         });
         if (createdNote.status === 'applied' || createdNote.status === 'duplicate' || createdNote.status === 'created') {
           created++;
