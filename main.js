@@ -2895,6 +2895,7 @@ class IncrementalReadingPlugin extends Plugin {
     this.mfUs1Lifecycle = null;
     this.mfUs1AsyncLifecycle = null;
     this.mfUs1Recovery = null;
+    this.mfUs1Suspended = false;
     try {
       const { initializeHostLifecycle } = require('./src/integration/host-lifecycle.js');
       this.mfUs1Lifecycle = await initializeHostLifecycle({
@@ -3887,7 +3888,14 @@ class IncrementalReadingPlugin extends Plugin {
       const transport = this._mfUs1TransportInfo().transport;
       this._mfUs1HostInstance = createHostSchedulerService({
         getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
-        unified: typeof transport === 'function' ? descriptor => transport(this._mfUs1UnifiedRequest(descriptor)) : null,
+        unified: typeof transport === 'function'
+          ? descriptor => {
+            if (this.mfUs1Suspended) {
+              throw Object.assign(new Error('Unified authorization was revoked'), { code: 'E_UNIFIED_NOT_AUTHORIZED' });
+            }
+            return transport(this._mfUs1UnifiedRequest(descriptor));
+          }
+          : null,
         shadowObserver: (descriptor) => this._mfUs1ShadowObserve(descriptor),
       });
     }
@@ -4234,6 +4242,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mercyUnified({ windowDays = null } = {}) {
+    if (this.mfUs1Suspended) { new Notice('Unified 授权已撤销；Mercy 写入被拒绝。', 12000); return { status: 'blocked', reason: 'E_UNIFIED_NOT_AUTHORIZED' }; }
     this._mfUs1RefreshRows();
     const { buildMercyPreview, confirmMercyPreview, applyMercyHost, describeMercyOutcome } = require('./src/integration/mercy-host.js');
     const { projectTopic, toQueueTopic } = require('./src/integration/topic-projection.js');
@@ -4486,6 +4495,8 @@ class IncrementalReadingPlugin extends Plugin {
         }
         : { present: false },
       authorized: coordinator.isAuthorized(),
+      suspended: this.mfUs1Suspended === true,
+      unresolved: this._mfUs1UnresolvedState ? this._mfUs1UnresolvedState() : null,
       session: coordinator.currentSession(),
     };
   }
@@ -4504,6 +4515,8 @@ class IncrementalReadingPlugin extends Plugin {
       transportAvailable: status.transport.available,
       runtime: status.runtime,
       authorized: status.authorized,
+      suspended: status.suspended === true,
+      unresolved: status.unresolved || null,
       migrationPreviewed: Boolean(this.mfUs1MigrationPreviewCache),
       recoveryHealthy: status.evidence.recoveryHealthy,
       batchRecoveryError: status.evidence.batchRecoveryError,
@@ -4532,31 +4545,72 @@ class IncrementalReadingPlugin extends Plugin {
       capability: issueSyntheticUnifiedCapability(),
     });
     this.settings.mf_us1_mode = 'unified';
+    this.mfUs1Suspended = false;
+    this.__mfUs1SuspendedNotified = null;
     if (typeof this.saveSettings === 'function') await this.saveSettings();
     new Notice('Unified 已激活（会话级授权）；可随时撤销。', 12000);
     return { ok: true, session: coordinator.currentSession() };
   }
 
-  async mfUs1RevokeActivation() {
+  _mfUs1UnresolvedState() {
     const evidence = this._mfUs1ActivationEvidence();
-    const pendingBatch = this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary
-      ? Number(this.mfUs1BatchRecovery.summary.manual || 0) + Number(this.mfUs1BatchRecovery.summary.pending || 0)
-      : 0;
-    if ((evidence.pendingEvents || []).length || evidence.blockedTopicIds.length || pendingBatch > 0) {
-      // Never silently fall back to Legacy writes with unresolved authority.
-      new Notice('撤销被拒绝：存在未决事件/批次或阻断 Topic。请先完成恢复核验，保留现场。', 15000);
-      return { ok: false, reason: 'E_RECOVERY_PENDING' };
+    const summary = (this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary) || {};
+    const pendingBatch = Number(summary.manual || 0) + Number(summary.pending || 0) + Number(summary.uncertain || 0);
+    const pendingEvents = (evidence.pendingEvents || []).length;
+    const blockedTopics = (evidence.blockedTopicIds || []).length;
+    return {
+      pendingEvents,
+      pendingBatch,
+      blockedTopics,
+      unsafe: pendingEvents > 0 || pendingBatch > 0 || blockedTopics > 0,
+    };
+  }
+
+  // Emergency action #1: revoke the capability immediately. This only touches
+  // in-memory authorization state: it never writes a Topic, the Ledger or a
+  // Batch record.
+  async mfUs1RevokeUnifiedAuthorization() {
+    const coordinator = this._mfUs1ActivationCoordinator();
+    const revoked = coordinator.revoke();
+    this.mfUs1Suspended = true;
+    this._mfUs1HostInstance = null;
+    new Notice('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
+    return { ok: true, tokenRevoked: true, hadSession: revoked.revoked, suspended: true };
+  }
+
+  // Emergency action #2: switch back to Legacy. Only allowed when no unresolved
+  // events/batches/blocks remain; otherwise Legacy scheduling writes stay blocked.
+  async mfUs1SwitchToLegacy() {
+    const state = this._mfUs1UnresolvedState();
+    if (state.unsafe) {
+      const coordinator = this._mfUs1ActivationCoordinator();
+      coordinator.revoke();
+      this.mfUs1Suspended = true;
+      this._mfUs1HostInstance = null;
+      new Notice(
+        `无法切回 Legacy：未决事件 ${state.pendingEvents} / 未决批次 ${state.pendingBatch} / 阻断 Topic ${state.blockedTopics}。`
+        + '已保持写入阻断并保留现场，请先完成恢复核验。',
+        15000,
+      );
+      return { ok: false, reason: 'E_RECOVERY_PENDING', legacyWritesBlocked: true, state };
     }
     const coordinator = this._mfUs1ActivationCoordinator();
     coordinator.revoke();
+    this.mfUs1Suspended = false;
+    this.__mfUs1SuspendedNotified = null;
     const storage = this.mfUs1HostStorage;
     if (storage) {
       await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'legacy', conditions: {}, authorization: null });
     }
     this.settings.mf_us1_mode = 'legacy';
     if (typeof this.saveSettings === 'function') await this.saveSettings();
-    new Notice('Unified 授权已撤销；已核对无未决项，恢复 Legacy。', 12000);
-    return { ok: true };
+    new Notice('已核对无未决项：授权已撤销并切回 Legacy。', 12000);
+    return { ok: true, mode: 'legacy' };
+  }
+
+  // Backwards-compatible name used by earlier tests: switch semantics.
+  async mfUs1RevokeActivation() {
+    return this.mfUs1SwitchToLegacy();
   }
 
   async mfUs1ModeMenu() {
@@ -4565,9 +4619,21 @@ class IncrementalReadingPlugin extends Plugin {
     if (modes === 'unified') {
       return this.mfUs1ActivateUnified();
     }
+    if (this.mfUs1Suspended) {
+      const state = this._mfUs1UnresolvedState();
+      if (state.unsafe) {
+        new Notice('Legacy/Shadow 调度写入保持阻断：存在未决事件/批次或阻断 Topic，需先完成恢复核验。', 15000);
+        return { ok: false, reason: 'E_RECOVERY_PENDING', legacyWritesBlocked: true, state };
+      }
+      this.mfUs1Suspended = false;
+      this.__mfUs1SuspendedNotified = null;
+    }
     this.settings.mf_us1_mode = modes;
-    if (typeof this.saveSettings === 'function') await this.saveSettings();
     this._mfUs1HostInstance = null;
+    if (this.mfUs1HostStorage) {
+      await this._mfUs1RebuildAsyncLifecycle({ storage: this.mfUs1HostStorage, mode: modes, conditions: {}, authorization: null });
+    }
+    if (typeof this.saveSettings === 'function') await this.saveSettings();
     new Notice(`MF-US-1 模式已切换为 ${modes}（Legacy/Shadow 写入行为不变）。`);
     return { ok: true, mode: modes };
   }
@@ -4594,6 +4660,10 @@ class IncrementalReadingPlugin extends Plugin {
     const { resumeBatch } = require('./src/integration/batch-resume.js');
     if (this._mfUs1EffectiveMode() !== 'unified') {
       new Notice('批次恢复只在 Unified 模式可用。');
+      return null;
+    }
+    if (this.mfUs1Suspended) {
+      new Notice('Unified 授权已撤销；批次恢复被拒绝。', 12000);
       return null;
     }
     if (!this.mfUs1BatchStore || !this.mfUs1AdminWriter) {
@@ -4725,6 +4795,16 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   _mfUs1GuardLegacyWrite(feature) {
+    if (this.mfUs1Suspended) {
+      // Emergency revoke: Legacy scheduling writes stay blocked until the owner
+      // explicitly switches back after recovery checks.
+      if (!this.__mfUs1SuspendedNotified) this.__mfUs1SuspendedNotified = new Set();
+      if (!this.__mfUs1SuspendedNotified.has(feature)) {
+        this.__mfUs1SuspendedNotified.add(feature);
+        new Notice(`写入已暂停：Unified 授权已撤销且存在未决状态，「${feature}」未执行。`, 12000);
+      }
+      return true;
+    }
     const { guardLegacySchedulingWrite } = require('./src/integration/host-write-guard.js');
     const verdict = guardLegacySchedulingWrite(this, feature);
     if (verdict.blocked && verdict.first) new Notice(verdict.message, 9000);
@@ -4905,6 +4985,10 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async _mfUs1CreateTopicFromHost({ requestId, kind, priority, parentFile = null, path, content }) {
+    if (this.mfUs1Suspended) {
+      new Notice('Unified 授权已撤销；创建被拒绝（未写入）。', 12000);
+      return { handled: true, outcome: { status: 'blocked', reason: 'E_UNIFIED_NOT_AUTHORIZED' } };
+    }
     const authorization = this._mfUs1CreationAuthorization();
     if (!authorization) {
       if (this._mfUs1EffectiveMode() === 'unified') {

@@ -117,3 +117,31 @@ scripts/build.mjs                                 成功；dist 含 ACTIVATION_N
 
 未启动 Obsidian 实机；未访问/创建真实 Vault、`MemoFlow-Test`、`phase2 test`；未执行真实迁移；
 未启用生产 Unified（无 approval provider，无 token 签发）；未创建或合并 PR；未改写历史。
+
+
+## 10. 审查修复（f90da41 之后）：撤销与回退分离
+
+原实现把「撤销授权」与「切回 Legacy」合并，存在安全缺陷：出现 uncertain/未决批次时拒绝撤销会让已签发 Token 继续有效。
+
+现已拆分为两个动作：
+
+1. **`mfUs1RevokeUnifiedAuthorization()`（立即撤销能力）**
+   - 立即 `coordinator.revoke()` 使会话 Token 失效，设置 `mfUs1Suspended=true`；
+   - 不重建 lifecycle、不写 Topic、不写 Ledger、不写 Batch（现场完全保持）；
+   - Host Service 的 unified transport 在暂停态直接抛 `E_UNIFIED_NOT_AUTHORIZED`；
+   - Mercy / 创建网关 / 批次 Resume 等独立 Unified 入口同样在暂停态拒绝；
+   - 模式保持 `unified`（不会静默回退 Legacy）。
+2. **`mfUs1SwitchToLegacy()`（回退）**
+   - 先计算未决状态（未决事件 / 未决批次 / 阻断 Topic）；
+   - 存在未决项：**拒绝回退**，保持 `mfUs1Suspended`，Legacy 调度写入由 guard 阻断（保留现场，等待恢复核验）；
+   - 无未决项：撤销 Token、解除暂停、重建 legacy lifecycle、写 `mf_us1_mode='legacy'`。
+3. `mfUs1RevokeActivation()` 保留为 `mfUs1SwitchToLegacy()` 的兼容别名。
+
+重新激活必须重新审批：协调器 `revoke()` 后会话为空，`mfUs1ActivateUnified()` 会再次调用 approval provider；
+测试用一次性 approval 证明撤销后的 Token 不可复用、恢复健康也不会自动重新激活。
+
+合成能力签发审计：`issueSyntheticUnifiedCapability()` 只在 `mfUs1ActivateUnified()` 的批准分支内调用；
+模式菜单/设置路径不包含任何 token 或 approval provider 赋值（静态测试断言）。
+
+新增测试（3 项）：紧急撤销后 Token 失效、Topic/Ledger 零修改、Legacy 写入阻断；
+恢复后必须重新审批且不复用旧 Token；菜单无法绕过审批签发合成能力。
