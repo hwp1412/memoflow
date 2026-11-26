@@ -8,8 +8,12 @@ const assert = require('node:assert/strict');
 const { createPlugin, makeFile, makeSettings } = require('./helpers/obsidian-mock.js');
 const { uuid } = require('./helpers/unified-fixtures.js');
 const { buildModel } = require('../src/data/model.js');
+const dateCore = require('../date-core.js');
 
-const TODAY = '2026-11-27';
+// Timezone-independent: the dashboard always works with the runtime's "today".
+const TODAY = dateCore.formatDate(new Date(), 'YYYY-MM-DD');
+const FUTURE = dateCore.formatDate(new Date(Date.now() + 33 * 86400000), 'YYYY-MM-DD');
+const PAST = dateCore.formatDate(new Date(Date.now() - 330 * 86400000), 'YYYY-MM-DD');
 
 function fmBase(id, overrides = {}) {
   return {
@@ -27,9 +31,9 @@ test('unified dashboard uses mf_ideal_due and excludes legacy-only notes', async
   // Due under MF-US-1 (ideal due = today) although next_review is in the past.
   const due = makeFile(app, 'Sources/Due.md', fmBase(uuid(1)), '# due\n');
   // Not due under MF-US-1 (ideal due far future) although next_review is long past.
-  makeFile(app, 'Sources/Later.md', fmBase(uuid(2), { mf_ideal_due: '2026-12-30', next_review: '2026-01-01' }), '# later\n');
+  makeFile(app, 'Sources/Later.md', fmBase(uuid(2), { mf_ideal_due: FUTURE, next_review: PAST }), '# later\n');
   // Legacy-only note: must be excluded from the unified dashboard queue.
-  makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, next_review: '2026-11-01' }, '# legacy\n');
+  makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, next_review: PAST }, '# legacy\n');
 
   const model = await buildModel({ plugin });
   assert.equal(model.mode, 'unified');
@@ -46,7 +50,7 @@ test('unified dashboard uses mf_ideal_due and excludes legacy-only notes', async
 test('a not_before later than today keeps the topic out of the unified queue', async () => {
   const { plugin, app } = createPlugin({ settings: makeSettings() });
   plugin.settings.mf_us1_mode = 'unified';
-  makeFile(app, 'Sources/Delayed.md', fmBase(uuid(3), { mf_not_before: '2026-12-10' }), '# delayed\n');
+  makeFile(app, 'Sources/Delayed.md', fmBase(uuid(3), { mf_not_before: FUTURE }), '# delayed\n');
   const model = await buildModel({ plugin });
   assert.deepEqual(model.queue.map(item => item.path), []);
 });
@@ -54,7 +58,7 @@ test('a not_before later than today keeps the topic out of the unified queue', a
 test('legacy mode keeps the legacy selector queue and does not expose unified metadata', async () => {
   const { plugin, app } = createPlugin({ settings: makeSettings() });
   plugin.settings.mf_us1_mode = 'legacy';
-  const legacy = makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, next_review: '2026-11-01' }, '# legacy\n');
+  const legacy = makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, next_review: PAST }, '# legacy\n');
   const model = await buildModel({ plugin });
   assert.equal(model.mode, 'legacy');
   assert.equal(model.unified, null);

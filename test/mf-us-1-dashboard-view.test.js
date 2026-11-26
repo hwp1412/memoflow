@@ -7,7 +7,9 @@ const assert = require('node:assert/strict');
 const { createPlugin, makeFile, makeSettings } = require('./helpers/obsidian-mock.js');
 const { uuid } = require('./helpers/unified-fixtures.js');
 const Module = require('node:module');
-const TODAY = '2026-11-27';
+const dateCore = require('../date-core.js');
+const TODAY = dateCore.formatDate(new Date(), 'YYYY-MM-DD');
+const FUTURE = dateCore.formatDate(new Date(Date.now() + 33 * 86400000), 'YYYY-MM-DD');
 
 // dashboard-view is the only module in this chain that requires 'obsidian'.
 function loadViewClass() {
@@ -60,7 +62,7 @@ test('the real dashboard view refresh uses the unified authoritative model', asy
   const { plugin, app } = createPlugin({ settings: makeSettings() });
   plugin.settings.mf_us1_mode = 'unified';
   const due = makeFile(app, 'Sources/Due.md', topicFm(uuid(1), { mf_ideal_due: TODAY, priority: 30 }), '# due\n');
-  const later = makeFile(app, 'Sources/Later.md', topicFm(uuid(2), { mf_ideal_due: '2026-12-20', priority: 10 }), '# later\n');
+  const later = makeFile(app, 'Sources/Later.md', topicFm(uuid(2), { mf_ideal_due: FUTURE, priority: 10 }), '# later\n');
   makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, next_review: '2026-01-01' }, '# legacy\n');
 
   const view = makeView(plugin, app);
