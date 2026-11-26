@@ -284,3 +284,21 @@ Card 无 `mf_*`、Ledger applied 记录对应真实 Topic、Batch（Boost eventI
 
 1. **Mercy 在激活后被阻断**（`E_UNIFIED_NOT_AUTHORIZED`）：激活只给 runtime 签发 token，`mfUs1AdminWriter` 仍无授权。已修复：激活时把会话 token 交给受保护 Writer → 真机 Mercy 3/3 applied、Undo 通过。
 2. **子树写入顺序**：根先写导致子节点的 parent-hash 前置条件失效（`E_SUBTREE_CHANGED`）。已改为按 `mf_parent_id`（兼容 legacy parent/source 链接）计算深度、**最深节点先写**；Mock 测试 1450 全绿，但真机本轮仍观察到根先写（待确认构建/路径），Subtree 实机标记未验证。
+
+
+## 22. Subtree 真机诊断结论（E2E-only 诊断）
+
+在 E2E 构建里临时暴露 `plan.nodes` 顺序后，真实 Obsidian 1.15.1 输出：
+
+```
+plan order = [E2(order 0), E1(order 1), S(order 2)]     ← 最深优先已正确生效
+result     = E2 conflict/E_SUBTREE_CHANGED, E1 conflict/E_SUBTREE_CHANGED, S applied
+```
+
+因此 **排序已正确，失败原因不是写入顺序**，而是 `expectations.relationKey` 的前置条件语义：
+它会在写入时校验父子/来源关系，而在子树批处理中该校验对批内节点产生了假冲突。
+Mock 测试未覆盖真实 MetadataCache 的 link 解析差异。
+
+下一步（未完成，不标记通过）：阅读 `_mfUs1VerifySubtreeNode` 与 CAS adapter 中
+`expectations.relationKey` 的实际比较对象，区分“父文件字节变化”（批内合法）与“目标自身父/源被外部移动”（必须阻断），
+再决定是调整期望值格式还是用批内成员集合豁免；需要真机再验证。

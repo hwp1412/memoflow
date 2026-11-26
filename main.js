@@ -6164,6 +6164,14 @@ class IncrementalReadingPlugin extends Plugin {
       new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
       return { status: 'refused', reason: error.code || 'E_SUBTREE_PLAN' };
     }
+    if (typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true) {
+      // E2E-only diagnostic: expose the planned write order so a real-device run
+      // can prove whether the deepest-first ordering reached the runner.
+      this.mfUs1LastSubtreePlan = {
+        nodes: (plan.nodes || []).map(node => ({ basename: node.basename, topicId: node.topicId, order: node.order })),
+        skipped: (plan.skipped || []).map(node => node.basename),
+      };
+    }
     const outcome = await runSubtreePostpone({
       plan,
       verifyNode: node => this._mfUs1VerifySubtreeNode(node),
