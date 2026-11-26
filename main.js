@@ -4680,6 +4680,10 @@ class IncrementalReadingPlugin extends Plugin {
     let outcome;
     try {
       const plan = planTopicCreation({ requestId, kind, priority, parentId, rootId, today });
+      if (kind === 'source' && plan.topic && !plan.topic.mf_root_id) {
+        // A standalone source is its own root.
+        plan.topic.mf_root_id = plan.topic.mf_id;
+      }
       const composed = composeCreationContent({
         content,
         topic: plan.topic,
@@ -4715,6 +4719,18 @@ class IncrementalReadingPlugin extends Plugin {
       mode: { mode: this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy' },
       dateFormat,
     });
+  }
+
+  async _mfUs1CreateSplitNote({ path, content, kind, priority, parentFile, requestId }) {
+    if (this._mfUs1EffectiveMode() !== 'unified') {
+      await this.app.vault.create(path, content);
+      return { status: 'created', path };
+    }
+    const creation = await this._mfUs1CreateTopicFromHost({ requestId, kind, priority, parentFile, path, content });
+    if (!creation || creation.handled === false) return { status: 'failed', reason: 'E_CREATION_NOT_ROUTED' };
+    const outcome = creation.outcome || {};
+    if (outcome.status === 'applied' || outcome.status === 'duplicate') return { status: outcome.status, path };
+    return { status: outcome.status || 'failed', reason: outcome.reason || outcome.status };
   }
 
   async _gradeTopic(file, fm, today) {
@@ -6249,6 +6265,10 @@ ${body}
   }
 
   async importClipping() {
+    if (this._mfUs1EffectiveMode() === 'unified') {
+      new Notice('Unified 下不隐式接管已有笔记。请先使用「Migration preview / 迁移」。', 10000);
+      return { status: 'blocked', reason: 'E_IMPORT_IS_IDENTITY_MIGRATION' };
+    }
     if (this._mfUs1GuardLegacyWrite('导入剪藏')) return null;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') {
@@ -6558,13 +6578,18 @@ ${body}
   // ---- Splits ------------------------------------------------------------
 
   async splitArticle() {
-    if (this._mfUs1GuardLegacyWrite('拆分文章')) return null;
+    const unified = this._mfUs1EffectiveMode() === 'unified';
+    if (!unified && this._mfUs1GuardLegacyWrite('拆分文章')) return null;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') { new Notice('Open a source note.'); return; }
     const fm = getFm(this.app, active);
     if (!fm || fm.type !== 'source') { new Notice('Not a source.'); return; }
     if (fm.source_type !== 'article') { new Notice('Articles only — books use Split Book.'); return; }
     if (fm.status === 'container') { new Notice('Already split.'); return; }
+    if (unified && (typeof fm.mf_id !== 'string' || !fm.mf_id)) {
+      new Notice('Unified：该来源尚未迁移（缺少 mf_id），请先执行迁移。', 9000);
+      return null;
+    }
 
     const content = await this.app.vault.read(active);
     const fmEnd = content.indexOf('\n---', 3);
@@ -6586,6 +6611,7 @@ ${body}
     const baseInterval = priorityToInterval(priority);
     const folder = active.parent.path;
     const links = [];
+    const failures = [];
 
     for (let i = 0; i < selected.length; i++) {
       const h = selected[i];
@@ -6616,25 +6642,53 @@ ${sectionBody}
 `;
       const p = `${folder}/${noteTitle}.md`;
       if (!this.app.vault.getAbstractFileByPath(p)) {
-        await this.app.vault.create(p, noteContent);
+        const created = await this._mfUs1CreateSplitNote({
+          path: p,
+          content: noteContent,
+          kind: 'source',
+          priority,
+          parentFile: active,
+          requestId: `split-article:${active.path}:${h.title}`,
+        });
+        if (created.status === 'applied' || created.status === 'duplicate' || created.status === 'created') {
+          links.push(`- [[${noteTitle}]]`);
+        } else {
+          failures.push(`${noteTitle}:${created.status}${created.reason ? `/${created.reason}` : ''}`);
+        }
+      } else {
+        links.push(`- [[${noteTitle}]]`);
       }
-      links.push(`- [[${noteTitle}]]`);
+    }
+
+    if (failures.length) {
+      new Notice(`拆分部分失败 ${links.length}/${selected.length}：${failures.slice(0, 3).join('；')}。未修改父来源状态，可重试。`, 14000);
+      return { created: links.length, failed: failures.length, failures };
     }
 
     const subSection = `\n## Sub-topics\n\n${links.join('\n')}\n`;
     const bodyWithoutOld = content.replace(/\n## Sub-topics[\s\S]*?(?=\n## |$)/, '');
     await this.app.vault.process(active, () => bodyWithoutOld + subSection);
-    await this.app.fileManager.processFrontMatter(active, (fmw) => { fmw.status = 'container'; });
+    if (!unified) {
+      await this.app.fileManager.processFrontMatter(active, (fmw) => { fmw.status = 'container'; });
+    } else {
+      new Notice('Unified：父来源状态未直接改写（container 需迁移/事件处理）。', 9000);
+    }
     new Notice(`Split into ${selected.length} sub-topic${selected.length === 1 ? '' : 's'}.`);
+    return { created: links.length, failed: 0 };
   }
 
   async splitBook() {
-    if (this._mfUs1GuardLegacyWrite('拆分书籍')) return null;
+    const unified = this._mfUs1EffectiveMode() === 'unified';
+    if (!unified && this._mfUs1GuardLegacyWrite('拆分书籍')) return null;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') { new Notice('Open a book source note.'); return; }
     const fm = getFm(this.app, active);
     if (!fm || fm.type !== 'source') { new Notice('Not a source.'); return; }
     if (fm.status === 'container') { new Notice('Already a container.'); return; }
+    if (unified && (typeof fm.mf_id !== 'string' || !fm.mf_id)) {
+      new Notice('Unified：该书籍尚未迁移（缺少 mf_id），请先执行迁移。', 9000);
+      return null;
+    }
     if (fm.source_type !== 'book' && fm.source_type !== 'pdf') {
       const cont = await confirmDialog(this.app, "Not a book/PDF — proceed anyway?");
       if (!cont) return;
@@ -6684,6 +6738,7 @@ ${sectionBody}
     const folder = this.sourcesFolder();
     await ensureFolder(this.app, folder);
     let created = 0;
+    const failures = [];
     const skipped = [];
 
     for (let i = 0; i < chapters.length; i++) {
@@ -6734,14 +6789,38 @@ tags:
 ## Extracts
 
 `;
-      await this.app.vault.create(path, content);
-      created++;
+      if (unified) {
+        const createdNote = await this._mfUs1CreateSplitNote({
+          path,
+          content,
+          kind: 'source',
+          priority,
+          parentFile: active,
+          requestId: `split-book:${active.path}:${i + 1}:${ch.title}`,
+        });
+        if (createdNote.status === 'applied' || createdNote.status === 'duplicate' || createdNote.status === 'created') {
+          created++;
+        } else {
+          failures.push(`${ch.title}:${createdNote.status}`);
+        }
+      } else {
+        await this.app.vault.create(path, content);
+        created++;
+      }
     }
 
-    await this.app.fileManager.processFrontMatter(active, (fmw) => {
-      fmw.status = 'container';
-      fmw.next_review = null;
-    });
+    if (failures.length) {
+      new Notice(`拆分部分失败 ${created}/${chapters.length}：${failures.slice(0, 3).join('；')}。未修改父来源状态，可重试。`, 14000);
+      return { created, failed: failures.length, failures };
+    }
+    if (!unified) {
+      await this.app.fileManager.processFrontMatter(active, (fmw) => {
+        fmw.status = 'container';
+        fmw.next_review = null;
+      });
+    } else {
+      new Notice('Unified：父来源状态未直接改写（container 需迁移/事件处理）。', 9000);
+    }
     await this.app.vault.process(active, (cur) => {
       if (cur.includes('## Chapters')) return cur;
       const list = chapters.map((ch, i) => {
@@ -6754,6 +6833,7 @@ tags:
     });
     const skipMsg = skipped.length ? ` | Skipped ${skipped.length} (already exist)` : '';
     new Notice(`Split: ${created} chapter(s).${skipMsg}`);
+    return { created, failed: 0, skipped: skipped.length };
   }
 }
 

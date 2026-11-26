@@ -468,3 +468,15 @@ test/*.test.js                                      见最终交付报告
 - 剪藏导入、文章拆分、书籍拆分仍未接创建网关（Unified 下继续阻断）。
   - 导入剪藏本质是"已有笔记的 Identity 迁移"，应按 R5 受控迁移流程处理，而不是创建网关。
   - 文章/书籍拆分需要把 legacy 拆分子笔记的内容构建接到创建网关（含 parent/source/root），未实现。
+
+
+## 第八轮进展（三个剩余入口闭合）
+
+- **文章/书籍拆分**：Unified 下子笔记全部经 `_mfUs1CreateSplitNote` → `_mfUs1CreateTopicFromHost` 创建；
+  子 Source 获得 `mf_id`、`mf_root_id=自身`、`mf_revision=0`、`mf_scheduler_version`；正文与顺序保留；
+  无授权时零创建并如实报告部分失败；已存在路径跳过（重复执行不重复创建）；
+  父来源 `status=container` 在 Unified 不直接改写（Legacy 保持）。
+- **剪藏导入**：核实其为"已有笔记原地身份接管"，Unified 明确阻断并指向迁移工具，
+  不隐式迁移、不先 Legacy 建后补 ID。
+- **创建网关**：Source 创建时补 `mf_root_id = mf_id`，修复 standalone source 根关系。
+- 测试：`1393 pass`（新增 split-import 6：未授权零写、文章拆分身份、重复执行、Legacy 回归、导入阻断、书籍拆分身份/根）。

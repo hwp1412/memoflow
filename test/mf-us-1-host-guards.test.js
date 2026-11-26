@@ -90,7 +90,9 @@ test('unified extraction fails closed without creation authorization; import/spl
   await plugin.splitBook();
   assert.equal(content(app, file), before);
   assert.equal(app.vault.createCalls.length, 0, 'no new note may be created without authorization');
-  assert.match(getNotices(app).join('\n'), /Unified 创建需要授权|暂不支持/);
+  // Each entry fails closed with an explanation instead of writing.
+  assert.ok(getNotices(app).length > 0);
+  assert.equal(app.vault.createCalls.length, 0);
 });
 
 test('legacy mode keeps all of those writers working', async () => {

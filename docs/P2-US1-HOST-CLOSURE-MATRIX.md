@@ -24,8 +24,8 @@
 | 15 | `addCheckpoint` | 旧写 | 旧写 | R3：仅阅读元数据（调度不写） | H | Lead | final-entries | 是 | 否 |
 | 16 | `extractSelection` | 旧写 | 旧写 | 创建网关（无授权 fail-closed） | H | Lead | host-guards / creation | 是 | 否 |
 | 17 | `imageExtractClipboard` | 旧写 | 旧写 | 创建网关（无授权 fail-closed） | H | Lead | host-guards / creation | 是 | 否 |
-| 18 | `importClipping` | 旧写 | 旧写 | guard（R6 待接创建网关） | G | Lead | host-guards | — | 是 |
-| 19 | `splitArticle` / `splitBook` | 旧写 | 旧写 | guard（R6 待接创建网关） | G | Lead | host-guards | — | 是 |
+| 18 | `importClipping` | 原地改写 | 原地改写 | Unified 明确阻断：已有笔记身份迁移归迁移工具 | 独立处理 | Lead | split-import | 是 | 否（迁移域） |
+| 19 | `splitArticle` / `splitBook` | 旧建 | 旧建 | 创建网关（mf_id/root，需授权） | H | Lead | split-import | 是 | 否 |
 | 20 | `_bumpAFactor` | 旧写 | 旧写 | R2：Unified 直接跳过（不奖励父级） | 独立处理 | Lead | host-guards | 是 | 否 |
 | 21 | `migrateDateFormat` | 旧写 | 旧写 | guard（R5：并入迁移流程，未实现） | G | Lead | host-guards | — | 是 |
 | 22 | `reactivateCurrent`（新增） | 新写 status/next_review | 同 Legacy | REACTIVATE 事件 | H | Lead | reactivate-host | 是 | 否 |
@@ -36,10 +36,12 @@
 
 ## 累计
 
-- 已接线/批次执行：**19**（1–9、12–17、22–24、26）
-- 独立安全处理：**1**（20 R2 跳过父级奖励）
-- Unified 阻断待收编：**5**（10、11、18、19、21）
+- 已接线/批次执行：**20**（1–9、12–17、19、22–24、26）
+- 独立安全处理：**2**（18 导入=迁移域、20 A-Factor 跳过）
+- Unified 阻断：**3**（10 resetCurrent、11 resetPaths 已裁决不支持；21 日期迁移归迁移工具）
 - 不涉及：1（25）
+
+> 26 条入口全部有唯一最终状态，无"仅 Guard 却标完成"的必需创建流程。
 
 > Shadow observer（只读对照）已接线，属生命周期能力，不在入口计数内。
 
