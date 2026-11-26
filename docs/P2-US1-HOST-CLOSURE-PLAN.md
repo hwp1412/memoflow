@@ -305,3 +305,56 @@
 3. Mercy/Boost/状态操作具备 preview/失败/uncertain/部分成功/恢复语义，且 Card 零进入。
 4. 重启恢复、模式切换、迁移激活、账本损坏诊断均可复现（Mock）。
 5. 全量回归 + validate + build dry-run 通过；重新构建的 dist 可用于人工验收（实机阶段另批）。
+
+---
+
+# 实施进展（P0 → P2 第一轮）
+
+> 本节记录实际落地内容；未完成项在末尾明确列出，不视为已验收。
+
+## 已落地
+
+### P0 共享契约（Lead）
+- `src/integration/batch-runner.js`：批次 plan/校验/串行执行/八态汇总/报告；重复 id 整批拒绝。
+- `src/integration/topic-projection.js`：唯一读侧投影（Unified 权威 `mf_*`、Legacy 只读映射、Card 不可写、done/dismissed 对 REACTIVATE 可读）。
+- `src/integration/host-write-guard.js`：Unified 下残余旧写入的统一阻断（每功能只提示一次）。
+- 契约测试 9 项。
+
+### P1 三路并行（子 Agent 在独立 worktree 完成，Lead 集成）
+| 模块 | 文件 | 测试 |
+|---|---|---|
+| Mercy 宿主编排 | `src/integration/mercy-host.js`（preview→confirm digest→apply→undo，intent 先行、final 失败降级 uncertain） | 14 |
+| 状态/Boost | `src/integration/state-actions-host.js`、`boost-batch-host.js`（REACTIVATE 显式日期、SKIP 零写、Boost 目标绝对值防二次递减） | 34 |
+| Unified 队列源 | `src/integration/unified-queue-source.js`（`mf_*` 权威、legacy 行诊断排除、预算/排序/会话投影/仪表盘模型） | 14 |
+
+### P2 首轮集成（Lead）
+- 12 条残余直写入口在 Unified 下被 guard 阻断（COMPLETE/RESET/DISMISS 直写面、检查点、A-Factor、摘录、导入、拆分、日期迁移、旧 Mercy 两链路）。
+- onload 接通真实异步 lifecycle 与启动 `recover()`，暴露 `mfUs1Recovery`（blocked topics / healthy / recovered）。
+- `buildDuePool` 在 Unified 下改用统一队列源（Card 仍走 SR 路径）；会话快照重读改用投影校验，不再用 `next_review`。
+- 新增 REACTIVATE 宿主入口与菜单（Legacy 写 status/next_review；Unified 走 A4.3 事件，缺 transport 时失败关闭）。
+- 新增只读诊断菜单（模式/写入锁定/账本健康/阻断 Topic/队列源）。
+- `docs/P2-US1-HOST-CLOSURE-MATRIX.md`：25 条入口实时矩阵。
+
+## 仍未完成（不视为已验收）
+
+1. **Mercy 生产接线**：`mercy-host` 需要真实的逐 Topic `applyItem`（受保护 CAS）与持久 batch store；
+   现有 PR-09 writer 只接受 synthetic storage。Unified 下 Mercy 目前被显式阻断。
+2. **Boost Unified 执行**：`boost-batch-host` 就绪，但未接 `main.js`（缺少受保护逐 Topic 写入与 batch store 依赖注入）。
+3. **COMPLETE/DISMISS 的 Unified 执行**：菜单入口仍 fail closed；直写面已阻断。需把状态操作统一到 `runStateAction` + 真实 transport。
+4. **Dashboard 视图数据源**：队列/会话已切换；`src/views/dashboard-view.js` 与 `src/data/model.js` 仍读 legacy 字段
+   （`buildUnifiedDashboardModel` 已就绪，尚未接 UI）。
+5. **迁移激活 UI/命令、模式切换 UI、Shadow observer、账本诊断面板**：均未接线。
+6. **交付矩阵文件**：尚未逐行更新（当前以 `HOST-CLOSURE-MATRIX.md` 为准）。
+
+## 验证
+
+```
+node --test test/mf-us-1-host-contracts.test.js      9 pass
+node --test test/mf-us-1-mercy-host.test.js         14 pass
+node --test test/mf-us-1-state-actions.test.js      17 pass
+node --test test/mf-us-1-boost-host.test.js         17 pass
+node --test test/mf-us-1-unified-queue-source.test.js 14 pass
+node --test test/mf-us-1-host-guards.test.js         6 pass
+node --test test/mf-us-1-reactivate-host.test.js     4 pass
+test/*.test.js                                      见最终交付报告
+```

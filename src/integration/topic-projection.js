@@ -140,7 +140,12 @@ function toQueueTopic(projection) {
     review_count: projection.reviewCount,
   };
   if (projection.topicId) topic.mf_id = projection.topicId;
-  if (id) topic.stableId = id;
+  if (id) {
+    // selectDailyQueue reads `stable_id`; keep `stableId` for the shared status
+    // vocabulary used by batch results and dashboards.
+    topic.stableId = id;
+    topic.stable_id = id;
+  }
   if (projection.idealDue) topic.mf_ideal_due = projection.idealDue;
   if (projection.notBefore) topic.mf_not_before = projection.notBefore;
   if (projection.revision != null) topic.mf_revision = projection.revision;

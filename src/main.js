@@ -187,6 +187,7 @@ class MemoFlowPlugin extends BasePlugin {
 
   advancedTools() {
     return this._runActionMenu(MENU_LABELS.advancedTitle, [
+      { label: '恢复当前主题（重新激活）…', run: () => this.reactivateCurrent() },
       { label: MENU_LABELS.advanced[0], run: () => this.subsetReview() },
       { label: MENU_LABELS.advanced[1], run: () => this.mercy() },
       { label: MENU_LABELS.advanced[2], run: () => this.postponeSubtree() },
@@ -931,6 +932,8 @@ class MemoFlowPlugin extends BasePlugin {
 
   async _maybeAutoOverload() {
     if (!this.settings?.misc?.auto_overload) return;
+    // Unified must never auto-run the legacy Mercy writer before a session.
+    if (this._mfUs1EffectiveMode() === 'unified') return;
     const threshold = Math.max(1, Number(this.settings.misc.overload_threshold) || 10);
     const overdue = this._overdueTopics();
     if (overdue.length <= threshold) return;
@@ -1078,6 +1081,9 @@ class MemoFlowPlugin extends BasePlugin {
   }
 
   async spreadOverdue(overdueRows, days) {
+    if (this._mfUs1GuardLegacyWrite('Mercy（过载摊平）')) {
+      return { status: 'blocked', reason: 'E_UNIFIED_LEGACY_WRITE_BLOCKED', writesPerformed: false };
+    }
     return this._mfUs1RunLegacy({ action: 'MERCY_APPLY' }, () => this._spreadOverdueLegacy(overdueRows, days));
   }
 
