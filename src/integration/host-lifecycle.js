@@ -18,14 +18,17 @@ async function initializeHostLifecycle({
   conditions = {},
   storage = null,
   capability = null,
+  // When the host owns a PluginDataCoordinator, pass its ledger store here so
+  // settings/session/ledger share one serialised write queue.
+  dataStore = null,
 } = {}) {
   if (!plugin) {
     const error = new Error('a plugin with loadData/saveData is required');
     error.code = 'E_PLUGIN_REQUIRED';
     throw error;
   }
-  const dataStore = createObsidianPluginDataStore(plugin);
-  const opened = await openPluginDataLedger({ dataStore, key });
+  const store = dataStore || createObsidianPluginDataStore(plugin);
+  const opened = await openPluginDataLedger({ dataStore: store, key });
   const ledger = new PersistentEventLedger(new MemoryLedgerStore(opened.store.dump()));
   const runtime = createHostRuntime({
     mode,
@@ -66,6 +69,7 @@ async function initializeAsyncHostLifecycle({
   config = null,
   dateFormat = 'DD-MM-YYYY',
   authorization = null,
+  dataStore = null,
 } = {}) {
   const { createAsyncHostRuntime } = require('./host-async-runtime.js');
   if (!plugin) {
@@ -73,8 +77,8 @@ async function initializeAsyncHostLifecycle({
     error.code = 'E_PLUGIN_REQUIRED';
     throw error;
   }
-  const dataStore = createObsidianPluginDataStore(plugin);
-  const opened = await openPluginDataLedger({ dataStore, key });
+  const store = dataStore || createObsidianPluginDataStore(plugin);
+  const opened = await openPluginDataLedger({ dataStore: store, key });
   const ledger = new PersistentEventLedger(new MemoryLedgerStore(opened.store.dump()));
   const runtime = createAsyncHostRuntime({
     mode,

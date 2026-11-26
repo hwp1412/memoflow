@@ -2857,7 +2857,17 @@ class KnowledgeTreeView extends ItemView {
 
 class IncrementalReadingPlugin extends Plugin {
   async onload() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const { createPluginDataCoordinator } = require('./src/integration/plugin-data-coordinator.js');
+    // One coordinator owns every data.json write. Reserved keys (the Unified
+    // ledger) must never become part of this.settings: writing a startup-time
+    // ledger snapshot back would roll the ledger backwards.
+    this.pluginData = createPluginDataCoordinator({
+      plugin: this,
+      notice: (message, timeout) => new Notice(message, timeout),
+    });
+    const rawData = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, this.pluginData.stripReservedKeys(rawData));
+    for (const reservedKey of this.pluginData.reservedKeys) delete this.settings[reservedKey];
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       this.settings[key] = Object.assign({}, DEFAULT_SETTINGS[key], this.settings[key] || {});
     }
@@ -2883,6 +2893,8 @@ class IncrementalReadingPlugin extends Plugin {
         plugin: this,
         mode: this.settings.mf_us1_mode || 'legacy',
         conditions: {},
+        // Ledger writes share the coordinator queue with settings/session.
+        dataStore: this.pluginData.ledgerStore(),
       });
     } catch (error) {
       // The Unified lifecycle never blocks Legacy startup; it stays locked and
@@ -2933,7 +2945,7 @@ class IncrementalReadingPlugin extends Plugin {
       if (isPathInIRCollection(this.settings, oldPath)
           || isPathInIRCollection(this.settings, file?.path)) this._invalidateIRCollection(true);
     }));
-    await this.saveData(this.settings);
+    await this.pluginData.update('settings', () => this.settings);
     this.addSettingTab(new IncrementalReadingSettingTab(this.app, this));
     this.registerView(IR_QUEUE_VIEW_TYPE, leaf => new IRQueueView(leaf, this));
     this.registerView(KNOWLEDGE_TREE_VIEW_TYPE, leaf => new KnowledgeTreeView(leaf, this, 'main'));
@@ -3023,10 +3035,28 @@ class IncrementalReadingPlugin extends Plugin {
 
   onunload() {
     this._clearExcerptViews();
-    if (!this.sessionSaveTimer) return;
-    window.clearTimeout(this.sessionSaveTimer);
-    this.sessionSaveTimer = null;
-    this.saveData(this.settings).catch(error => console.error('[IR] final session persistence failed', error));
+    if (this.sessionSaveTimer) {
+      window.clearTimeout(this.sessionSaveTimer);
+      this.sessionSaveTimer = null;
+    }
+    if (!this.pluginData) {
+      this.saveData(this.settings).catch(error => console.error('[IR] final session persistence failed', error));
+      return;
+    }
+    // Obsidian unload is synchronous, so these promises cannot be awaited: this
+    // is a best-effort final write, not a durability guarantee. The debounce
+    // timer was cancelled above, so the latest session state is submitted here
+    // and every already-queued write is then drained.
+    this.pluginData.update('settings', () => this.settings)
+      .then(result => {
+        if (!result.ok) console.error('[IR] final session persistence failed', result.code, result.phase);
+      })
+      .catch(error => console.error('[IR] final session persistence failed', error));
+    this.pluginData.flush()
+      .then(result => {
+        if (result && result.ok === false) console.error('[IR] final persistence flush incomplete', result.code);
+      })
+      .catch(error => console.error('[IR] final persistence flush failed', error));
   }
 
   _refreshExcerptViews(file = null) {
@@ -3384,7 +3414,13 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async saveSettings() {
+    if (this.pluginData) {
+      const result = await this.pluginData.update('settings', () => this.settings);
+      if (!result.ok) console.error('[IR] settings persistence failed', result.code, result.phase);
+      return result;
+    }
     await this.saveData(this.settings);
+    return { ok: true, verified: false };
   }
 
   async migrateDateFormat(fromFormat, toFormat) {
@@ -3595,7 +3631,15 @@ class IncrementalReadingPlugin extends Plugin {
     if (this.sessionSaveTimer) window.clearTimeout(this.sessionSaveTimer);
     this.sessionSaveTimer = window.setTimeout(() => {
       this.sessionSaveTimer = null;
-      this.saveData(this.settings)
+      const persist = this.pluginData
+        ? this.pluginData.update('settings', () => this.settings)
+        : this.saveData(this.settings);
+      persist
+        .then(result => {
+          if (result && result.ok === false) {
+            console.error('[IR] background session persistence failed', result.code, result.phase);
+          }
+        })
         .catch(error => console.error('[IR] background session persistence failed', error));
     }, 1500);
   }
