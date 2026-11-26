@@ -17,17 +17,17 @@
 | 8 | `dismiss`（菜单） | 旧写 | 旧写 | 事件 | H | Lead | host-wiring | 否 | 否 |
 | 9 | `dismissTreeNode`（树） | 旧写 | 旧写 | DISMISS 事件 | B | Lead | host-execution | 是 | 否 |
 | 10 | `resetCurrent`（菜单） | 旧写 | 旧写 | 显式阻断 | blocked | Lead | host-service | — | 是（语义待裁决） |
-| 11 | `resetPaths`（树/批量） | 旧写 | 旧写 | guard 阻断 | G | Lead | host-guards | — | 是 |
+| 11 | `resetPaths`（树/批量） | 旧写 | 旧写 | guard 阻断（R1：Unified 不支持） | G | Lead | host-guards | — | 是 |
 | 12 | `boost`（含级联） | 旧写 | 旧写 | 批量 SET_PRIORITY | B | Lead | host-execution / boost-host | 是 | 否 |
 | 13 | `mercy`（菜单） | 旧写 | 旧写 | preview→confirm→apply（unified） | B | Lead | host-execution / mercy-host | 是 | 否 |
-| 14 | `spreadOverdue` / 自动过载 | 旧写 | 旧写 | 阻断（待接统一 Mercy） | G | Lead | host-guards | — | 是 |
-| 15 | `addCheckpoint` | 旧写 | 旧写 | guard | G | Lead | host-guards | — | 是 |
-| 16 | `extractSelection` | 旧写 | 旧写 | guard | G | Lead | host-guards | — | 是 |
-| 17 | `imageExtractClipboard` | 旧写 | 旧写 | guard | G | Lead | host-guards | — | 是 |
-| 18 | `importClipping` | 旧写 | 旧写 | guard | G | Lead | host-guards | — | 是 |
-| 19 | `splitArticle` / `splitBook` | 旧写 | 旧写 | guard | G | Lead | host-guards | — | 是 |
-| 20 | `_bumpAFactor` | 旧写 | 旧写 | guard | G | Lead | host-guards | — | 是 |
-| 21 | `migrateDateFormat` | 旧写 | 旧写 | guard | G | Lead | host-guards | — | 是 |
+| 14 | `spreadOverdue` / 自动过载 | 旧写 | 旧写 | Dashboard → 统一 Mercy（需确认）；自动仅建议 | H | Lead | host-guards / mercy-host | 是 | 否 |
+| 15 | `addCheckpoint` | 旧写 | 旧写 | guard（R3：元数据/调度拆分待实现） | G | Lead | host-guards | — | 是 |
+| 16 | `extractSelection` | 旧写 | 旧写 | 创建网关（无授权 fail-closed） | H | Lead | host-guards / creation | 是 | 否 |
+| 17 | `imageExtractClipboard` | 旧写 | 旧写 | 创建网关（无授权 fail-closed） | H | Lead | host-guards / creation | 是 | 否 |
+| 18 | `importClipping` | 旧写 | 旧写 | guard（R6 待接创建网关） | G | Lead | host-guards | — | 是 |
+| 19 | `splitArticle` / `splitBook` | 旧写 | 旧写 | guard（R6 待接创建网关） | G | Lead | host-guards | — | 是 |
+| 20 | `_bumpAFactor` | 旧写 | 旧写 | R2：Unified 直接跳过（不奖励父级） | 独立处理 | Lead | host-guards | 是 | 否 |
+| 21 | `migrateDateFormat` | 旧写 | 旧写 | guard（R5：并入迁移流程，未实现） | G | Lead | host-guards | — | 是 |
 | 22 | `reactivateCurrent`（新增） | 新写 status/next_review | 同 Legacy | REACTIVATE 事件 | H | Lead | reactivate-host | 是 | 否 |
 | 23 | SKIP（阅读条/Review） | 仅会话 | 仅会话 | 仅会话（无事件） | open | Lead | — | 否 | 是（会话指针） |
 | 24 | 新建 Source / 摘录 | 旧建 | 旧建 | 创建网关（synthetic token） | H | Lead | creation-host | 部分 | 否 |
@@ -36,8 +36,9 @@
 
 ## 累计
 
-- 已接线/批次执行：**14**（1–9、12、13、22、24、26）
-- Unified 阻断待收编：**9**（10、11、14–21，其中 10 为显式语义阻断）
+- 已接线/批次执行：**17**（1–9、12、13、14、16、17、22、24、26）
+- 独立安全处理：**1**（20 R2 跳过父级奖励）
+- Unified 阻断待收编：**7**（10、11、15、18、19、21 + 23 会话指针）
 - 部分完成：**1**（23）
 - 不涉及：1（25）
 

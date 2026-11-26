@@ -421,3 +421,17 @@ test/*.test.js                                      见最终交付报告
 | R4 | Dashboard / 自动过载 Mercy | 直接摊平并覆盖 interval | 与 A7.2 冲突 | 接入统一 Mercy 前继续阻断；自动路径需显式确认 |
 | R5 | 日期格式迁移 | 全库改写日期字段 | 与 `mf_*` 不同步 | 并入受控迁移流程，禁止直接运行 |
 | R6 | 摘录创建/划词/图片/导入/拆分 | 创建文件与初始排期 | 非 A8 事件，但产生新 Topic | 复用创建网关（需支持真实 token 的授权路径），当前 Unified 阻断 |
+
+
+## 第五轮进展（R1–R6 裁决实施）
+
+| 裁决 | 实施结果 |
+|---|---|
+| R1 Reset | Unified 继续阻断（`resetPaths` guard / `resetCurrent` 显式错误），Legacy 不变；列为 1.0 待裁决功能。 |
+| R2 父级 A-Factor | Unified 创建路径**直接跳过** bump（不再隐式写父级），Legacy/Shadow 不变。 |
+| R3 Checkpoint | 仍阻断：该操作同时写 interval/a_factor/review_count，缺少规范事件映射；元数据拆分方案已记录，未实现。 |
+| R4 Dashboard/自动 Mercy | Dashboard 过载入口改为 `mercyUnified({windowDays})`（preview→confirm→apply，受保护写入）；自动过载只发建议 Notice，绝不写。 |
+| R5 日期迁移 | 仍阻断；纳入受控迁移流程的前置条件已记录，未实现迁移 UI。 |
+| R6 创建入口 | 划词/图片摘录走创建网关：Unified 无 token 时 fail-closed（不再退回 Legacy 创建）；导入/拆分仍需接创建网关。 |
+
+新增测试：R2/R4/R6 更新的 guard 行为、自动过载建议、Dashboard Mercy 路径、创建网关 fail-closed。

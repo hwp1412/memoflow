@@ -4149,7 +4149,7 @@ class IncrementalReadingPlugin extends Plugin {
     return value == null || value === 'null' || value === '' ? null : String(value);
   }
 
-  async mercyUnified() {
+  async mercyUnified({ windowDays = null } = {}) {
     this._mfUs1RefreshRows();
     const { buildMercyPreview, confirmMercyPreview, applyMercyHost, describeMercyOutcome } = require('./src/integration/mercy-host.js');
     const { projectTopic, toQueueTopic } = require('./src/integration/topic-projection.js');
@@ -4157,8 +4157,8 @@ class IncrementalReadingPlugin extends Plugin {
       new Notice('MF-US-1 Mercy 尚未初始化（缺少受保护写入或批次存储）。', 9000);
       return null;
     }
-    const windowDays = await pickFromList(this.app, ['3 days', '7 days', '14 days', '30 days'], [3, 7, 14, 30], 'Mercy window');
-    if (!windowDays) return null;
+    const chosenWindow = windowDays || await pickFromList(this.app, ['3 days', '7 days', '14 days', '30 days'], [3, 7, 14, 30], 'Mercy window');
+    if (!chosenWindow) return null;
     const today = this._todayKey();
     const rows = this.getIRRows();
     const projections = rows.map(row => projectTopic(row, { mode: this._mfUs1EffectiveMode() }));
@@ -4169,14 +4169,14 @@ class IncrementalReadingPlugin extends Plugin {
 
     let preview;
     try {
-      preview = buildMercyPreview({ topics, today, windowDays, budgetPerDay: this.settings.queueBudgetMinutes || 30, config: this.settings.queueConfig || undefined });
+      preview = buildMercyPreview({ topics, today, windowDays: chosenWindow, budgetPerDay: this.settings.queueBudgetMinutes || 30, config: this.settings.queueConfig || undefined });
     } catch (error) {
       new Notice(`Mercy 预览失败：${error.message || error.code || '未知错误'}`, 9000);
       return null;
     }
     if (!preview.items || !preview.items.length) { new Notice('Mercy 预览没有需要调整的主题。'); return null; }
     const ok = await confirmDialog(this.app, 'Mercy 预览',
-      `${preview.items.length} 个逾期主题将在未来 ${windowDays} 天内摊平（仅修改最早可见日，不改真实间隔）。确认执行？`);
+      `${preview.items.length} 个逾期主题将在未来 ${chosenWindow} 天内摊平（仅修改最早可见日，不改真实间隔）。确认执行？`);
     if (!ok) return null;
     const confirmation = confirmMercyPreview(preview);
 
@@ -4486,7 +4486,13 @@ class IncrementalReadingPlugin extends Plugin {
 
   async _mfUs1CreateTopicFromHost({ requestId, kind, priority, parentFile = null, path, content }) {
     const authorization = this._mfUs1CreationAuthorization();
-    if (!authorization) return { handled: false };
+    if (!authorization) {
+      if (this._mfUs1EffectiveMode() === 'unified') {
+        new Notice('Unified 创建需要授权；本次未创建（已 fail-closed）。', 9000);
+        return { handled: true, outcome: { status: 'blocked', reason: 'E_CREATION_NOT_AUTHORIZED' } };
+      }
+      return { handled: false };
+    }
     const { planTopicCreation, composeCreationContent, executeTopicCreation } = require('./src/integration/topic-creation-host.js');
     const today = typeof this._todayKey === 'function' ? this._todayKey() : todayDateString(this.settings);
 
@@ -4708,7 +4714,8 @@ class IncrementalReadingPlugin extends Plugin {
   // clamped to [settings.a_factor_min, settings.a_factor_max], persists to
   // frontmatter, and returns { from, to } when the value actually moved.
   async _bumpAFactor(file, fm, factor) {
-    if (this._mfUs1GuardLegacyWrite('父级 A-Factor 奖励')) return null;
+    // R2: Unified creation never performs the legacy implicit parent reward.
+    if (this._mfUs1EffectiveMode() === 'unified') return null;
     if (!fm || (fm.type !== 'source' && fm.type !== 'extract')) return null;
     const cur = readAFactor(this.settings, fm);
     const next = clampAFactor(this.settings, cur * factor);
@@ -5493,7 +5500,6 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async extractSelection() {
-    if (this._mfUs1GuardLegacyWrite('划词摘录')) return null;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') {
       new Notice('Extract Selection requires an open markdown source.');
@@ -5794,7 +5800,6 @@ ${body}
   // ---- Image extract / Occlusion (visual learning) -----------------------
 
   async imageExtractClipboard() {
-    if (this._mfUs1GuardLegacyWrite('图片摘录')) return null;
     const r = await resolveSourceOrExtractFromActive(this.app, this.settings);
     if (!r) return;
 

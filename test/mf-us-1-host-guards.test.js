@@ -57,22 +57,29 @@ test('unified mode blocks the legacy Mercy menu before any write', async () => {
   assert.equal(content(app, file), before);
 });
 
-test('unified mode blocks the overload spread (dashboard and auto path)', async () => {
+test('unified overload routes to unified mercy and auto overload only suggests', async () => {
   const { plugin, app } = setup('unified');
   const file = source(app);
   const before = content(app, file);
+  app.__promptState.confirm = true;
   const result = await plugin.spreadOverdue([{ tfile: file, fm: { ...app.vault.readFm(file) } }], 7);
-  assert.equal(result.status, 'blocked');
+  // No admin authorization in this harness: the unified Mercy apply must write nothing.
+  assert.notEqual(result && result.status, 'applied');
   assert.equal(content(app, file), before);
 
-  app.__promptState.confirm = false;
+  await app.vault.process(file, data => data.replace('mf_ideal_due: 2026-12-01', 'mf_ideal_due: 2026-01-01'));
+  plugin._mfUs1RefreshRows();
+  const beforeAuto = content(app, file);
   plugin.settings.misc.auto_overload = true;
   plugin.settings.misc.overload_threshold = 1;
+  const notices = getNotices(app);
+  notices.length = 0;
   await plugin._maybeAutoOverload();
-  assert.equal(content(app, file), before);
+  assert.equal(content(app, file), beforeAuto, 'auto overload never writes in unified mode');
+  assert.match(notices.join('\n'), /不会自动摊平/);
 });
 
-test('unified mode blocks direct extraction / split / import writers', async () => {
+test('unified extraction fails closed without creation authorization; import/split stay guarded', async () => {
   const { plugin, app } = setup('unified');
   const file = source(app);
   const before = content(app, file);
@@ -82,7 +89,8 @@ test('unified mode blocks direct extraction / split / import writers', async () 
   await plugin.splitArticle();
   await plugin.splitBook();
   assert.equal(content(app, file), before);
-  assert.equal(app.vault.createCalls.length, 0, 'no new note may be created by blocked writers');
+  assert.equal(app.vault.createCalls.length, 0, 'no new note may be created without authorization');
+  assert.match(getNotices(app).join('\n'), /Unified 创建需要授权|暂不支持/);
 });
 
 test('legacy mode keeps all of those writers working', async () => {
@@ -97,12 +105,11 @@ test('every residual writer that can write scheduling fields is guarded in sourc
   const sourceText = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   for (const feature of [
     '移出队列（树）', '完成（直接写入）', '重置排期（直接写入）', '检查点',
-    '父级 A-Factor 奖励', '导入剪藏', '拆分文章', '拆分书籍', '日期格式迁移',
-    'Mercy（旧入口）', '划词摘录', '图片摘录',
+    '导入剪藏', '拆分文章', '拆分书籍', '日期格式迁移',
   ]) {
     assert.ok(sourceText.includes(`_mfUs1GuardLegacyWrite('${feature}')`), `missing guard: ${feature}`);
   }
   const srcText = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  assert.match(srcText, /_mfUs1GuardLegacyWrite\('Mercy（过载摊平）'\)/);
-  assert.match(srcText, /Unified must never auto-run the legacy Mercy writer/);
+  assert.match(srcText, /return this\.mercyUnified\(\{ windowDays: Number\(days\) \|\| 7 \}\)/);
+  assert.match(srcText, /Unified 模式不会自动摊平/);
 });
