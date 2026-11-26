@@ -302,3 +302,26 @@ Mock 测试未覆盖真实 MetadataCache 的 link 解析差异。
 下一步（未完成，不标记通过）：阅读 `_mfUs1VerifySubtreeNode` 与 CAS adapter 中
 `expectations.relationKey` 的实际比较对象，区分“父文件字节变化”（批内合法）与“目标自身父/源被外部移动”（必须阻断），
 再决定是调整期望值格式还是用批内成员集合豁免；需要真机再验证。
+
+
+## 23. Subtree 真机 Pass（已解决）+ 重启/Shadow 最新结果
+
+### Subtree Postpone — 真机 Pass
+
+根因最终确认：**Harness 的种子笔记把 wiki 链接写成未加引号的 `source: [[S]]`**，真实 Obsidian 的 YAML 会把它解析为数组，metadataCache 的关系值与原始字节标量不一致 → `E_SUBTREE_CHANGED`。改为插件实际写法的带引号 `source: "[[S]]"` 后：
+
+```
+plan order = [E2(0), E1(1), S(2)]      ← 最深优先
+results    = E2 applied, E1 applied, S applied
+after      = S/E1/E2 的 mf_not_before 均为 2026-11-30
+```
+
+→ **Subtree Postpone 真机 Pass**（同时保留了“最深先写”的健壮性排序）。
+
+### 重启恢复 — 发现新问题（P1 候选）
+
+重启后：`mfUs1Ledger` 3 条记录仍在（持久化 OK），但 `mfUs1Recovery` 为 null、激活诊断显示 `transportSource: none / runtime not present` —— 说明 onload 的异步 lifecycle 初始化在重启场景未完成/失败，Unified 运行时不可用。需下一轮查 `initializeAsyncHostLifecycle` 在重启时的异常（可能被 catch 后仅 console.error）。
+
+### Shadow — 部分
+
+Legacy 写入正常（`next_review` 更新 11-11→05-12-2026，未产生 `mf_*`，Ledger 仍 3 条），但 `mfUs1ShadowLast` 为 null，说明 Shadow observer 在真实设备没有记录对照（需查 mode 判定/observer 调用条件）。
