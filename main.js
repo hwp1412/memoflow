@@ -3906,6 +3906,7 @@ class IncrementalReadingPlugin extends Plugin {
       today,
       calendarDate: today,
       payload,
+      path: file && typeof file.path === 'string' ? file.path : null,
     };
   }
 
@@ -3932,6 +3933,7 @@ class IncrementalReadingPlugin extends Plugin {
       this._mfUs1HostInstance = createHostSchedulerService({
         getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
         unified: typeof transport === 'function' ? descriptor => transport(this._mfUs1UnifiedRequest(descriptor)) : null,
+        shadowObserver: (descriptor) => this._mfUs1ShadowObserve(descriptor),
       });
     }
     return this._mfUs1HostInstance;
@@ -4077,6 +4079,46 @@ class IncrementalReadingPlugin extends Plugin {
     return ['applied', 'duplicate', 'legacy'].includes(result.status);
   }
 
+  async _addCheckpointUnified(noteOverride) {
+    const active = this.app.workspace.getActiveFile();
+    if (!active) { new Notice('No active file'); return null; }
+    const cache = this.app.metadataCache.getFileCache(active);
+    const fmBefore = cache?.frontmatter;
+    if (!isActiveIR(fmBefore) || fmBefore.type === 'card') {
+      new Notice('Checkpoints apply to sources and extracts only.');
+      return null;
+    }
+    if (typeof noteOverride === 'string' && /^\d+d::/.test(noteOverride)) {
+      // Interval overrides are scheduling writes: no accepted event exists, so
+      // Unified refuses instead of silently rewriting the interval.
+      new Notice('Unified 下检查点不能修改学习间隔（请使用排期/延期事件）。', 9000);
+      return null;
+    }
+    let note = noteOverride;
+    if (note == null) {
+      note = await new Promise(resolve => {
+        new TextPromptModal(this.app, 'Checkpoint note', '', resolve).open();
+      });
+    }
+    if (note == null) return null;
+    const editor = this.app.workspace.activeEditor?.editor;
+    const line = editor ? editor.getCursor().line : 0;
+    const revisionBefore = Number(fmBefore.mf_revision);
+
+    await this.app.fileManager.processFrontMatter(active, (fmw) => {
+      fmw.checkpoints = Array.isArray(fmw.checkpoints) ? fmw.checkpoints : [];
+      fmw.checkpoints.push({ date: todayDateString(this.settings), line, note: String(note) });
+    });
+
+    const fmAfter = this.app.metadataCache.getFileCache(active)?.frontmatter || {};
+    if (Number(fmAfter.mf_revision) !== revisionBefore) {
+      new Notice('检查点已保存，但检测到并发的调度修改，请核对最新状态。', 10000);
+    } else {
+      new Notice('检查点已保存（仅阅读元数据，调度字段未变）。');
+    }
+    return { ok: true, note: String(note), line, revisionBefore };
+  }
+
   async boostUnified() {
     this._mfUs1RefreshRows();
     const { planBoostBatch, applyBoostBatch, describeBoostOutcome } = require('./src/integration/boost-batch-host.js');
@@ -4136,6 +4178,64 @@ class IncrementalReadingPlugin extends Plugin {
     // row would otherwise report the pre-write mf_not_before / priority.
     this.irFilesCache = null;
     this.irRowsCache = null;
+  }
+
+  // Read-only Shadow comparison: Legacy remains the only writer. This computes
+  // what Unified would have produced for a migrated topic and records the diff
+  // for diagnostics. It never writes a file or a ledger record, and any failure
+  // is contained so Legacy keeps working.
+  _mfUs1ShadowObserve(descriptor) {
+    try {
+      const row = this.getIRRows().find(item => item.tfile && item.tfile.path === descriptor.path);
+      if (!row) return { status: 'not-comparable', reason: 'TOPIC_NOT_FOUND' };
+      const fm = row.fm || {};
+      const revision = Number(fm.mf_revision);
+      if (!fm.mf_id || !Number.isInteger(revision)) return { status: 'not-comparable', reason: 'NOT_MIGRATED' };
+      const { applyEvent } = require('./src/scheduling/events.js');
+      const normalize = value => (value == null || value === 'null' || value === '' ? null : String(value));
+      const topic = {
+        type: fm.type,
+        status: fm.status,
+        priority: Number(fm.priority) || 50,
+        mf_id: fm.mf_id,
+        mf_parent_id: normalize(fm.mf_parent_id),
+        mf_root_id: normalize(fm.mf_root_id),
+        mf_ideal_due: normalize(fm.mf_ideal_due),
+        mf_not_before: normalize(fm.mf_not_before),
+        mf_interval_days: Number(fm.mf_interval_days),
+        mf_last_event_id: normalize(fm.mf_last_event_id),
+        mf_revision: revision,
+        mf_scheduler_version: Number(fm.mf_scheduler_version),
+        a_factor: Number(fm.a_factor),
+        review_count: Number(fm.review_count),
+      };
+      const applied = applyEvent(topic, {
+        eventId: descriptor.eventId,
+        topicId: fm.mf_id,
+        type: descriptor.action,
+        payload: descriptor.payload,
+        expectedRevision: revision,
+        algorithmVersion: 1,
+        calendarDate: descriptor.calendarDate,
+      }, undefined, descriptor.today);
+      const next = applied && applied.topic ? applied.topic : topic;
+      const changeFields = ['priority', 'status', 'mf_ideal_due', 'mf_not_before', 'mf_interval_days', 'a_factor', 'review_count', 'mf_revision'];
+      const changes = [];
+      for (const field of changeFields) {
+        if (String(topic[field]) !== String(next[field])) changes.push({ field, before: topic[field], after: next[field] });
+      }
+      this.mfUs1ShadowLast = {
+        at: new Date().toISOString(),
+        action: descriptor.action,
+        path: descriptor.path,
+        changes,
+        status: applied && applied.applied === false ? 'no-op' : 'compared',
+        writesPerformed: false,
+      };
+      return { status: this.mfUs1ShadowLast.status, changes, writesPerformed: false };
+    } catch (error) {
+      return { status: 'not-comparable', reason: (error && error.code) || 'E_SHADOW_FAILED' };
+    }
   }
 
   _mfUs1RowByTopicId(topicId) {
@@ -5048,7 +5148,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async addCheckpoint(noteOverride) {
-    if (this._mfUs1GuardLegacyWrite('检查点')) return null;
+    if (this._mfUs1EffectiveMode() === 'unified') return this._addCheckpointUnified(noteOverride);
     const active = this.app.workspace.getActiveFile();
     if (!active) { new Notice('No active file'); return; }
     const cache = this.app.metadataCache.getFileCache(active);

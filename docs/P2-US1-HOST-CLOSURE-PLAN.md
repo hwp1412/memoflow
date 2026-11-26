@@ -435,3 +435,19 @@ test/*.test.js                                      见最终交付报告
 | R6 创建入口 | 划词/图片摘录走创建网关：Unified 无 token 时 fail-closed（不再退回 Legacy 创建）；导入/拆分仍需接创建网关。 |
 
 新增测试：R2/R4/R6 更新的 guard 行为、自动过载建议、Dashboard Mercy 路径、创建网关 fail-closed。
+
+
+## 第六轮进展（最终入口与 Shadow）
+
+- **R3 Checkpoint**：Unified 下只追加 `checkpoints` 阅读元数据；`Nd::` 间隔覆盖被拒绝；
+  写入后校验 `mf_revision` 未变，若检测到并发调度修改则提示核对。
+- **SKIP**：阅读条/浮层改为消费会话指针（`consumeSessionItem`）并进入下一项，零调度写。
+- **Shadow observer**：`_mfUs1HostService` 注入只读 observer；Legacy 仍唯一 Writer，
+  observer 用 legacy 字段映射 + `applyEvent` 计算差异，写入 `plugin.mfUs1ShadowLast`，
+  失败包裹为 `not-comparable`，不写 Topic/Ledger。服务层对任意 legacy 结果都执行观察（只读）。
+- 测试：`1384 pass`（新增 final-entries 5；更新 shadow/guard 契约 2）。
+
+### 仍未完成
+- 剪藏导入、文章拆分、书籍拆分接创建网关（当前 Unified 阻断）。
+- 迁移预检/预览、模式切换 UI、Ledger/Batch 诊断面板。
+- R1 Reset 与 R5 日期迁移保持阻断（已裁决为 Unified 1.0 不支持/并入迁移）。

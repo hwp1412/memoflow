@@ -100,19 +100,23 @@ function createHostSchedulerService({ mode = 'legacy', getMode = null, condition
       };
 
       if (evaluation.mode === 'shadow') {
-        if (status !== OBSERVABLE_STATUS) {
+        // The observer is read-only and may run for any completed legacy call;
+        // a legacy writer that does not report a status still deserves a
+        // comparison (its status is attached to the observation).
+        if (typeof shadowObserver === 'function') {
+          try {
+            outcome.shadow = await shadowObserver(descriptor, result);
+            if (status !== OBSERVABLE_STATUS) outcome.shadow.legacyStatus = status;
+          } catch (error) {
+            outcome.shadow = { status: 'not-comparable', reason: 'SHADOW_COMPARATOR_FAILED' };
+            outcome.shadowError = error && error.code ? error.code : 'E_SHADOW_FAILED';
+          }
+        } else if (status !== OBSERVABLE_STATUS) {
           outcome.shadow = {
             status: 'not-comparable',
             reason: 'LEGACY_OBSERVATION_UNAVAILABLE',
             legacyStatus: status,
           };
-        } else if (typeof shadowObserver === 'function') {
-          try {
-            outcome.shadow = await shadowObserver(descriptor, result);
-          } catch (error) {
-            outcome.shadow = { status: 'not-comparable', reason: 'SHADOW_COMPARATOR_FAILED' };
-            outcome.shadowError = error && error.code ? error.code : 'E_SHADOW_FAILED';
-          }
         } else {
           outcome.shadow = { status: 'not-comparable', reason: 'SHADOW_OBSERVER_MISSING' };
         }

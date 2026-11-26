@@ -104,7 +104,7 @@ test('legacy mode keeps all of those writers working', async () => {
 test('every residual writer that can write scheduling fields is guarded in source', () => {
   const sourceText = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   for (const feature of [
-    '移出队列（树）', '完成（直接写入）', '重置排期（直接写入）', '检查点',
+    '移出队列（树）', '完成（直接写入）', '重置排期（直接写入）',
     '导入剪藏', '拆分文章', '拆分书籍', '日期格式迁移',
   ]) {
     assert.ok(sourceText.includes(`_mfUs1GuardLegacyWrite('${feature}')`), `missing guard: ${feature}`);
@@ -112,4 +112,7 @@ test('every residual writer that can write scheduling fields is guarded in sourc
   const srcText = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   assert.match(srcText, /return this\.mercyUnified\(\{ windowDays: Number\(days\) \|\| 7 \}\)/);
   assert.match(srcText, /Unified 模式不会自动摊平/);
+  const rootText = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(rootText, /async _addCheckpointUnified\(/);
+  assert.match(rootText, /仅阅读元数据/);
 });

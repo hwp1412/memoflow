@@ -497,9 +497,13 @@ class MemoFlowPlugin extends BasePlugin {
           }
           await this._openNextSessionTarget(next);
           return;
-        case 'skip':
-          await this.nextElement();
+        case 'skip': {
+          // SKIP is session-only (SPEC A5.1): move the pointer, never write
+          // scheduling fields.
+          if (typeof this.consumeSessionItem === 'function') await this.consumeSessionItem(file.path);
+          await this._openNextSessionTarget(next);
           return;
+        }
         case 'postpone': {
           const outcome = await this._postponeReadingFile(file, Math.max(1, Number(data.days) || 1));
           // Only a confirmed (or legacy-applied) postpone may leave the current
