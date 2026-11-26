@@ -93,6 +93,11 @@ class PersistentEventLedger {
       expectedRevision: request.expectedRevision,
       today: request.today,
       eventDate: request.calendarDate ?? null,
+      // Payload is kept so the audit trail can answer "which manual date /
+      // reason / priority produced this event" without re-deriving it from the
+      // fingerprint. It contains scheduling parameters only (never note text or
+      // paths) and older records simply lack it.
+      payload: request.payload ?? null,
       status: 'prepared',
       beforeHash: intent.beforeHash,
       expectedAfterHash: intent.expectedAfterHash,

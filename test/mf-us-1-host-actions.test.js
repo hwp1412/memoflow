@@ -127,9 +127,9 @@ test('the menu postpone entry shares the same host entry', async () => {
 // ---- MANUAL_SCHEDULE -----------------------------------------------------
 
 test('manual schedule sets ideal due, clears a stale not_before and keeps the interval', async () => {
-  const { plugin, app } = await harness();
+  const { plugin, app, opened } = await harness();
   const file = makeFile(app, 'Sources/D.md', topicFm(uuid(4), { mf_not_before: '2026-12-20' }), '# body\n');
-  const target = addCalendarDays(plugin._todayKey(), 10).length === 10 ? '2026-12-10' : '2026-12-10';
+  const target = '2026-12-10';
   const result = await plugin.scheduleFile(file, target);
   assert.equal(result.status, 'applied');
   const after = fmOf(app, file);
@@ -137,6 +137,14 @@ test('manual schedule sets ideal due, clears a stale not_before and keeps the in
   assert.equal(after.mf_not_before, null, 'stale administrative delay must be cleared');
   assert.equal(after.mf_interval_days, 8, 'real interval must survive');
   assert.equal(Number(after.review_count), 3, 'review history must survive');
+
+  // The manual override reason must survive in the durable ledger record.
+  const record = Object.values(opened.store.dump()).find(item => item.type === 'MANUAL_SCHEDULE');
+  assert.ok(record, 'a MANUAL_SCHEDULE record must be persisted');
+  assert.equal(record.status, 'applied');
+  assert.equal(record.payload.reason, 'manual-schedule');
+  assert.equal(record.payload.idealDue, target);
+  assert.equal(record.audit.after.idealDue, target);
 });
 
 test('the popover manual-schedule prompt cancels without an event', async () => {
@@ -342,4 +350,104 @@ test('every UI surface for the three actions routes through the host entries', (
   assert.match(mainSource, /async scheduleFile\(/);
   assert.match(mainSource, /async setPriorityFile\(/);
   assert.match(mainSource, /E_BOOST_REQUIRES_BATCH_EVENTS/);
+});
+
+// ---- 1. session behaviour behind _runReadingAction('postpone') -----------
+
+async function sessionCounters(plugin, app) {
+  const counters = { consumed: 0, next: 0 };
+  plugin._activateReadingFile = async () => {};
+  plugin._nextSessionTarget = () => null;
+  plugin.consumeSessionItem = async () => { counters.consumed += 1; };
+  plugin._openNextSessionTarget = async () => { counters.next += 1; };
+  return counters;
+}
+
+test('an applied postpone advances the session once', async () => {
+  const { plugin, app } = await harness();
+  const file = makeFile(app, 'Sources/S1.md', topicFm(uuid(30)), '# body\n');
+  const counters = await sessionCounters(plugin, app);
+  await plugin._runReadingAction('postpone', file, { days: 1 });
+  assert.deepEqual(counters, { consumed: 1, next: 1 });
+});
+
+test('a failed postpone keeps the reader on the current topic', async () => {
+  const { plugin, app } = await harness({ saveHook: () => ({ ok: false, code: 'E_LEDGER_SAVE_FAILED' }) });
+  const file = makeFile(app, 'Sources/S2.md', topicFm(uuid(31)), '# body\n');
+  const counters = await sessionCounters(plugin, app);
+  const notices = getNotices(app);
+  notices.length = 0;
+  await plugin._runReadingAction('postpone', file, { days: 2 });
+  assert.deepEqual(counters, { consumed: 0, next: 0 });
+  assert.doesNotMatch(notices.join('\n'), /已延期/);
+});
+
+test('a conflicting postpone does not advance or claim success', async () => {
+  const { plugin, app } = await harness();
+  const file = makeFile(app, 'Sources/S3.md', topicFm(uuid(32)), '# body\n');
+  const counters = await sessionCounters(plugin, app);
+  const originalProcess = app.vault.process.bind(app.vault);
+  let injected = false;
+  app.vault.process = async (target, fn) => {
+    if (!injected) {
+      injected = true;
+      const entry = app.vault.entries.get(target.path);
+      entry.content = entry.content.replace('mf_revision: 0', 'mf_revision: 7');
+      entry.frontmatter = { ...entry.frontmatter, mf_revision: 7 };
+    }
+    return originalProcess(target, fn);
+  };
+  const notices = getNotices(app);
+  notices.length = 0;
+  await plugin._runReadingAction('postpone', file, { days: 2 });
+  app.vault.process = originalProcess;
+  assert.deepEqual(counters, { consumed: 0, next: 0 });
+  assert.doesNotMatch(notices.join('\n'), /已延期/);
+  assert.match(notices.join('\n'), /写入被拒绝/);
+});
+
+test('an uncertain postpone does not advance and says so', async () => {
+  const { plugin, app } = await harness({ saveHook: count => (count === 2 ? { ok: false, code: 'E_LEDGER_SAVE_FAILED' } : null) });
+  const file = makeFile(app, 'Sources/S4.md', topicFm(uuid(33)), '# body\n');
+  const counters = await sessionCounters(plugin, app);
+  const notices = getNotices(app);
+  notices.length = 0;
+  await plugin._runReadingAction('postpone', file, { days: 2 });
+  assert.deepEqual(counters, { consumed: 0, next: 0 });
+  assert.match(notices.join('\n'), /尚未确认/);
+});
+
+test('a no-op postpone (already postponed further) does not advance', async () => {
+  const { plugin, app } = await harness();
+  const file = makeFile(app, 'Sources/S5.md', topicFm(uuid(34)), '# body\n');
+  const counters = await sessionCounters(plugin, app);
+  await plugin._runReadingAction('postpone', file, { days: 14 });
+  assert.deepEqual(counters, { consumed: 1, next: 1 });
+  await plugin._runReadingAction('postpone', file, { days: 1 });
+  assert.deepEqual(counters, { consumed: 1, next: 1 }, 'a no-op must not advance again');
+});
+
+// ---- 3. UI retry after uncertain ----------------------------------------
+
+test('after an uncertain write the next click is blocked, and recovery does not double apply', async () => {
+  const { plugin, app, runtime } = await harness({ saveHook: count => (count === 2 ? { ok: false, code: 'E_LEDGER_SAVE_FAILED' } : null) });
+  const file = makeFile(app, 'Sources/S6.md', topicFm(uuid(35)), '# body\n');
+  const first = await plugin.postponeFile(file, 5, { quiet: true });
+  assert.equal(first.status, 'uncertain');
+  const notBeforeAfterFirst = fmOf(app, file).mf_not_before;
+  assert.ok(notBeforeAfterFirst);
+
+  const retryWhileUnresolved = await plugin.postponeFile(file, 5, { quiet: true });
+  assert.equal(retryWhileUnresolved.status, 'requires-manual-recovery');
+  assert.equal(retryWhileUnresolved.reason, 'E_TOPIC_INTENT_STATE_UNKNOWN');
+  assert.equal(fmOf(app, file).mf_not_before, notBeforeAfterFirst, 'the blocked retry wrote nothing');
+
+  const recovery = await runtime.recover();
+  assert.equal(recovery.recovered[0].status, 'applied');
+  const revisionAfterRecovery = Number(fmOf(app, file).mf_revision);
+
+  const retryAfterRecovery = await plugin.postponeFile(file, 5, { quiet: true });
+  assert.equal(retryAfterRecovery.status, 'no-op', 'rerunning the same postpone cannot move the date twice');
+  assert.equal(fmOf(app, file).mf_not_before, notBeforeAfterFirst);
+  assert.equal(Number(fmOf(app, file).mf_revision), revisionAfterRecovery, 'a no-op does not bump the revision again');
 });

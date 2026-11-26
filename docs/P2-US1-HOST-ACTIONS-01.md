@@ -62,9 +62,9 @@ Legacy 模式仍由原 writer 弹原有 Notice，适配层不追加第二条。
 ## 5. 测试
 
 ```
-test/mf-us-1-host-actions.test.js     20 pass
+test/mf-us-1-host-actions.test.js     26 pass
 test/mf-us-1-host-wiring.test.js       5 pass（静态接线断言已按新单一入口更新）
-test/*.test.js                      1237 pass
+test/*.test.js                      1243 pass
 node scripts/validate-release.mjs     valid
 node scripts/build.mjs --dry-run      no files written
 ```
@@ -86,3 +86,64 @@ Card 拒绝、Boost 阻断零字节、静态接线断言。
 
 未启用 Unified 生产写入；未访问真实 Vault / `MemoFlow-Test` / `phase2 test`；未启动 Obsidian；
 未迁移；未创建 PR/Merge；Phase 1 未触碰。
+
+---
+
+## 验收补充（PR #36 最终意见）
+
+### 1. 阅读条延期失败后的 Session 行为
+
+调用链（修复后）：
+
+```
+_runsReadingAction('postpone')
+  → _postponeReadingFile → postponeFile → HostSchedulerService → …
+  → outcome.status ∈ {applied, duplicate, legacy} ? consumeSessionItem + _openNextSessionTarget : 停留
+```
+
+- `conflict / uncertain / failed / no-op` **不**切换下一篇、**不**移除 Session Topic；
+- 只有 `applied / duplicate` 与 Legacy 已写入（`legacy`）才推进会话；
+- 失败时 UI 只显示对应错误文案，不出现“已延期”。
+
+测试：`an applied postpone advances the session once`、`a failed postpone keeps the reader on the current topic`、
+`a conflicting postpone does not advance or claim success`、`an uncertain postpone does not advance and says so`、
+`a no-op postpone (already postponed further) does not advance`。
+
+### 2. MANUAL_SCHEDULE 的 Ledger reason
+
+链路：`scheduleFile(file, idealDue)` → `buildEventPayload('schedule', {idealDue, reason})`
+→ `mapReadingAction('manual-schedule')` → payload `{ idealDue, reason }`
+→ HostSchedulerService → Async Runtime → `ledger.prepare(request, intent)`
+→ 记录字段 **`record.payload.reason`**（同时保留 `record.payload.idealDue`），审计快照在 `record.audit.after`。
+
+落盘位置：`data.json → mfUs1Ledger.records[eventId].payload`。
+断言（`manual schedule sets ideal due…`）：
+
+```js
+const record = Object.values(opened.store.dump()).find(item => item.type === 'MANUAL_SCHEDULE');
+assert.equal(record.payload.reason, 'manual-schedule');
+assert.equal(record.payload.idealDue, '2026-12-10');
+assert.equal(record.audit.after.idealDue, '2026-12-10');
+```
+
+`PersistentEventLedger.prepare` 增加 `payload` 字段（旧记录无此字段仍可读；不含正文/路径，仅调度参数）。
+
+### 3. uncertain 后的 UI 重试安全
+
+1. uncertain → `topicLocks` 保留（unknown），下一次点击返回
+   `requires-manual-recovery / E_TOPIC_INTENT_STATE_UNKNOWN`，**零写入**；
+2. `recover()` 确认该事件已应用 → 解锁并写回 applied；
+3. 用户再次点击：新的 descriptor（revision 已前进）→ POSTPONE 的目标不晚于现有
+   `mf_not_before` → `no-op / NO_LATER_THAN_EXISTING`，日期与 revision 都不再变化。
+
+测试：`after an uncertain write the next click is blocked, and recovery does not double apply`。
+
+### 4. 回归
+
+```
+node --test test/*.test.js     1243 pass（基线 1217 + 26 host-action 测试）
+validate-release               valid
+build --dry-run                no files written
+```
+
+手动排期测试中恒真的三元表达式已改为固定目标日 `2026-12-10`。

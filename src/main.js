@@ -499,11 +499,21 @@ class MemoFlowPlugin extends BasePlugin {
         case 'skip':
           await this.nextElement();
           return;
-        case 'postpone':
-          await this._postponeReadingFile(file, Math.max(1, Number(data.days) || 1));
-          await this.consumeSessionItem(file.path);
-          await this._openNextSessionTarget(next);
+        case 'postpone': {
+          const outcome = await this._postponeReadingFile(file, Math.max(1, Number(data.days) || 1));
+          // Only a confirmed (or legacy-applied) postpone may leave the current
+          // session topic. Conflict / uncertain / failed / no-op must keep the
+          // reader on this note so the user can retry or inspect it.
+          const advanced = !outcome
+            || outcome.status === 'legacy'
+            || outcome.status === 'applied'
+            || outcome.status === 'duplicate';
+          if (advanced) {
+            await this.consumeSessionItem(file.path);
+            await this._openNextSessionTarget(next);
+          }
           return;
+        }
         case 'dismiss':
           if (!(await this._confirmDestructive(
             '移出队列？',
