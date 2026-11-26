@@ -102,9 +102,22 @@ function createKeyedDataStore(data = {}) {
 // writes to a *different* key are preserved as long as they go through this
 // adapter. A caller that bypasses the adapter and calls plugin.saveData()
 // directly can still race; that residual limit is documented, not hidden.
-function createObsidianPluginDataStore(plugin, { defaultKey = 'mfUs1Ledger' } = {}) {
+function createObsidianPluginDataStore(plugin, { defaultKey = 'mfUs1Ledger', coordinator = null } = {}) {
   if (!plugin || typeof plugin.loadData !== 'function' || typeof plugin.saveData !== 'function') {
     fail('E_LEDGER_STORE_REQUIRED', 'a plugin with loadData()/saveData(data) is required');
+  }
+  // Coordinator-backed mode: the ledger is one owner among several on the same
+  // data.json, so it must go through the shared queue instead of owning the file.
+  if (coordinator) {
+    const store = coordinator.ledgerStore();
+    return {
+      async loadData() { return store.loadData(defaultKey); },
+      async saveData(key, value) {
+        const result = await store.saveData(key ?? defaultKey, value);
+        // Preserve the coordinator verdict so flush() can propagate it.
+        return result;
+      },
+    };
   }
   let chain = Promise.resolve();
   return {
@@ -145,7 +158,19 @@ async function openPluginDataLedger({ dataStore, key = 'mf-us1-ledger', expectEx
     markDirty() { dirty = true; },
     async flush() {
       try {
-        await dataStore.saveData(key, store.serialize());
+        const result = await dataStore.saveData(key, store.serialize());
+        // A store may report failure without throwing (the coordinator does).
+        // Treating that as success would let the writer believe an Intent is
+        // durable when it is not.
+        if (result && result.ok === false) {
+          return {
+            ok: false,
+            code: result.code || 'E_LEDGER_SAVE_FAILED',
+            phase: result.phase || 'write',
+            uncertain: result.uncertain === true,
+            message: result.message,
+          };
+        }
         dirty = false;
         return { ok: true };
       } catch (error) {

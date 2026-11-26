@@ -3,7 +3,7 @@
 > 文档 ID：MF-US-1-DELIVERY-MATRIX
 > 规范来源：`docs/MF-US-1-SPEC.md`（version 1.0.0-draft）唯一权威
 > 维护规则：每个规范模块独立跟踪；`IMPLEMENTED` ≠ `TESTED` ≠ `INTEGRATED` ≠ `ACCEPTED`
-> 最后更新：P2-US1-CREATION-WIRING（创建宿主接线完成，创建纯层幂等；子树/Mercy 宿主仍阻塞）
+> 最后更新：P2-US1-HOST-DATA-01（settings/session/ledger 统一持久化协调；生产激活仍锁定）
 
 ## 0. 状态定义
 

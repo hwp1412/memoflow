@@ -296,6 +296,8 @@ function createApp() {
       }
       return file;
     },
+    on() { return {}; },
+    off() {},
     getMarkdownFiles() {
       return [...this.entries.values()].filter(entry => entry.file.path.endsWith('.md')).map(entry => entry.file);
     },
@@ -361,6 +363,8 @@ function createApp() {
   };
 
   const metadataCache = {
+    on() { return {}; },
+    off() {},
     getFileCache(file) {
       const entry = file ? vault.entries.get(file.path) : null;
       if (!entry) return null;
@@ -391,6 +395,7 @@ function createApp() {
 
   const workspace = {
     getActiveFile() { return app.activeFile; },
+    detachLeavesOfType() {},
     getLeavesOfType(type) { return app.leaves[type] || []; },
     getLeaf() {
       return {
