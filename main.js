@@ -4656,6 +4656,16 @@ class IncrementalReadingPlugin extends Plugin {
       // reaches this branch because it has no approval provider.
       capability: issueSyntheticUnifiedCapability(),
     });
+    // Mercy writes through the protected admin writer; the session activation
+    // token must be handed to it, otherwise Mercy is blocked in real Obsidian
+    // with E_UNIFIED_NOT_AUTHORIZED (real-device E2E finding).
+    if (this.mfUs1HostStorage) {
+      const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
+      this.mfUs1AdminWriter = createProtectedAdminWriter({
+        storage: this.mfUs1HostStorage,
+        authorization: result.authorization,
+      });
+    }
     this.settings.mf_us1_mode = 'unified';
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
@@ -6101,8 +6111,40 @@ class IncrementalReadingPlugin extends Plugin {
       new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
       return { status: 'refused', reason: error.code || 'SUBTREE_RELATION' };
     }
-    const nodes = subtree.map(page => {
-      const nodeFm = page.fm || {};
+    // Children must be written before their parents: a child's CAS verifies the
+    // parent/source hash, and postponing the parent first invalidates that hash
+    // (real-Obsidian E2E: root applied, children E_SUBTREE_CHANGED). Compute the
+    // depth from mf_parent_id and write the deepest nodes first.
+    const decorated = (subtree || []).map(page => ({ page, nodeFm: page.fm || {} }));
+    const byTopicId = new Map();
+    const byBasename = new Map();
+    for (const item of decorated) {
+      const id = item.nodeFm.mf_id;
+      if (typeof id === 'string' && id) byTopicId.set(id.toLowerCase(), item);
+      if (item.page && item.page.tfile) byBasename.set(item.page.tfile.basename.toLowerCase(), item);
+    }
+    const parentOf = item => {
+      const mfParent = typeof item.nodeFm.mf_parent_id === 'string' ? item.nodeFm.mf_parent_id.toLowerCase() : null;
+      if (mfParent && byTopicId.has(mfParent)) return byTopicId.get(mfParent);
+      const raw = String(item.nodeFm.parent || item.nodeFm.source || '');
+      const name = raw.replace(/^\[\[/, '').replace(/\]\]$/, '').split('|')[0].trim().toLowerCase();
+      return name ? (byBasename.get(name) || null) : null;
+    };
+    const rootKey = String(fm.mf_id).toLowerCase();
+    const depthOf = (item, seen = new Set()) => {
+      const id = typeof item.nodeFm.mf_id === 'string' ? item.nodeFm.mf_id.toLowerCase() : null;
+      if (!id || id === rootKey) return 0;
+      if (seen.has(id)) return 0;
+      seen.add(id);
+      const parent = parentOf(item);
+      return parent && parent !== item ? 1 + depthOf(parent, seen) : 0;
+    };
+    let maxDepth = 0;
+    for (const item of decorated) item.depth = depthOf(item);
+    for (const item of decorated) maxDepth = Math.max(maxDepth, item.depth);
+    const nodes = decorated.map(item => {
+      const page = item.page;
+      const nodeFm = item.nodeFm;
       const topicId = typeof nodeFm.mf_id === 'string' && nodeFm.mf_id ? nodeFm.mf_id : null;
       return {
         path: page.tfile.path,
@@ -6112,6 +6154,7 @@ class IncrementalReadingPlugin extends Plugin {
         type: nodeFm.type,
         status: nodeFm.status,
         relationKey: `${nodeFm.parent ?? ''}|${nodeFm.source ?? ''}`,
+        order: maxDepth - item.depth,
       };
     });
     let plan;

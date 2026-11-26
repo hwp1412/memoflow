@@ -266,3 +266,21 @@ Card 无 `mf_*`、Ledger applied 记录对应真实 Topic、Batch（Boost eventI
 
 - **Pass（真实 Obsidian 1.15.1）**：插件加载、空库识别、Unified 激活、真实评阅写入（Revision 0→1、Ledger 1、hash/audit）、紧急撤销、撤销后写入被拒（零修改）、只读审计。
 - **未验证**：Boost/Mercy/Undo/Subtree 的完整真机闭环（Harness 修改目录后，最新脚本的激活步骤回退为 legacy 模式，需继续调试）、Legacy/Shadow 交互、真实 UI 创建多级 Extract、Card/SR、重启恢复。
+
+
+## 21. 真机批量组进展（最新）
+
+真实 Obsidian 1.15.1 + 正确 IR 目录（`Sources/Incremental Reading/...`）下：
+
+| 项 | 真机结果 | 说明 |
+|---|---|---|
+| Unified 激活 | **Pass** | `authorized=true`，阻断项空 |
+| Boost（含子孙） | **Pass** | 批次 `68e466fd…`；S 60→55、E1/E2 50→45；批次已落盘 |
+| Mercy Apply + Undo | **Pass** | Apply 3/3 applied，`mf_not_before=2026-11-28`；Undo 恢复 3 项，`afterUndo=null` |
+| Legacy 评阅 | **Pass** | `endSession` 成功，legacy `next_review` 更新为 05-12-2026（Review=Hold 时 interval 不变） |
+| Subtree Postpone | **Fail（部分）** | S 已 applied，E1/E2 仍 `E_SUBTREE_CHANGED` |
+
+### 期间发现并修复的真实问题
+
+1. **Mercy 在激活后被阻断**（`E_UNIFIED_NOT_AUTHORIZED`）：激活只给 runtime 签发 token，`mfUs1AdminWriter` 仍无授权。已修复：激活时把会话 token 交给受保护 Writer → 真机 Mercy 3/3 applied、Undo 通过。
+2. **子树写入顺序**：根先写导致子节点的 parent-hash 前置条件失效（`E_SUBTREE_CHANGED`）。已改为按 `mf_parent_id`（兼容 legacy parent/source 链接）计算深度、**最深节点先写**；Mock 测试 1450 全绿，但真机本轮仍观察到根先写（待确认构建/路径），Subtree 实机标记未验证。
