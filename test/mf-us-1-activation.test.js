@@ -299,3 +299,14 @@ test('a vault with legacy topics still requires a completed migration plan', asy
   assert.ok(result.blockers.includes('MIGRATION_INCOMPLETE'));
   assert.equal(plugin.mfUs1ActivationDiagnostics().legacyTopicCount, 1);
 });
+
+test('activation grants creation and resume capabilities, revocation clears them', async () => {
+  const { plugin } = setupPlugin();
+  plugin.__mfUs1ActivationApproval = () => true;
+  await plugin.mfUs1ActivateUnified();
+  assert.ok(plugin.__mfUs1CreationAuthorization, 'creation capability issued on activation');
+  assert.ok(plugin.__mfUs1ResumeAuthorization, 'resume capability issued on activation');
+  await plugin.mfUs1RevokeUnifiedAuthorization();
+  assert.equal(plugin.__mfUs1CreationAuthorization, null);
+  assert.equal(plugin.__mfUs1ResumeAuthorization, null);
+});

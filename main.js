@@ -4680,6 +4680,18 @@ class IncrementalReadingPlugin extends Plugin {
         authorization: result.authorization,
       });
     }
+    // The activation session also covers the other protected write paths:
+    // topic creation and batch resume. Without these an activated user could
+    // not create Sources/Extracts or finish a crashed batch (real-device E2E
+    // found Mercy/Writer needed the same treatment).
+    try {
+      const { issueSyntheticCreationAuthorization } = require('./src/integration/topic-creation-host.js');
+      const { issueSyntheticBatchResumeAuthorization } = require('./src/integration/batch-resume.js');
+      this.__mfUs1CreationAuthorization = issueSyntheticCreationAuthorization();
+      this.__mfUs1ResumeAuthorization = issueSyntheticBatchResumeAuthorization();
+    } catch (error) {
+      console.error('[IR] MF-US-1 activation could not issue creation/resume capability', error);
+    }
     this.settings.mf_us1_mode = 'unified';
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
@@ -4708,6 +4720,8 @@ class IncrementalReadingPlugin extends Plugin {
   async mfUs1RevokeUnifiedAuthorization() {
     const coordinator = this._mfUs1ActivationCoordinator();
     const revoked = coordinator.revoke();
+    this.__mfUs1CreationAuthorization = null;
+    this.__mfUs1ResumeAuthorization = null;
     this.mfUs1Suspended = true;
     this._mfUs1HostInstance = null;
     new Notice('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
@@ -4732,6 +4746,8 @@ class IncrementalReadingPlugin extends Plugin {
     }
     const coordinator = this._mfUs1ActivationCoordinator();
     coordinator.revoke();
+    this.__mfUs1CreationAuthorization = null;
+    this.__mfUs1ResumeAuthorization = null;
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
     const storage = this.mfUs1HostStorage;

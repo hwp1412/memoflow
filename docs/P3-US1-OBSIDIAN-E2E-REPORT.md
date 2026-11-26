@@ -347,3 +347,21 @@ host getMode、lifecycle 初始化、dashboard 全部改用 `_mfUs1EffectiveMode
 - `mfUs1ShadowLast` 正确记录只读对照差异（`mf_ideal_due 2026-11-10→2026-12-09`、`mf_not_before`、`mf_interval_days 8→12`、`review_count 1→2`、`mf_revision`）。
 
 **Shadow 真机 Pass。**
+
+
+## 25. 创建网关与 Card 隔离 — 真机 Pass
+
+激活后（真实 Obsidian 1.15.1）通过创建网关创建 Topic，并补齐激活能力的最后两块：
+
+| 项 | 结果 |
+|---|---|
+| Source 创建（gateway） | **Pass**：`status applied`，`mfId=4ec8868b…`，type/status/priority 正确 |
+| Extract 创建（gateway，指定 parent） | **Pass**：`status applied`，`mf_parent_id=源 mfId`、`mf_root_id=源 mfId`、type=extract |
+| Card 隔离 | **Pass**：Card 无 `mf_id`/`mf_revision`，MF-US-1 诊断 `topicCount` 不含 Card |
+| 未授权创建 | **Pass（fail-closed）**：未激活时 gateway 返回 `handled:false`，不创建、不回退 Legacy |
+
+### 修复：激活会话补齐 creation / resume 能力
+
+与前一轮 Mercy Writer 同类问题：激活只签发 runtime token，`_mfUs1CreateTopicFromHost` 和批次 Resume 仍无授权。
+修复：`mfUs1ActivateUnified()` 同时签发 creation/resume 会话能力；撤销时一并清空。新增回归测试。
+真机验证：激活后 Source/Extract 创建均 applied；撤权后创建 fail-closed。
