@@ -27,7 +27,8 @@
 | Vault | 状态 | 证据 |
 |---|---|---|
 | `MemoFlow-Test` | 存在，已备份，新构建已安装 | 路径 `/Users/Admin/Documents/插件开发/MemoFlow-Test`；45 个文件 / 15 MB；marker `vaultId 78896b66-c7a1-4e9d-a1aa-edba1b082dcb`；备份 `插件开发/backups/MemoFlow-Test-20261127-032549`（45 文件，备份与新文件 main.js 哈希一致）；安装后 `main.js` = 新构建哈希 `7192292a…`；`data.json` 时间戳未变（Nov 25），未被覆盖 |
-| `E2E-Phase2-Test-Vault`（新建一次性副本） | 已就绪 | 从 MemoFlow-Test 备份完整复制（15 MB），安装 E2E 测试构建，用于批量/恢复/故障注入；**可随时删除重建** |
+| `E2E-Phase2-Test-Vault`（旧格式副本） | 已就绪 | 从 MemoFlow-Test 备份完整复制（15 MB），安装 E2E 测试构建；用于迁移预览/回滚与 legacy 检查（16 个旧 Topic，Unified 激活会被 migration 门禁正确阻断） |
+| `E2E-Phase2-Unified-Vault`（新建空库） | 已就绪 | 空库 + E2E 测试构建，用于激活后的 Subtree/Boost/Mercy/恢复/故障注入；可随时删除重建 |
 | `phase2 test` | **未找到（Blocked；已用一次性副本替代执行渠道）** | `~/Library/Application Support/obsidian/obsidian.json` 仅注册 3 个 Vault：`HWP的知识仓库`、`supermemo`、`MemoFlow-Test`；`find /Users/Admin -maxdepth 6 -iname "*phase*test*"` 无匹配。**需要项目负责人提供实际路径** |
 | 一次性空库（新建） | 已创建，等待实机 | `插件开发/E2E-Empty-Vault`（含新构建插件、空 `Sources/`、`Extracts/`、disposable marker） |
 
@@ -160,3 +161,29 @@
 
 备份：`插件开发/backups/MemoFlow-Test-20261127-032549`（45 文件，哈希已复核）。
 正式构建（`node scripts/build.mjs`）中 E2E 命令出现 0 次；`--e2e` 构建中为 1 次——构建门控已验证。
+
+
+## 16. 只读审计工具（本轮交付）
+
+新增 `scripts/e2e-audit.mjs`（只读，不写 Vault）：
+
+```bash
+node scripts/e2e-audit.mjs --vault <path> --snapshot out.json      # 执行前基线
+node scripts/e2e-audit.mjs --vault <path> --baseline out.json [--allow-changes] [--profile empty]
+```
+
+检查项：插件安装/ID、Topic `mf_id` UUID 与唯一性、`mf_revision/mf_scheduler_version`、Extract 的 parent/root 链与 root=Source、
+Card 无 `mf_*`、Ledger applied 记录对应真实 Topic、Batch（Boost eventIds/绝对目标；Mercy notBefore）、旧格式 Topic 计数与迁移需求、
+基线 diff（新增/修改/删除、data.json、main.js 哈希）。退出码 0/1/2；`--json` 供证据归档。
+
+本机实跑（只读）：
+
+| Vault | 结果 | 摘要 |
+|---|---|---|
+| `E2E-Empty-Vault` | PASS | Topic 0/0/0；旧格式 0；`MIGRATION_NOT_REQUIRED` |
+| `MemoFlow-Test` | PASS（含 WARN） | Topic 5/11/6；旧格式 16 → `MIGRATION_REQUIRED`（预期） |
+| `E2E-Phase2-Test-Vault` | PASS（含 WARN） | 旧格式副本 16，用于迁移预览/回滚 |
+| `E2E-Phase2-Unified-Vault` | PASS | 空库，供激活后批量测试 |
+
+测试：`test/e2e-audit.test.js` 9 项（干净库、重复 ID、parent/root 错误、缺父、Card 泄漏、Ledger 孤儿、Boost 证据/目标、基线 diff、空库含旧格式）。
+配套手动清单：`docs/P3-US1-E2E-CHECKLIST.md`（每步命令、预期、停止条件、证据归档）。
