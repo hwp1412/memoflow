@@ -3914,7 +3914,7 @@ class IncrementalReadingPlugin extends Plugin {
     return parsed ? this._mfUs1IsoDate(parsed) : null;
   }
 
-  async postponeFile(file, days, { legacy = null, quiet = false } = {}) {
+  async postponeFile(file, days, { legacy = null, quiet = false, today = null } = {}) {
     const { buildEventPayload } = require('./src/integration/reading-actions-host.js');
     const target = this._mfUs1HostActionTarget(file);
     if (!target.ok) {
@@ -3927,7 +3927,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
-      built.type, file, target.fm, this._todayKey(), built.payload
+      built.type, file, target.fm, today || this._todayKey(), built.payload
     );
     const legacyWrite = typeof legacy === 'function'
       ? legacy
@@ -4894,12 +4894,23 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async postponeSubtree() {
-    return this._mfUs1RunLegacy({ action: 'POSTPONE_SUBTREE' }, () => this._postponeSubtreeLegacy());
-  }
-
-  async _postponeSubtreeLegacy() {
-    const r = await resolveSourceFromActive(this.app, this.settings);
-    if (!r) return;
+    const unified = this._mfUs1EffectiveMode() === 'unified';
+    let root = null;
+    if (unified) {
+      // Unified may start from a Source OR an Extract; a card is not a subtree
+      // root (do not silently walk up to its parent).
+      const active = this.app.workspace.getActiveFile();
+      if (!active || active.extension !== 'md') { new Notice('请先打开来源或摘录笔记。'); return; }
+      const rootFm = getFm(this.app, active);
+      if (!rootFm || (rootFm.type !== 'source' && rootFm.type !== 'extract')) {
+        new Notice('子树延期只能以来源或摘录为根（卡片请先打开其父节点）。');
+        return;
+      }
+      root = { tfile: active, fm: rootFm };
+    } else {
+      root = await resolveSourceFromActive(this.app, this.settings);
+      if (!root) return;
+    }
     const choice = await pickFromList(
       this.app,
       ['+1d', '+3d', '+1 week', '+2 weeks', '+1 month'],
@@ -4907,6 +4918,13 @@ class IncrementalReadingPlugin extends Plugin {
       'Postpone subtree by'
     );
     if (!choice) return;
+    if (!unified) {
+      return this._mfUs1RunLegacy({ action: 'POSTPONE_SUBTREE' }, () => this._postponeSubtreeLegacy(root, choice));
+    }
+    return this.postponeSubtreeHost(root.tfile, choice, root.fm);
+  }
+
+  async _postponeSubtreeLegacy(r, choice) {
     let subtree = null;
     try {
       subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, {
@@ -4941,6 +4959,71 @@ class IncrementalReadingPlugin extends Plugin {
       return;
     }
     new Notice(`Subtree postponed +${choice}d · ${postponed} element${postponed === 1 ? '' : 's'}.`);
+  }
+
+  // Unified subtree postpone: one A5.2 POSTPONE event per node, in a fixed
+  // order, with `today` pinned for the whole batch. No batch WAL is created —
+  // replaying is safe because A5.2 makes an already postponed node a no-op.
+  _mfUs1VerifySubtreeNode(node) {
+    const file = this.app.vault.getAbstractFileByPath(node.path);
+    if (!file) return { ok: false, code: 'E_FILE_MISSING' };
+    const fm = getFm(this.app, file);
+    if (!fm || !node.topicId) return { ok: false, code: 'E_ID_NOT_PERSISTED' };
+    if (typeof fm.mf_id !== 'string' || fm.mf_id !== node.topicId) return { ok: false, code: 'E_TOPIC_IDENTITY_CHANGED' };
+    if (`${fm.parent ?? ''}|${fm.source ?? ''}` !== node.relationKey) return { ok: false, code: 'E_SUBTREE_CHANGED' };
+    return { ok: true };
+  }
+
+  _mfUs1ReportBatch(report) {
+    if (!report || !report.message) return;
+    const timeout = ['partial', 'uncertain', 'failed'].includes(report.status) ? 14000 : 6000;
+    new Notice(report.message, timeout);
+  }
+
+  async postponeSubtreeHost(rootFile, days, rootFm = null) {
+    const { planSubtreePostpone, runSubtreePostpone, describeBatchOutcome } = require('./src/integration/subtree-postpone-host.js');
+    const fm = rootFm || (rootFile ? getFm(this.app, rootFile) : null);
+    if (!fm || typeof fm.mf_id !== 'string' || !fm.mf_id) {
+      new Notice('子树延期未执行：根节点缺少持久 mf_id（不做隐式迁移）。', 10000);
+      return { status: 'blocked', reason: 'E_ROOT_ID_REQUIRED' };
+    }
+    // One date for the whole batch, even if the clock crosses midnight.
+    const today = this._todayKey();
+    let subtree = null;
+    try {
+      subtree = walkSubtree(this.app, this.settings, rootFile.basename, rootFile.path, {
+        rows: this.getIRRows(),
+        strict: true,
+      });
+    } catch (error) {
+      new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
+      return { status: 'refused', reason: error.code || 'SUBTREE_RELATION' };
+    }
+    const nodes = subtree.map(page => {
+      const nodeFm = page.fm || {};
+      const topicId = typeof nodeFm.mf_id === 'string' && nodeFm.mf_id ? nodeFm.mf_id : null;
+      return {
+        path: page.tfile.path,
+        basename: page.tfile.basename,
+        topicId,
+        stableId: topicId,
+        type: nodeFm.type,
+        status: nodeFm.status,
+        relationKey: `${nodeFm.parent ?? ''}|${nodeFm.source ?? ''}`,
+      };
+    });
+    const plan = planSubtreePostpone({ nodes, rootTopicId: fm.mf_id, days, today });
+    const outcome = await runSubtreePostpone({
+      plan,
+      verifyNode: node => this._mfUs1VerifySubtreeNode(node),
+      runNode: async node => {
+        const file = this.app.vault.getAbstractFileByPath(node.path);
+        if (!file) return { status: 'failed', reason: 'E_FILE_MISSING' };
+        return this.postponeFile(file, days, { quiet: true, today });
+      },
+    });
+    this._mfUs1ReportBatch(describeBatchOutcome(outcome));
+    return outcome;
   }
 
   // ---- Extract / Flashcard ------------------------------------------------
