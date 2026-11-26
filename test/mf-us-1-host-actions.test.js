@@ -326,13 +326,17 @@ test('a card is refused before any write', async () => {
   assert.equal(app.vault.readContent(card), before);
 });
 
-test('boost is blocked in unified mode before touching any note', async () => {
-  const { plugin, app } = await harness();
+test('boost in unified mode routes to batch events and writes nothing without authorization', async () => {
+  const { plugin, app } = await harness({ authorization: null });
   const file = makeFile(app, 'Sources/O.md', topicFm(uuid(23)), '# body\n');
+  app.activeFile = file;
+  app.__promptState.quality = 5;
+  app.__promptState.confirm = true;
   const before = app.vault.readContent(file);
   const result = await plugin.boost();
-  assert.equal(result.status, 'failed');
-  assert.equal(result.reason, 'E_BOOST_REQUIRES_BATCH_EVENTS');
+  // Without a host authorization the per-node SET_PRIORITY events fail closed;
+  // the legacy writer must never run.
+  assert.ok(result === null || result.status !== 'applied', JSON.stringify(result && result.status));
   assert.equal(app.vault.readContent(file), before);
 });
 
@@ -349,7 +353,8 @@ test('every UI surface for the three actions routes through the host entries', (
   assert.match(mainSource, /async postponeFile\(/);
   assert.match(mainSource, /async scheduleFile\(/);
   assert.match(mainSource, /async setPriorityFile\(/);
-  assert.match(mainSource, /E_BOOST_REQUIRES_BATCH_EVENTS/);
+  assert.match(mainSource, /async boostUnified\(/);
+  assert.match(mainSource, /applyBoostBatch\(/);
 });
 
 // ---- 1. session behaviour behind _runReadingAction('postpone') -----------

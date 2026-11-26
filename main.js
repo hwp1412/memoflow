@@ -2861,10 +2861,14 @@ class IncrementalReadingPlugin extends Plugin {
     // One coordinator owns every data.json write. Reserved keys (the Unified
     // ledger) must never become part of this.settings: writing a startup-time
     // ledger snapshot back would roll the ledger backwards.
+    const { BATCH_KEY } = require('./src/integration/batch-store.js');
     this.pluginData = createPluginDataCoordinator({
       plugin: this,
+      reservedKeys: ['mfUs1Ledger', BATCH_KEY],
       notice: (message, timeout) => new Notice(message, timeout),
     });
+    this.mfUs1BatchStore = null;
+    this.mfUs1AdminWriter = null;
     const rawData = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, this.pluginData.stripReservedKeys(rawData));
     for (const reservedKey of this.pluginData.reservedKeys) delete this.settings[reservedKey];
@@ -2915,6 +2919,13 @@ class IncrementalReadingPlugin extends Plugin {
         resolveFile: createVaultTopicResolver({ app: this.app }),
         dateFormat: configuredDateFormat(this.settings),
       });
+      this.mfUs1HostStorage = storage;
+      const { createBatchStore } = require('./src/integration/batch-store.js');
+      const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
+      this.mfUs1BatchStore = createBatchStore({ coordinator: this.pluginData });
+      // No production authorization token exists: the writer stays read-only
+      // until a separately approved activation supplies one.
+      this.mfUs1AdminWriter = createProtectedAdminWriter({ storage, authorization: this.__mfUs1AdminAuthorization || null });
       this.mfUs1AsyncLifecycle = await initializeAsyncHostLifecycle({
         plugin: this,
         mode: this.settings.mf_us1_mode || 'legacy',
@@ -3179,6 +3190,7 @@ class IncrementalReadingPlugin extends Plugin {
       { label: 'Performance diagnostics', run: () => this.performanceDiagnostics() },
       { label: 'MF-US-1 diagnostics', run: () => this.mfUs1Diagnostics() },
       { label: 'Reactivate current…', run: () => this.reactivateCurrent() },
+      { label: 'Undo last Mercy', run: () => this.mercyUndoLast() },
     ]);
   }
 
@@ -3895,7 +3907,10 @@ class IncrementalReadingPlugin extends Plugin {
       // The unified transport is injected only by an isolated harness; the
       // service itself still refuses unified when it is absent, and the
       // runtime it points at re-checks its own authorization.
-      const transport = this.__mfUs1UnifiedTransport || null;
+      const transport = this.__mfUs1UnifiedTransport
+        || (this.mfUs1AsyncLifecycle && this.mfUs1AsyncLifecycle.runtime
+          ? (request) => this.mfUs1AsyncLifecycle.runtime.execute(request)
+          : null);
       this._mfUs1HostInstance = createHostSchedulerService({
         getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
         unified: typeof transport === 'function' ? descriptor => transport(this._mfUs1UnifiedRequest(descriptor)) : null,
@@ -3993,6 +4008,220 @@ class IncrementalReadingPlugin extends Plugin {
     });
     this._mfUs1ShowActionResult(result);
     return result;
+  }
+
+  async _markPathsDoneUnified(paths, confirm) {
+    this._mfUs1RefreshRows();
+    const { runStateAction } = require('./src/integration/state-actions-host.js');
+    const files = [...new Set(paths || [])]
+      .map(value => this.app.vault.getAbstractFileByPath(value))
+      .filter(file => file instanceof TFile && file.extension === 'md')
+      .filter(file => ['source', 'extract'].includes(getFm(this.app, file)?.type))
+      .filter(file => getFm(this.app, file)?.status === 'active');
+    if (!files.length) { new Notice('没有可完成的来源或摘录（卡片由 SR 管理）。'); return 0; }
+    if (confirm) {
+      const ok = await confirmDialog(this.app, `完成 ${files.length} 项？`, 'Unified 模式：每项各提交一次 COMPLETE 事件，不计评阅。');
+      if (!ok) return 0;
+    }
+    let applied = 0;
+    const problems = [];
+    for (const file of files) {
+      const result = await runStateAction({
+        run: (descriptor, legacyWriter) => this._mfUs1RunLegacy(descriptor, legacyWriter),
+        type: 'COMPLETE',
+        file,
+        fm: getFm(this.app, file),
+        today: this._todayKey(),
+      });
+      if (['applied', 'duplicate', 'legacy', 'no-op'].includes(result.status)) applied += 1;
+      else problems.push(`${file.basename}: ${result.status}${result.reason ? `/${result.reason}` : ''}`);
+    }
+    if (problems.length) new Notice(`完成 ${applied} 项；${problems.length} 项未完成：${problems.slice(0, 3).join('；')}`, 14000);
+    else new Notice(`已完成 ${applied} 项。`);
+    return applied;
+  }
+
+  async _dismissTreeNodeUnified(path) {
+    this._mfUs1RefreshRows();
+    const { runStateAction } = require('./src/integration/state-actions-host.js');
+    const file = this.app.vault.getAbstractFileByPath(path);
+    const fm = file ? getFm(this.app, file) : null;
+    if (!file || !fm || (fm.type !== 'source' && fm.type !== 'extract')) { new Notice('只能移出来源或摘录。'); return false; }
+    const result = await runStateAction({
+      run: (descriptor, legacyWriter) => this._mfUs1RunLegacy(descriptor, legacyWriter),
+      type: 'DISMISS',
+      file,
+      fm,
+      today: this._todayKey(),
+    });
+    this._mfUs1ShowActionResult(result);
+    return ['applied', 'duplicate', 'legacy'].includes(result.status);
+  }
+
+  async boostUnified() {
+    this._mfUs1RefreshRows();
+    const { planBoostBatch, applyBoostBatch, describeBoostOutcome } = require('./src/integration/boost-batch-host.js');
+    if (!this.mfUs1BatchStore) { new Notice('MF-US-1 Boost 尚未初始化（缺少批次存储）。', 9000); return null; }
+    const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
+    if (!r) return null;
+    if (!r.fm || typeof r.fm.mf_id !== 'string' || !r.fm.mf_id) {
+      new Notice('Boost 未执行：该主题缺少持久 mf_id（需先迁移）。', 9000);
+      return null;
+    }
+    const delta = await pickFromList(this.app, ['Small (-5)', 'Medium (-15)', 'Strong (-30)'], [5, 15, 30], 'Boost amount');
+    if (!delta) return null;
+    let batch;
+    try {
+      const { projectTopic } = require('./src/integration/topic-projection.js');
+      const subtree = walkSubtree(this.app, this.settings, r.tfile.basename, r.tfile.path, {
+        rows: this.getIRRows(),
+        strict: true,
+      });
+      const items = subtree.map(page => {
+        const projected = projectTopic({ tfile: page.tfile, fm: page.fm }, { mode: this._mfUs1EffectiveMode() });
+        return {
+          path: projected.path,
+          basename: projected.basename,
+          topicId: projected.topicId,
+          type: projected.type,
+          status: projected.status,
+          priority: projected.priority,
+        };
+      });
+      batch = planBoostBatch({ rows: items, rootTopicId: r.fm.mf_id, delta, today: this._todayKey() });
+    } catch (error) {
+      new Notice(`Boost 未执行：${error.message || error.code || '计划失败'}`, 9000);
+      return null;
+    }
+    if (!batch.targets.length) { new Notice('Boost 没有可提升的节点。'); return null; }
+    const ok = await confirmDialog(this.app, 'Boost 优先级', `将对 ${batch.targets.length} 个主题各提交一次 SET_PRIORITY（绝对目标值），确认执行？`);
+    if (!ok) return null;
+    const rowsByPath = new Map(this.getIRRows().map(row => [row.tfile.path, row]));
+    const outcome = await applyBoostBatch({
+      batch,
+      getPriority: async node => Number((rowsByPath.get(node.path) || {}).fm?.priority) || 50,
+      applyItem: async (node, change) => {
+        const file = this.app.vault.getAbstractFileByPath(node.path);
+        if (!file) return { status: 'failed', reason: 'E_FILE_MISSING' };
+        return this.setPriorityFile(file, change.priority, { quiet: true });
+      },
+      store: { save: (batchId, record) => this.mfUs1BatchStore.saveBatch({ batchId, kind: 'BOOST', ...record }) },
+    });
+    const report = describeBoostOutcome(outcome);
+    new Notice(report.message, report.nonAtomic ? 14000 : 7000);
+    return outcome;
+  }
+
+  _mfUs1RefreshRows() {
+    // MetadataCache objects are replaced after each write; a cached projection
+    // row would otherwise report the pre-write mf_not_before / priority.
+    this.irFilesCache = null;
+    this.irRowsCache = null;
+  }
+
+  _mfUs1RowByTopicId(topicId) {
+    if (!topicId) return null;
+    const wanted = String(topicId).toLowerCase();
+    return this.getIRRows().find(row => row.fm && typeof row.fm.mf_id === 'string' && row.fm.mf_id.toLowerCase() === wanted) || null;
+  }
+
+  _mfUs1NotBeforeOf(row) {
+    const value = row && row.fm ? row.fm.mf_not_before : null;
+    return value == null || value === 'null' || value === '' ? null : String(value);
+  }
+
+  async mercyUnified() {
+    this._mfUs1RefreshRows();
+    const { buildMercyPreview, confirmMercyPreview, applyMercyHost, describeMercyOutcome } = require('./src/integration/mercy-host.js');
+    const { projectTopic, toQueueTopic } = require('./src/integration/topic-projection.js');
+    if (!this.mfUs1AdminWriter || !this.mfUs1BatchStore) {
+      new Notice('MF-US-1 Mercy 尚未初始化（缺少受保护写入或批次存储）。', 9000);
+      return null;
+    }
+    const windowDays = await pickFromList(this.app, ['3 days', '7 days', '14 days', '30 days'], [3, 7, 14, 30], 'Mercy window');
+    if (!windowDays) return null;
+    const today = this._todayKey();
+    const rows = this.getIRRows();
+    const projections = rows.map(row => projectTopic(row, { mode: this._mfUs1EffectiveMode() }));
+    const topics = projections
+      .filter(item => item.writable && item.status === 'active' && item.effectiveDue && item.effectiveDue <= today)
+      .map(toQueueTopic);
+    if (!topics.length) { new Notice('没有可摊平的逾期主题。'); return null; }
+
+    let preview;
+    try {
+      preview = buildMercyPreview({ topics, today, windowDays, budgetPerDay: this.settings.queueBudgetMinutes || 30, config: this.settings.queueConfig || undefined });
+    } catch (error) {
+      new Notice(`Mercy 预览失败：${error.message || error.code || '未知错误'}`, 9000);
+      return null;
+    }
+    if (!preview.items || !preview.items.length) { new Notice('Mercy 预览没有需要调整的主题。'); return null; }
+    const ok = await confirmDialog(this.app, 'Mercy 预览',
+      `${preview.items.length} 个逾期主题将在未来 ${windowDays} 天内摊平（仅修改最早可见日，不改真实间隔）。确认执行？`);
+    if (!ok) return null;
+    const confirmation = confirmMercyPreview(preview);
+
+    const outcome = await applyMercyHost({
+      preview,
+      confirmation,
+      today,
+      applyItem: async item => {
+        const row = this._mfUs1RowByTopicId(item.topicId);
+        if (!row) return { status: 'conflict', reason: 'E_TOPIC_NOT_FOUND' };
+        const current = this._mfUs1NotBeforeOf(row);
+        if (current !== (item.currentNotBefore ?? null)) return { status: 'conflict', reason: 'E_INPUT_CHANGED' };
+        return this.mfUs1AdminWriter.write({
+          topicId: item.topicId,
+          updates: { mf_not_before: item.notBefore },
+          expectedNotBefore: item.currentNotBefore ?? null,
+        });
+      },
+      store: { save: record => this.mfUs1BatchStore.saveBatch({ kind: 'MERCY', ...record }) },
+    });
+    const report = describeMercyOutcome(outcome);
+    new Notice(report.message, report.nonAtomic ? 14000 : 7000);
+    return outcome;
+  }
+
+  async mercyUndoLast() {
+    this._mfUs1RefreshRows();
+    const { confirmMercyPreview, undoMercyHost, describeMercyOutcome } = require('./src/integration/mercy-host.js');
+    if (!this.mfUs1AdminWriter || !this.mfUs1BatchStore) { new Notice('MF-US-1 Mercy 尚未初始化。', 9000); return null; }
+    const batch = await this.mfUs1BatchStore.latestBatch('MERCY');
+    if (!batch || !Array.isArray(batch.results)) { new Notice('没有可撤销的 Mercy 批次记录。'); return null; }
+    const ok = await confirmDialog(this.app, '撤销上次 Mercy', `恢复 ${batch.results.filter(r => r.status === 'applied').length} 个主题的原最早可见日？`);
+    if (!ok) return null;
+    let confirmation;
+    try {
+      confirmation = confirmMercyPreview({
+        batchId: batch.batchId,
+        previewDigest: batch.previewDigest,
+        today: batch.today,
+        windowDays: batch.windowDays,
+        items: batch.items,
+      });
+    } catch (error) {
+      new Notice(`批次凭证无效，无法撤销：${error.message || error.code}`, 9000);
+      return null;
+    }
+    const outcome = await undoMercyHost({
+      batch,
+      confirmation,
+      undoItem: async item => {
+        const row = this._mfUs1RowByTopicId(item.topicId);
+        if (!row) return { status: 'conflict', reason: 'E_TOPIC_NOT_FOUND' };
+        const current = this._mfUs1NotBeforeOf(row);
+        if (current !== item.notBefore) return { status: 'conflict', reason: 'E_TOPIC_CHANGED_SINCE_APPLY' };
+        return this.mfUs1AdminWriter.write({
+          topicId: item.topicId,
+          updates: { mf_not_before: item.currentNotBefore ?? null },
+          expectedNotBefore: item.notBefore,
+        });
+      },
+    });
+    const report = describeMercyOutcome(outcome);
+    new Notice(report.message, report.nonAtomic ? 14000 : 7000);
+    return outcome;
   }
 
   async _reactivateLegacy(r, idealDue) {
@@ -4602,6 +4831,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async dismissTreeNode(path) {
+    if (this._mfUs1EffectiveMode() === 'unified') return this._dismissTreeNodeUnified(path);
     if (this._mfUs1GuardLegacyWrite('移出队列（树）')) return false;
     const f = this.app.vault.getAbstractFileByPath(path);
     if (!f) return;
@@ -4618,6 +4848,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async markPathsDone(paths, { confirm = true } = {}) {
+    if (this._mfUs1EffectiveMode() === 'unified') return this._markPathsDoneUnified(paths, confirm);
     if (this._mfUs1GuardLegacyWrite('完成（直接写入）')) return 0;
     const files = [...new Set(paths || [])]
       .map(path => this.app.vault.getAbstractFileByPath(path))
@@ -4893,12 +5124,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async boost() {
-    // Boost is a batch delta, not one SET_PRIORITY event. Until a batch event
-    // protocol exists it must not bypass the single writer in Unified mode.
-    if (this._mfUs1EffectiveMode() === 'unified') {
-      new Notice('Boost 尚未支持 Unified 批量优先级；请使用「设置优先级」逐项修改。', 9000);
-      return { status: 'failed', reason: 'E_BOOST_REQUIRES_BATCH_EVENTS', writesPerformed: false };
-    }
+    if (this._mfUs1EffectiveMode() === 'unified') return this.boostUnified();
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const amount = await pickFromList(
@@ -5020,6 +5246,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mercy() {
+    if (this._mfUs1EffectiveMode() === 'unified') return this.mercyUnified();
     if (this._mfUs1GuardLegacyWrite('Mercy（旧入口）')) return null;
     const choice = await pickFromList(
       this.app, ['3 days', '7 days', '14 days', '30 days'], [3, 7, 14, 30], 'Spread window'

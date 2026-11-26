@@ -41,9 +41,12 @@ function createHostSchedulerService({ mode = 'legacy', getMode = null, condition
     if (!descriptor || typeof descriptor !== 'object' || typeof descriptor.action !== 'string') {
       fail('E_ACTION_REQUIRED', 'a host scheduling action descriptor is required');
     }
-    if (typeof legacy !== 'function') fail('E_LEGACY_CALLBACK_REQUIRED', 'a legacy implementation callback is required');
-
     const evaluation = currentEvaluation();
+    // Unified transport does not need a legacy callback; requiring it first used
+    // to make every unified event unreachable through this facade.
+    if (evaluation.mode !== 'unified' && typeof legacy !== 'function') {
+      fail('E_LEGACY_CALLBACK_REQUIRED', 'a legacy implementation callback is required');
+    }
     const key = typeof descriptor.eventId === 'string' ? descriptor.eventId : null;
     const fingerprint = key ? fingerprintOf(descriptor) : null;
     if (key && inflight.has(key)) {

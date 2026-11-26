@@ -358,3 +358,25 @@ node --test test/mf-us-1-host-guards.test.js         6 pass
 node --test test/mf-us-1-reactivate-host.test.js     4 pass
 test/*.test.js                                      见最终交付报告
 ```
+
+## 第二轮进展（执行链闭合）
+
+- **共享基础设施**：`batch-store.js`（data.json 保留键 `mfUs1Batches`，经协调器原子合并）、
+  `protected-topic-writer.js`（真实字节 CAS，只允许 `mf_not_before`+`mf_revision`，需宿主授权 token）。
+- **Mercy**：`mercy()` 在 Unified 下走 preview→confirm→apply（受保护写入 + 批次记录），
+  新增「撤销上次 Mercy」菜单；Legacy 原行为不变；无授权时零写入。
+- **Boost**：`boost()` 在 Unified 下按 strict 子树规划绝对目标优先级，逐节点 SET_PRIORITY 事件，
+  批次意图/结果落盘，重试不再二次递减；Legacy 原行为不变。
+- **COMPLETE / DISMISS 直写面**：`markPathsDone` / `dismissTreeNode` 在 Unified 下改为逐项事件，
+  Card 跳过；无授权时零写入。
+- **REACTIVATE**：宿主入口 + 菜单（首轮已加），本轮验证与事件链路一致。
+- **启动恢复**：真实异步 lifecycle 的 recover 已接入（首轮），本轮执行链复用同一 runtime。
+- **facade 修复**：`host-scheduler-service` 原先在模式判断前强制要求 legacy 回调，
+  导致 Unified 事件永远不可达；已改为仅在非 Unified 时要求。
+- 回归：`1356 pass / 0 fail`；新增执行链测试 6 项、批次/写入器测试 6 项。
+
+### 仍未完成
+- Dashboard 视图数据源（`buildUnifiedDashboardModel` 未接 `dashboard-view`）。
+- Mercy 的 Dashboard/自动过载入口（`spreadOverdue`）仍阻断。
+- 检查点、划词/图片摘录、导入、拆分、A-Factor、日期迁移仍被 guard 阻断（需 1.0 决策）。
+- 迁移激活 UI、模式切换 UI、Shadow observer、账本诊断面板。
