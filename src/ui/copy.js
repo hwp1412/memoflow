@@ -26,6 +26,7 @@ module.exports = {
   sortPriority: '优先级',
   sortDue: '到期日',
   rhythm: '学习节奏',
+  rhythmLoad: '学习节奏 × 负荷',
   streakUnit: '天',
   streakLabel: '连续学习',
   reviews14d: '近 14 天复习',

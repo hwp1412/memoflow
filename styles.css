@@ -177,3 +177,27 @@
   background: rgba(255, 255, 255, 0.85);
   padding: 0 4px; border-radius: 2px; pointer-events: none;
 }
+
+/* ---- MemoFlow constellation board (knowledge tree) ---- */
+.ir-tree-board-toggle { margin-right: 6px; }
+.ir-tree-body.is-constellation { padding: 0; }
+.mf-constellation-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; padding: 14px 16px 8px; }
+.mf-constellation-title { font-size: 20px; font-weight: 700; letter-spacing: .04em; color: var(--text-normal); }
+.mf-constellation-stats { font-size: 12px; opacity: .75; }
+.mf-constellation-hint { margin-left: auto; font-size: 11px; opacity: .55; }
+.mf-constellation { position: relative; margin: 4px 12px 12px; border-radius: 18px; overflow: hidden; box-shadow: 0 18px 44px rgba(0,0,0,.28), inset 0 0 0 1px rgba(255,255,255,.06); }
+.mf-constellation-svg { display: block; width: 100%; height: auto; }
+.mf-const-node { cursor: pointer; transition: transform .18s ease, opacity .18s ease; transform-box: fill-box; transform-origin: center; }
+.mf-const-node:hover { transform: scale(1.28); }
+.mf-const-node.is-overdue { animation: mf-twinkle 2.6s ease-in-out infinite; }
+.mf-const-label { fill: #e8eefc; font-size: 11px; font-weight: 600; letter-spacing: .02em; paint-order: stroke; stroke: #0b1018; stroke-width: 3px; opacity: .92; pointer-events: none; }
+.mf-constellation-legend { display: flex; gap: 16px; padding: 0 16px 14px; font-size: 11px; opacity: .75; }
+.mf-constellation-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.mf-constellation-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; box-shadow: 0 0 8px currentColor; }
+.mf-constellation-empty { padding: 16px; opacity: .65; font-size: 12px; }
+@keyframes mf-twinkle { 0%,100% { opacity: .96; } 50% { opacity: .55; } }
+
+/* merged rhythm + workload board */
+.mf-rhythm-panel.is-combined .mf-rhythm-load { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--background-modifier-border); }
+.mf-rhythm-load-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.mf-rhythm-load-total { font-size: 11px; opacity: .65; }

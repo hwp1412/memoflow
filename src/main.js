@@ -167,7 +167,6 @@ class MemoFlowPlugin extends BasePlugin {
       { label: MENU_LABELS.current[5], run: () => this.setPriority() },
       { label: MENU_LABELS.current[6], run: () => this.boost() },
       { label: MENU_LABELS.current[7], run: () => this.openParent() },
-      { label: MENU_LABELS.current[8], run: () => this.openPdf() },
       { label: MENU_LABELS.current[9], run: () => this.toggleReadPoint() },
       { label: MENU_LABELS.current[10], run: () => this.jumpToReadPoint() },
       { label: MENU_LABELS.current[11], run: () => this.addCheckpoint() },
@@ -632,7 +631,6 @@ class MemoFlowPlugin extends BasePlugin {
       add('设置优先级…', 'priority');
       add('手动排期…', 'schedule');
       if (fm.type === 'source' && (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path)) {
-        add('打开 PDF 阅读点', 'open-pdf');
       }
       add('延后 1 天', 'postpone', { days: 1 });
       add('延后 3 天', 'postpone', { days: 3 });
@@ -680,7 +678,7 @@ class MemoFlowPlugin extends BasePlugin {
     dot.className = 'mf-rb-dot';
     const label = document.createElement('span');
     label.className = 'mf-rb-label';
-    label.textContent = `今日队列 · ${info.index} / ${info.total}`;
+    label.textContent = info.standalone ? '独立阅读' : `今日队列 · ${info.index} / ${info.total}`;
     const sep = document.createElement('span');
     sep.className = 'mf-rb-sep';
     const type = document.createElement('span');
@@ -755,6 +753,7 @@ class MemoFlowPlugin extends BasePlugin {
     } else {
       addButton(fm.type === 'extract' ? '完成并下一项' : '评阅并下一项', 'complete', 'is-primary');
       addButton('跳过', 'skip');
+      addButton('剪贴摘录', 'clipboard-extract', '', '复制文字后在当前 Source/Extract 下生成子摘录（多级摘录）');
       addButton('制卡', 'create-card');
       if (fm.type === 'extract') addButton('精简', 'refine-extract');
       const postpone = addButton('延后');
@@ -779,7 +778,12 @@ class MemoFlowPlugin extends BasePlugin {
         if (!contentEl || !(file instanceof TFile)) continue;
         const existing = contentEl.querySelector(':scope > .mf-reading-bar');
         const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-        const info = fm && READER_TYPES.has(fm.type) ? this._sessionInfo(file.path) : null;
+        // A Source/Extract always gets its action bar, even when it is opened
+        // outside today's session (needed for multi-level Extract: open an
+        // Extract and continue extracting from it).
+        const info = fm && READER_TYPES.has(fm.type)
+          ? (this._sessionInfo(file.path) || { index: 0, total: 0, standalone: true })
+          : null;
         if (!info) {
           existing?.remove();
           continue;
@@ -1392,7 +1396,10 @@ class MemoFlowPlugin extends BasePlugin {
   }
 
   async createTimestampExtract(options = {}) {
-    return this._mfUs1RunLegacy({ action: 'CREATE_EXTRACT' }, () => this._createTimestampExtractLegacy(options));
+    // Creation has its own prompt flow and the writer below routes the write
+    // through the MF-US-1 creation gateway. Sending CREATE_EXTRACT through the
+    // scheduling host produced "eventId must be a UUID" on the reading bar.
+    return this._createTimestampExtractLegacy(options);
   }
 
   async _createTimestampExtractLegacy({ fromSelection = true, text = null, sourceFile = null, page = null, pageFallback = null, open = true } = {}) {
@@ -1476,13 +1483,14 @@ class MemoFlowPlugin extends BasePlugin {
       citation,
     });
 
-    // MF-US-1 creation gateway: without a synthetic authorization it is a
-    // strict no-op and the 0.1 write below runs byte-for-byte as before.
+    // MF-US-1 creation gateway: the creation parent is the DIRECT active
+    // topic (an Extract keeps its multi-level hierarchy); root stays only for
+    // the legacy scheduling-field write below.
     const mfCreation = await this._mfUs1CreateTopicFromHost({
       requestId: `extract:${path}`,
       kind: 'extract',
       priority,
-      parentFile: scheduling.file,
+      parentFile: direct.file,
       path,
       content,
     });
@@ -1490,7 +1498,11 @@ class MemoFlowPlugin extends BasePlugin {
     let created = null;
     let bumpFailed = null;
     if (mfCreation.handled) {
-      if (mfCreation.outcome.status !== 'applied' && mfCreation.outcome.status !== 'duplicate') return null;
+      if (mfCreation.outcome.status !== 'applied' && mfCreation.outcome.status !== 'duplicate') {
+        console.error('[MemoFlow] timestamp extract creation failed', mfCreation.outcome);
+        new Notice(`摘录创建失败：${(mfCreation.outcome && mfCreation.outcome.reason) || mfCreation.outcome.status || '未知错误'}。详情见控制台。`, 9000);
+        return null;
+      }
       created = this.app.vault.getAbstractFileByPath(path);
       if (!created) {
         new Notice(`摘录创建结果未确认：${path}。请检查 Vault 后手动恢复。`, 9000);

@@ -68,8 +68,11 @@ test('every audited root entry delegates through the host scheduler service', ()
   assert.match(mainSource, /schedulerDashboardModel\(/);
 });
 
-test('reading-page extraction and mercy routing delegate in src/main.js', () => {
-  assert.match(srcSource, /async createTimestampExtract\(options = \{\}\) \{[\s\S]{0,200}?_mfUs1RunLegacy\(\{ action: 'CREATE_EXTRACT' \}/);
+test('reading-page extraction bypasses the host while mercy still routes in src/main.js', () => {
+  // Creation has its own prompt flow + creation gateway; routing it through the
+  // scheduling host produced "eventId must be a UUID" in 1.0.1.
+  assert.match(srcSource, /async createTimestampExtract\(options = \{\}\) \{[\s\S]{0,400}?return this\._createTimestampExtractLegacy\(options\);/);
+  assert.equal(/async createTimestampExtract[\s\S]{0,400}?_mfUs1RunLegacy/.test(srcSource), false);
   assert.match(srcSource, /async spreadOverdue\(overdueRows, days\) \{[\s\S]{0,200}?_mfUs1RunLegacy\(\{ action: 'MERCY_APPLY' \}/);
 });
 
@@ -106,4 +109,21 @@ test('the legacy bodies are preserved behind distinct methods', () => {
   assert.ok(srcSource.includes('async _createTimestampExtractLegacy('));
   assert.ok(srcSource.includes('async _spreadOverdueLegacy('));
   assert.equal(baseSource.length > 0, true);
+});
+
+test('multi-level extract creation keeps the direct parent', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const start = src.indexOf('async _createTimestampExtractLegacy(');
+  const end = src.indexOf('\n  async ', start + 10);
+  const body = src.slice(start, end < 0 ? undefined : end);
+  assert.match(body, /parentFile: direct\.file/, 'creation parent must be the direct active topic');
+  assert.equal(/parentFile: scheduling\.file/.test(body), false, 'root must never become the creation parent');
+});
+
+test('the legacy Toolkit PDF viewer is no longer offered; native Obsidian PDF is the path', () => {
+  const rootSrc = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
+  const viewSrc = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.equal(/Open PDF \(Toolkit viewer\)/.test(rootSrc), false);
+  assert.equal(/Open PDF \(Toolkit viewer\)/.test(viewSrc), false);
+  // '打开 PDF 阅读点' remains as a native PDF read-point prompt label, which is fine.
 });
