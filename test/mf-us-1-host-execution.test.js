@@ -319,3 +319,14 @@ test('batch planning waits for the IR index and blocks with a clear reason on ti
   plugin.getIRRows = realGet;
 });
 
+
+test('queue projection uses ISO today even when the display date format is DD-MM-YYYY', async () => {
+  const { plugin, app } = await harness();
+  plugin.settings.misc = { ...(plugin.settings.misc || {}), date_format: 'DD-MM-YYYY' };
+  addTopic(app, 'Sources/Q1.md', uuid(61));
+  addTopic(app, 'Sources/Q2.md', uuid(62));
+  plugin._mfUs1RefreshRows();
+  const pool = await plugin.buildDuePool({ skipCurrent: false });
+  assert.ok(Array.isArray(pool) && pool.length >= 2, `pool should contain projected topics, got ${pool.length}`);
+  assert.equal(getNotices(app).join('\n').includes('队列投影失败'), false, 'no projection failure with DD-MM-YYYY display format');
+});

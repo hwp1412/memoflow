@@ -4,6 +4,21 @@ const {
   Plugin, Notice, Modal, FuzzySuggestModal, TFile, parseYaml, FileSystemAdapter,
   PluginSettingTab, Setting, ItemView, normalizePath, requestUrl,
 } = require('obsidian');
+// User-facing notices must stay short: show the first concise sentence and
+// keep the full technical detail in the developer console.
+function notifyUser(message, timeout) {
+  const full = String(message == null ? '' : message).trim();
+  if (full) console.log('[MemoFlow]', full);
+  if (!full) return;
+  let concise = full;
+  if (full.length > 90) {
+    const cut = full.split(/[。；;！!\n]/).map(part => part.trim()).filter(Boolean)[0];
+    if (cut) concise = cut;
+    if (concise.length > 80) concise = `${concise.slice(0, 78).trim()}…`;
+  }
+  new Notice(concise, timeout);
+}
+
 // Obsidian's plugin loader evaluates this file without a resolvable __dirname, so
 // `require('./tree-core.js')` fails ("Cannot find module"). The tree logic is therefore
 // inlined here verbatim. tree-core.js remains the unit-tested source of truth; the block
@@ -975,7 +990,7 @@ class OcclusionModal extends Modal {
   }
   _commit(mode) {
     if (this._resolved) return;
-    if (this.rects.length === 0) { new Notice('Draw at least one rectangle first.'); return; }
+    if (this.rects.length === 0) { notifyUser('Draw at least one rectangle first.'); return; }
     this._resolved = true;
     this.close();
     this.resolve({ rects: this.rects.slice(), mode });
@@ -1190,22 +1205,22 @@ async function ensureFolder(app, path) {
 // Resolve source TFile + fm from active. Returns { tfile, fm } or null.
 async function resolveSourceFromActive(app, settings) {
   const active = app.workspace.getActiveFile();
-  if (!active) { new Notice('No active file.'); return null; }
+  if (!active) { notifyUser('No active file.'); return null; }
 
   if (active.extension === 'md') {
     const fm = getFm(app, active);
     if (fm?.type === 'source') return { tfile: active, fm };
-    new Notice('Active note is not an incremental reading source.');
+    notifyUser('Active note is not an incremental reading source.');
     return null;
   }
 
   if (active.extension !== 'pdf') {
-    new Notice('Active file must be a source note or PDF.');
+    notifyUser('Active file must be a source note or PDF.');
     return null;
   }
 
   const absPath = vaultAbsPath(app, active.path);
-  if (!absPath) { new Notice('Cannot resolve filesystem path.'); return null; }
+  if (!absPath) { notifyUser('Cannot resolve filesystem path.'); return null; }
 
   // Match by:
   //   1. exact filesystem path equality for an external PDF
@@ -1228,7 +1243,7 @@ async function resolveSourceFromActive(app, settings) {
     }
   }
   if (candidates.length === 0) {
-    new Notice('No source note links to this PDF via pdf_path or pdf_vault_path.');
+    notifyUser('No source note links to this PDF via pdf_path or pdf_vault_path.');
     return null;
   }
   if (candidates.length === 1) return candidates[0];
@@ -1263,7 +1278,7 @@ async function resolveSourceFromActive(app, settings) {
 // work when invoked from inside a card during review.
 async function resolveSourceOrExtractFromActive(app, settings) {
   const active = app.workspace.getActiveFile();
-  if (!active) { new Notice('No active file.'); return null; }
+  if (!active) { notifyUser('No active file.'); return null; }
 
   if (active.extension === 'md') {
     const fm = getFm(app, active);
@@ -1272,23 +1287,23 @@ async function resolveSourceOrExtractFromActive(app, settings) {
     }
     if (fm?.type === 'card') {
       const m = String(fm.source || '').match(/\[\[([^\]|#]+)/);
-      if (!m) { new Notice('Card has no source link.'); return null; }
+      if (!m) { notifyUser('Card has no source link.'); return null; }
       const parentName = m[1].trim();
       const parentTf = app.metadataCache.getFirstLinkpathDest(parentName, active.path)
         || getAllIRFiles(app, settings).find(f => f.basename === parentName);
-      if (!parentTf) { new Notice(`Parent not found: ${parentName}`); return null; }
+      if (!parentTf) { notifyUser(`Parent not found: ${parentName}`); return null; }
       const parentFm = getFm(app, parentTf);
       if (!parentFm || (parentFm.type !== 'source' && parentFm.type !== 'extract')) {
-        new Notice('Card parent is not a source/extract.'); return null;
+        notifyUser('Card parent is not a source/extract.'); return null;
       }
       return { tfile: parentTf, fm: parentFm };
     }
-    new Notice('Active note is not an incremental reading source, extract, or card.');
+    notifyUser('Active note is not an incremental reading source, extract, or card.');
     return null;
   }
 
   if (active.extension === 'pdf') return await resolveSourceFromActive(app, settings);
-  new Notice('Active file must be an incremental reading element or PDF.');
+  notifyUser('Active file must be an incremental reading element or PDF.');
   return null;
 }
 
@@ -1296,12 +1311,12 @@ async function resolveSourceOrExtractFromActive(app, settings) {
 // to source-resolution when active is a PDF.
 async function resolveIRFromActive(app, settings, { allowCard = true, allowPdfFallback = true } = {}) {
   const active = app.workspace.getActiveFile();
-  if (!active) { new Notice('No active file.'); return null; }
+  if (!active) { notifyUser('No active file.'); return null; }
   if (active.extension === 'md') {
     const fm = getFm(app, active);
-    if (!fm) { new Notice('No frontmatter on active note.'); return null; }
+    if (!fm) { notifyUser('No frontmatter on active note.'); return null; }
     if (fm.type !== 'source' && fm.type !== 'extract' && (!allowCard || fm.type !== 'card')) {
-      new Notice(`Active note is not an IR ${allowCard ? 'source/extract/card' : 'source/extract'}.`);
+      notifyUser(`Active note is not an IR ${allowCard ? 'source/extract/card' : 'source/extract'}.`);
       return null;
     }
     return { tfile: active, fm };
@@ -1309,7 +1324,7 @@ async function resolveIRFromActive(app, settings, { allowCard = true, allowPdfFa
   if (active.extension === 'pdf' && allowPdfFallback) {
     return await resolveSourceFromActive(app, settings);
   }
-  new Notice('Active file must be an incremental reading element or linked PDF.');
+  notifyUser('Active file must be an incremental reading element or linked PDF.');
   return null;
 }
 
@@ -2108,9 +2123,9 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
             const changed = await this.plugin.migrateDateFormat(previous, value);
             s.date_format = value;
             await save();
-            new Notice(`Date format changed to ${value}; migrated ${changed} stored date${changed === 1 ? '' : 's'}.`);
+            notifyUser(`Date format changed to ${value}; migrated ${changed} stored date${changed === 1 ? '' : 's'}.`);
           } catch (error) {
-            new Notice(`Date migration failed: ${error.message}`);
+            notifyUser(`Date migration failed: ${error.message}`);
           }
         });
       });
@@ -2414,7 +2429,7 @@ class PdfViewerView extends ItemView {
         const source = this.plugin.app.vault.getAbstractFileByPath(this.state.sourcePath);
         if (source) await this.plugin.app.fileManager.processFrontMatter(source, fm => { fm.read_point = Math.max(1, Number(page.value) || 1); });
       }
-      new Notice(`PDF read point saved at page ${Math.max(1, Number(page.value) || 1)}`);
+      notifyUser(`PDF read point saved at page ${Math.max(1, Number(page.value) || 1)}`);
     };
     load();
   }
@@ -2867,7 +2882,7 @@ class IncrementalReadingPlugin extends Plugin {
     this.pluginData = createPluginDataCoordinator({
       plugin: this,
       reservedKeys: ['mfUs1Ledger', BATCH_KEY],
-      notice: (message, timeout) => new Notice(message, timeout),
+      notice: (message, timeout) => notifyUser(message, timeout),
     });
     this.mfUs1BatchStore = null;
     this.mfUs1AdminWriter = null;
@@ -3056,14 +3071,14 @@ class IncrementalReadingPlugin extends Plugin {
     if (__MF_E2E_TEST_BUILD__ === true) {
       cmd('e2e-activate-unified', 'E2E: activate Unified (test build)', () => this.mfUs1E2EActivateUnified());
       cmd('e2e-revoke-unified', 'E2E: revoke Unified authorization (test build)', () => this.mfUs1RevokeUnifiedAuthorization());
-      cmd('e2e-status', 'E2E: activation status (test build)', () => new Notice(this.mfUs1E2EStatusText(), 15000));
+      cmd('e2e-status', 'E2E: activation status (test build)', () => notifyUser(this.mfUs1E2EStatusText(), 15000));
     }
     // <MF_E2E_END>
     this.app.workspace.onLayoutReady(() => {
       this._refreshExcerptViews();
       this._mfUs1AutoStartRuntime().catch(error => console.error('[IR] Unified auto-start failed', error));
       const count = this._legacyCardFiles().length;
-      if (count) new Notice(`Incremental Reading Toolkit: ${count} legacy card${count === 1 ? '' : 's'} found. Open Advanced tools and choose "Migrate legacy cards to Spaced Repetition".`, 10000);
+      if (count) notifyUser(`Incremental Reading Toolkit: ${count} legacy card${count === 1 ? '' : 's'} found. Open Advanced tools and choose "Migrate legacy cards to Spaced Repetition".`, 10000);
     });
   }
 
@@ -3265,7 +3280,7 @@ class IncrementalReadingPlugin extends Plugin {
 
   async migrateLegacyCards() {
     const files = this._legacyCardFiles();
-    if (!files.length) { new Notice('No legacy IR cards to migrate.'); return; }
+    if (!files.length) { notifyUser('No legacy IR cards to migrate.'); return; }
     const ok = await confirmDialog(
       this.app,
       `Migrate ${files.length} legacy card${files.length === 1 ? '' : 's'}?`,
@@ -3325,12 +3340,12 @@ class IncrementalReadingPlugin extends Plugin {
       );
       migrated++;
     }
-    new Notice(`Migrated ${migrated} card${migrated === 1 ? '' : 's'} to Spaced Repetition${skipped ? `; skipped ${skipped}` : ''}.`);
+    notifyUser(`Migrated ${migrated} card${migrated === 1 ? '' : 's'} to Spaced Repetition${skipped ? `; skipped ${skipped}` : ''}.`);
   }
 
   reviewCards() {
     if (!this.app.commands.executeCommandById(SPACED_REPETITION_REVIEW_COMMAND)) {
-      new Notice('Spaced Repetition is still starting. Reload Obsidian and try again.');
+      notifyUser('Spaced Repetition is still starting. Reload Obsidian and try again.');
     }
   }
 
@@ -3353,7 +3368,7 @@ class IncrementalReadingPlugin extends Plugin {
       : null;
     if (!this.app.commands.executeCommandById(SPACED_REPETITION_NOTE_COMMAND)) {
       this.pendingSpacedRepetitionReview = null;
-      new Notice('Open a card note, then try again after Spaced Repetition has initialized.');
+      notifyUser('Open a card note, then try again after Spaced Repetition has initialized.');
     }
   }
 
@@ -3397,7 +3412,7 @@ class IncrementalReadingPlugin extends Plugin {
         if (pending?.reviewed) this.consumeSessionItem(pending.path, { background: true });
         if (pending) this.pendingSpacedRepetitionReview = null;
         this.spacedRepetitionCloseGeneration++;
-        if (pending?.reviewed) new Notice('Card reviewed. Run Next element when you are ready.');
+        if (pending?.reviewed) notifyUser('Card reviewed. Run Next element when you are ready.');
         return;
       }
       if (Date.now() < deadline) window.setTimeout(check, 50);
@@ -3444,11 +3459,11 @@ class IncrementalReadingPlugin extends Plugin {
       issues.push(`Inline-card regular expression is invalid: ${error.message}`);
     }
     if (issues.length) {
-      new Notice(`Setup needs attention:\n- ${issues.join('\n- ')}`, 12000);
+      notifyUser(`Setup needs attention:\n- ${issues.join('\n- ')}`, 12000);
       return false;
     }
     const detail = notes.length ? `\n${notes.join('\n')}` : '';
-    new Notice(`Setup ready. Date format: ${configuredDateFormat(this.settings)}. Spaced Repetition is available.${detail}`, 8000);
+    notifyUser(`Setup ready. Date format: ${configuredDateFormat(this.settings)}. Spaced Repetition is available.${detail}`, 8000);
     return true;
   }
 
@@ -3565,14 +3580,19 @@ class IncrementalReadingPlugin extends Plugin {
     const mode = this._mfUs1EffectiveMode();
     if (mode === 'unified') {
       // Unified pool: canonical mf_* projection only; cards keep their SR path.
+      // The projector expects an ISO date; the display format (e.g. DD-MM-YYYY)
+      // must never be passed here or every queue build fails with
+      // "MF-US-1 队列投影失败" (real-device finding).
       const { buildUnifiedQueue } = require('./src/integration/unified-queue-source.js');
       const rows = this.getIRRows();
+      const isoToday = this._mfUs1IsoToday();
       let source;
       try {
-        source = buildUnifiedQueue({ rows, mode, today: dateKey, config: this.settings.queueConfig || undefined });
+        source = buildUnifiedQueue({ rows, mode, today: isoToday, dateFormat: 'YYYY-MM-DD', config: this.settings.queueConfig || undefined });
       } catch (error) {
         console.error('[IR] unified queue source failed', error);
-        new Notice('MF-US-1 队列投影失败，本次不建立队列。', 9000);
+        const code = error && error.code ? `（${error.code}）` : '';
+        notifyUser(`MF-US-1 队列投影失败${code}，本次不建立队列。请在诊断中查看日期/字段问题。`, 10000);
         return [];
       }
       if (source.diagnostics.length) this.mfUs1QueueDiagnostics = source.diagnostics;
@@ -3795,15 +3815,15 @@ class IncrementalReadingPlugin extends Plugin {
     await this.persistSessionSnapshot(queue);
     this._markCollectionViewsStale();
     this._flushDeferredCollectionRenders();
-    if (!queue.length) { new Notice('✨ Nothing due. Caught up.'); return; }
-    new Notice(`Built today's queue with ${queue.length} element${queue.length === 1 ? '' : 's'}.`);
+    if (!queue.length) { notifyUser('✨ Nothing due. Caught up.'); return; }
+    notifyUser(`Built today's queue with ${queue.length} element${queue.length === 1 ? '' : 's'}.`);
     if (openFirst) await this.nextElement({ fromStart: true });
   }
 
   async nextElement({ fromStart = false } = {}) {
     const session = this.settings.session;
     if (session?.date !== todayDateString(this.settings) || !Array.isArray(session.paths)) {
-      new Notice("No saved queue for today. Run Build today's session queue first.");
+      notifyUser("No saved queue for today. Run Build today's session queue first.");
       return;
     }
     const activePath = this.app.workspace.getActiveFile()?.path;
@@ -3811,7 +3831,7 @@ class IncrementalReadingPlugin extends Plugin {
     const next = candidates
       .map(path => this.app.vault.getAbstractFileByPath(path))
       .find(file => file instanceof TFile);
-    if (!next) { new Notice('✨ Caught up.'); return; }
+    if (!next) { notifyUser('✨ Caught up.'); return; }
     const nextType = session.types?.[next.path] || getFm(this.app, next)?.type;
     const readPointLine = session.readPoints?.[next.path] || 0;
 
@@ -3820,24 +3840,24 @@ class IncrementalReadingPlugin extends Plugin {
 
   async randomDue() {
     const pool = await this.buildDuePool();
-    if (pool.length === 0) { new Notice('✨ Nothing due. Caught up.'); return; }
+    if (pool.length === 0) { notifyUser('✨ Nothing due. Caught up.'); return; }
     const pick = pool[Math.floor(Math.random() * pool.length)];
     await this.openLearningItem(pick);
     const action = pick.fm.type === 'card' ? '🃏 Review' : (pick.fm.type === 'source' ? '📖 Read' : '📝 Process');
-    new Notice(`🎲 ${action}: ${pick.tfile.basename} · p${pick.fm.priority ?? '—'} (1 of ${pool.length} due)`);
+    notifyUser(`🎲 ${action}: ${pick.tfile.basename} · p${pick.fm.priority ?? '—'} (1 of ${pool.length} due)`);
   }
 
   async gradeCurrent() {
     return this._withDeferredCollectionRenders(async () => {
       const active = this.app.workspace.getActiveFile();
       if (getFm(this.app, active)?.type === 'card') {
-        new Notice('Cards finish automatically when Spaced Repetition accepts the review.');
+        notifyUser('Cards finish automatically when Spaced Repetition accepts the review.');
         return false;
       }
       const graded = await this.endSession();
       if (graded) {
         if (active) this.consumeSessionItem(active.path, { background: true });
-        new Notice('Element graded. Run Next element when you are ready.');
+        notifyUser('Element graded. Run Next element when you are ready.');
       }
       // Let metadata notifications land while collection rendering is still
       // deferred. Views remain stale until a later explicit refresh.
@@ -3851,12 +3871,12 @@ class IncrementalReadingPlugin extends Plugin {
   async endSession() {
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') {
-      new Notice('Open an incremental reading source or extract first.');
+      notifyUser('Open an incremental reading source or extract first.');
       return;
     }
     const fm = getFm(this.app, active);
     if (!fm || (fm.type !== 'source' && fm.type !== 'extract')) {
-      new Notice('Active note is not a reading topic. Cards are graded automatically in Spaced Repetition.');
+      notifyUser('Active note is not a reading topic. Cards are graded automatically in Spaced Repetition.');
       return;
     }
     const today = todayDateString(this.settings);
@@ -3999,7 +4019,7 @@ class IncrementalReadingPlugin extends Plugin {
       `迁移需求：${(() => { try { const s = this.mfUs1ActivationStatus(); return s.evaluation.migration && s.evaluation.migration.notRequired ? '全新库，无需迁移' : (this.mfUs1MigrationPreviewCache ? '需迁移（已预览）' : '需迁移（未预览）'); } catch (e) { return '未初始化'; } })()}`,
       `激活状态：${(() => { try { const d = this.mfUs1ActivationDiagnostics(); const auth = d.authorized ? '已授权' : (d.suspended ? '已撤销/暂停' : '未授权'); return `授权=${auth} · transport=${d.transportSource} · runtime=${d.runtime.present ? (d.runtime.writeEnabled ? '可写' : '锁定') : '无'} · blockers=${d.activationBlockers.join(',') || '无'}`; } catch (e) { return '未初始化'; } })()}`,
     ];
-    new Notice(lines.join('\n'), 12000);
+    notifyUser(lines.join('\n'), 12000);
     return lines.join('\n');
   }
 
@@ -4010,16 +4030,16 @@ class IncrementalReadingPlugin extends Plugin {
     const { runStateAction } = require('./src/integration/state-actions-host.js');
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') {
-      new Notice('请先打开一个已完成的来源或摘录。');
+      notifyUser('请先打开一个已完成的来源或摘录。');
       return null;
     }
     const fm = getFm(this.app, active);
     if (!fm || (fm.type !== 'source' && fm.type !== 'extract')) {
-      new Notice('只能恢复来源或摘录（卡片由 Spaced Repetition 管理）。');
+      notifyUser('只能恢复来源或摘录（卡片由 Spaced Repetition 管理）。');
       return null;
     }
     if (fm.status !== 'done' && fm.status !== 'dismissed') {
-      new Notice('当前主题不是已完成/已移出状态，无需恢复。');
+      notifyUser('当前主题不是已完成/已移出状态，无需恢复。');
       return null;
     }
     const format = configuredDateFormat(this.settings);
@@ -4027,7 +4047,7 @@ class IncrementalReadingPlugin extends Plugin {
     const raw = await askText(this.app, `恢复到（${format} 或 +Nd；当前：${current}）`, '');
     if (!raw || !raw.trim()) return null; // cancel: no event, no write
     const idealDue = this._mfUs1ParseManualScheduleInput(raw);
-    if (!idealDue) { new Notice(`无效日期：${raw.trim()}`); return null; }
+    if (!idealDue) { notifyUser(`无效日期：${raw.trim()}`); return null; }
     const legacy = () => this._reactivateLegacy({ tfile: active, fm }, idealDue);
     const result = await runStateAction({
       run: (descriptor, legacyWriter) => this._mfUs1RunLegacy(descriptor, legacyWriter),
@@ -4050,7 +4070,7 @@ class IncrementalReadingPlugin extends Plugin {
       .filter(file => file instanceof TFile && file.extension === 'md')
       .filter(file => ['source', 'extract'].includes(getFm(this.app, file)?.type))
       .filter(file => getFm(this.app, file)?.status === 'active');
-    if (!files.length) { new Notice('没有可完成的来源或摘录（卡片由 SR 管理）。'); return 0; }
+    if (!files.length) { notifyUser('没有可完成的来源或摘录（卡片由 SR 管理）。'); return 0; }
     if (confirm) {
       const ok = await confirmDialog(this.app, `完成 ${files.length} 项？`, 'Unified 模式：每项各提交一次 COMPLETE 事件，不计评阅。');
       if (!ok) return 0;
@@ -4068,8 +4088,8 @@ class IncrementalReadingPlugin extends Plugin {
       if (['applied', 'duplicate', 'legacy', 'no-op'].includes(result.status)) applied += 1;
       else problems.push(`${file.basename}: ${result.status}${result.reason ? `/${result.reason}` : ''}`);
     }
-    if (problems.length) new Notice(`完成 ${applied} 项；${problems.length} 项未完成：${problems.slice(0, 3).join('；')}`, 14000);
-    else new Notice(`已完成 ${applied} 项。`);
+    if (problems.length) notifyUser(`完成 ${applied} 项；${problems.length} 项未完成：${problems.slice(0, 3).join('；')}`, 14000);
+    else notifyUser(`已完成 ${applied} 项。`);
     return applied;
   }
 
@@ -4078,7 +4098,7 @@ class IncrementalReadingPlugin extends Plugin {
     const { runStateAction } = require('./src/integration/state-actions-host.js');
     const file = this.app.vault.getAbstractFileByPath(path);
     const fm = file ? getFm(this.app, file) : null;
-    if (!file || !fm || (fm.type !== 'source' && fm.type !== 'extract')) { new Notice('只能移出来源或摘录。'); return false; }
+    if (!file || !fm || (fm.type !== 'source' && fm.type !== 'extract')) { notifyUser('只能移出来源或摘录。'); return false; }
     const result = await runStateAction({
       run: (descriptor, legacyWriter) => this._mfUs1RunLegacy(descriptor, legacyWriter),
       type: 'DISMISS',
@@ -4092,17 +4112,17 @@ class IncrementalReadingPlugin extends Plugin {
 
   async _addCheckpointUnified(noteOverride) {
     const active = this.app.workspace.getActiveFile();
-    if (!active) { new Notice('No active file'); return null; }
+    if (!active) { notifyUser('No active file'); return null; }
     const cache = this.app.metadataCache.getFileCache(active);
     const fmBefore = cache?.frontmatter;
     if (!isActiveIR(fmBefore) || fmBefore.type === 'card') {
-      new Notice('Checkpoints apply to sources and extracts only.');
+      notifyUser('Checkpoints apply to sources and extracts only.');
       return null;
     }
     if (typeof noteOverride === 'string' && /^\d+d::/.test(noteOverride)) {
       // Interval overrides are scheduling writes: no accepted event exists, so
       // Unified refuses instead of silently rewriting the interval.
-      new Notice('Unified 下检查点不能修改学习间隔（请使用排期/延期事件）。', 9000);
+      notifyUser('Unified 下检查点不能修改学习间隔（请使用排期/延期事件）。', 9000);
       return null;
     }
     let note = noteOverride;
@@ -4123,9 +4143,9 @@ class IncrementalReadingPlugin extends Plugin {
 
     const fmAfter = this.app.metadataCache.getFileCache(active)?.frontmatter || {};
     if (Number(fmAfter.mf_revision) !== revisionBefore) {
-      new Notice('检查点已保存，但检测到并发的调度修改，请核对最新状态。', 10000);
+      notifyUser('检查点已保存，但检测到并发的调度修改，请核对最新状态。', 10000);
     } else {
-      new Notice('检查点已保存（仅阅读元数据，调度字段未变）。');
+      notifyUser('检查点已保存（仅阅读元数据，调度字段未变）。');
     }
     return { ok: true, note: String(note), line, revisionBefore };
   }
@@ -4134,15 +4154,15 @@ class IncrementalReadingPlugin extends Plugin {
     const boostActive = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
     const boostIndex = await this._mfUs1WaitForIRIndex(boostActive);
     if (!boostIndex.found) {
-      new Notice('Boost 未执行：增量阅读索引尚未就绪（未读到当前 Topic），请稍后重试。', 10000);
+      notifyUser('Boost 未执行：增量阅读索引尚未就绪（未读到当前 Topic），请稍后重试。', 10000);
       return { status: 'blocked', reason: 'E_INDEX_NOT_READY', writesPerformed: false };
     }
     const { planBoostBatch, applyBoostBatch, describeBoostOutcome } = require('./src/integration/boost-batch-host.js');
-    if (!this.mfUs1BatchStore) { new Notice('MF-US-1 Boost 尚未初始化（缺少批次存储）。', 9000); return null; }
+    if (!this.mfUs1BatchStore) { notifyUser('MF-US-1 Boost 尚未初始化（缺少批次存储）。', 9000); return null; }
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return null;
     if (!r.fm || typeof r.fm.mf_id !== 'string' || !r.fm.mf_id) {
-      new Notice('Boost 未执行：该主题缺少持久 mf_id（需先迁移）。', 9000);
+      notifyUser('Boost 未执行：该主题缺少持久 mf_id（需先迁移）。', 9000);
       return null;
     }
     const delta = await pickFromList(this.app, ['Small (-5)', 'Medium (-15)', 'Strong (-30)'], [5, 15, 30], 'Boost amount');
@@ -4168,10 +4188,10 @@ class IncrementalReadingPlugin extends Plugin {
       });
       batch = planBoostBatch({ rows: items, rootTopicId: r.fm.mf_id, delta, today: this._mfUs1IsoToday() });
     } catch (error) {
-      new Notice(`Boost 未执行：${error.message || error.code || '计划失败'}`, 9000);
+      notifyUser(`Boost 未执行：${error.message || error.code || '计划失败'}`, 9000);
       return null;
     }
-    if (!batch.targets.length) { new Notice('Boost 没有可提升的节点。'); return null; }
+    if (!batch.targets.length) { notifyUser('Boost 没有可提升的节点。'); return null; }
     const ok = await confirmDialog(this.app, 'Boost 优先级', `将对 ${batch.targets.length} 个主题各提交一次 SET_PRIORITY（绝对目标值），确认执行？`);
     if (!ok) return null;
     const rowsByPath = new Map(this.getIRRows().map(row => [row.tfile.path, row]));
@@ -4211,7 +4231,7 @@ class IncrementalReadingPlugin extends Plugin {
       },
     });
     const report = describeBoostOutcome(outcome);
-    new Notice(report.message, report.nonAtomic ? 14000 : 7000);
+    notifyUser(report.message, report.nonAtomic ? 14000 : 7000);
     return outcome;
   }
 
@@ -4270,12 +4290,12 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mercyUnified({ windowDays = null } = {}) {
-    if (this.mfUs1Suspended) { new Notice('Unified 授权已撤销；Mercy 写入被拒绝。', 12000); return { status: 'blocked', reason: 'E_UNIFIED_NOT_AUTHORIZED' }; }
+    if (this.mfUs1Suspended) { notifyUser('Unified 授权已撤销；Mercy 写入被拒绝。', 12000); return { status: 'blocked', reason: 'E_UNIFIED_NOT_AUTHORIZED' }; }
     this._mfUs1RefreshRows();
     const { buildMercyPreview, confirmMercyPreview, applyMercyHost, describeMercyOutcome } = require('./src/integration/mercy-host.js');
     const { projectTopic, toQueueTopic } = require('./src/integration/topic-projection.js');
     if (!this.mfUs1AdminWriter || !this.mfUs1BatchStore) {
-      new Notice('MF-US-1 Mercy 尚未初始化（缺少受保护写入或批次存储）。', 9000);
+      notifyUser('MF-US-1 Mercy 尚未初始化（缺少受保护写入或批次存储）。', 9000);
       return null;
     }
     const chosenWindow = windowDays || await pickFromList(this.app, ['3 days', '7 days', '14 days', '30 days'], [3, 7, 14, 30], 'Mercy window');
@@ -4286,16 +4306,16 @@ class IncrementalReadingPlugin extends Plugin {
     const topics = projections
       .filter(item => item.writable && item.status === 'active' && item.effectiveDue && item.effectiveDue <= today)
       .map(toQueueTopic);
-    if (!topics.length) { new Notice('没有可摊平的逾期主题。'); return null; }
+    if (!topics.length) { notifyUser('没有可摊平的逾期主题。'); return null; }
 
     let preview;
     try {
       preview = buildMercyPreview({ topics, today, windowDays: chosenWindow, budgetPerDay: this.settings.queueBudgetMinutes || 30, config: this.settings.queueConfig || undefined });
     } catch (error) {
-      new Notice(`Mercy 预览失败：${error.message || error.code || '未知错误'}`, 9000);
+      notifyUser(`Mercy 预览失败：${error.message || error.code || '未知错误'}`, 9000);
       return null;
     }
-    if (!preview.items || !preview.items.length) { new Notice('Mercy 预览没有需要调整的主题。'); return null; }
+    if (!preview.items || !preview.items.length) { notifyUser('Mercy 预览没有需要调整的主题。'); return null; }
     const ok = await confirmDialog(this.app, 'Mercy 预览',
       `${preview.items.length} 个逾期主题将在未来 ${chosenWindow} 天内摊平（仅修改最早可见日，不改真实间隔）。确认执行？`);
     if (!ok) return null;
@@ -4334,12 +4354,12 @@ class IncrementalReadingPlugin extends Plugin {
         });
         outcome.revisionEvidencePersisted = Boolean(saved && saved.ok);
         if (!saved || !saved.ok) {
-          new Notice('Mercy 已应用，但撤销凭证保存失败；Undo 不可用，请核对批次记录后再操作。', 14000);
+          notifyUser('Mercy 已应用，但撤销凭证保存失败；Undo 不可用，请核对批次记录后再操作。', 14000);
         }
       }
     }
     const report = describeMercyOutcome(outcome);
-    new Notice(report.message, report.nonAtomic ? 14000 : 7000);
+    notifyUser(report.message, report.nonAtomic ? 14000 : 7000);
     return outcome;
   }
 
@@ -4358,7 +4378,7 @@ class IncrementalReadingPlugin extends Plugin {
     try {
       plan = previewMigration(snapshots, { dateFormat: configuredDateFormat(this.settings) });
     } catch (error) {
-      new Notice(`迁移预检失败：${error.code || error.message || '未知错误'}`, 9000);
+      notifyUser(`迁移预检失败：${error.code || error.message || '未知错误'}`, 9000);
       return null;
     }
     this.mfUs1MigrationPreviewCache = plan;
@@ -4368,7 +4388,7 @@ class IncrementalReadingPlugin extends Plugin {
       .slice(0, 4)
       .map(entry => `${entry.basename || entry.path}:${entry.status}`)
       .join('；');
-    new Notice(
+    notifyUser(
       `迁移预检（只读，未写入）：共 ${summary.total} · 可迁移 ${summary.migratable} · 需人工 ${summary.manualReview} · 冲突 ${summary.conflict} · 已迁移 ${summary.alreadyMigrated}` +
         (examples ? `
 例：${examples}` : ''),
@@ -4622,18 +4642,18 @@ class IncrementalReadingPlugin extends Plugin {
 
   async mfUs1E2EActivateUnified() {
     if (!(typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true)) {
-      new Notice('E2E 激活命令仅存在于测试构建中。', 12000);
+      notifyUser('E2E 激活命令仅存在于测试构建中。', 12000);
       return { ok: false, reason: 'E_E2E_NOT_TEST_BUILD' };
     }
     const evidence = this._mfUs1ActivationEvidence();
     const needsMigration = (evidence.legacyTopicCount || 0) > 0;
     if (needsMigration) {
       const backedUp = await confirmDialog(this.app, 'E2E：Vault 备份已确认？', '存在旧格式 Topic，需要迁移计划与已验证备份。仅在已备份的一次性测试 Vault 中继续。');
-      if (!backedUp) { new Notice('已取消：未确认备份。'); return { ok: false, reason: 'E_BACKUP_NOT_CONFIRMED' }; }
+      if (!backedUp) { notifyUser('已取消：未确认备份。'); return { ok: false, reason: 'E_BACKUP_NOT_CONFIRMED' }; }
       this.__mfUs1BackupVerified = true;
     }
     const ok = await confirmDialog(this.app, 'E2E：激活 Unified（测试构建）', '将执行全部真实激活门禁（恢复/批次/身份/CAS/用户确认）并签发会话级测试授权。仅在一次性测试 Vault 中使用。继续？');
-    if (!ok) { new Notice('已取消激活。'); return { ok: false, reason: 'E_CANCELLED' }; }
+    if (!ok) { notifyUser('已取消激活。'); return { ok: false, reason: 'E_CANCELLED' }; }
     this.__mfUs1ActivationConfirmed = true;
     this.__mfUs1E2EApprovalArmed = true;
     try {
@@ -4650,7 +4670,7 @@ class IncrementalReadingPlugin extends Plugin {
     const evidence = this._mfUs1ActivationEvidence();
     const result = coordinator.authorize(evidence, { storageSupportsCas: true });
     if (!result.ok) {
-      new Notice(`Unified 不可激活：${result.blockers.join('、')}`, 14000);
+      notifyUser(`Unified 不可激活：${result.blockers.join('、')}`, 14000);
       return result;
     }
     const storage = this.mfUs1HostStorage || this._mfUs1EnsureStorageAndStores();
@@ -4702,7 +4722,7 @@ class IncrementalReadingPlugin extends Plugin {
           console.error('[IR] MF-US-1 could not rebuild a locked unified lifecycle', rebuildError);
         }
         if (typeof this.saveSettings === 'function') await this.saveSettings();
-        new Notice('Unified 激活失败：授权能力未全部就绪；已保持暂停并保留现场，Legacy 调度写入保持阻断。', 16000);
+        notifyUser('Unified 激活失败：授权能力未全部就绪；已保持暂停并保留现场，Legacy 调度写入保持阻断。', 16000);
         return {
           ok: false,
           reason: 'E_ACTIVATION_CAPABILITY_INCOMPLETE',
@@ -4718,7 +4738,7 @@ class IncrementalReadingPlugin extends Plugin {
         console.error('[IR] MF-US-1 could not roll back to a legacy lifecycle', rebuildError);
       }
       if (typeof this.saveSettings === 'function') await this.saveSettings();
-      new Notice(`Unified 激活失败：所需授权能力未全部就绪（${(error && (error.code || error.message)) || 'unknown'}），本次激活已撤销。`, 15000);
+      notifyUser(`Unified 激活失败：所需授权能力未全部就绪（${(error && (error.code || error.message)) || 'unknown'}），本次激活已撤销。`, 15000);
       return {
         ok: false,
         reason: 'E_ACTIVATION_CAPABILITY_INCOMPLETE',
@@ -4740,7 +4760,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (typeof this.saveSettings === 'function') await this.saveSettings();
     this._refreshExcerptViews();
     if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
-    if (!this.mfUs1AutoStartBusy) new Notice('Unified 已激活（本次会话）；可在设置中切换算法。', 12000);
+    if (!this.mfUs1AutoStartBusy) notifyUser('Unified 已激活（本次会话）；可在设置中切换算法。', 12000);
     return { ok: true, session: coordinator.currentSession() };
   }
 
@@ -4815,7 +4835,7 @@ class IncrementalReadingPlugin extends Plugin {
       }
       if (!result.ok) {
         const blockers = (result.blockers || [result.reason || 'BLOCKED']).join('、');
-        new Notice(`当前无法启用 Unified 写入：${blockers}。为避免数据风险，未切换算法；请在设置页查看状态。`, 15000);
+        notifyUser(`当前无法启用 Unified 写入：${blockers}。为避免数据风险，未切换算法；请在设置页查看状态。`, 15000);
       }
       return result;
     } finally {
@@ -4825,7 +4845,7 @@ class IncrementalReadingPlugin extends Plugin {
 
   async setSchedulerMode(mode) {
     if (mode !== 'unified') {
-      new Notice('MemoFlow 1.0 仅提供 MF-US-1 调度算法。');
+      notifyUser('MemoFlow 1.0 仅提供 MF-US-1 调度算法。');
       return { ok: false, reason: 'E_ALGORITHM_RETIRED' };
     }
     // Only MF-US-1 exists today; the selector/method stay generic so a future
@@ -4841,7 +4861,7 @@ class IncrementalReadingPlugin extends Plugin {
     const result = await this._mfUs1AutoStartRuntime();
     this._refreshExcerptViews();
     if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
-    if (!result.ok && result.reason !== 'E_ALREADY_RUNNING') new Notice(`MF-US-1 写入当前被阻断：${(result.blockers || [result.reason]).join('、')}`, 12000);
+    if (!result.ok && result.reason !== 'E_ALREADY_RUNNING') notifyUser(`MF-US-1 写入当前被阻断：${(result.blockers || [result.reason]).join('、')}`, 12000);
     return result;
   }
 
@@ -4860,14 +4880,14 @@ class IncrementalReadingPlugin extends Plugin {
     const proceed = await confirmDialog(this.app, 'MF-US-1 激活检查', lines.join('\n') + '\n\n确认后将执行完整安全检查，并为本次会话签发 Unified 写入授权。');
     if (!proceed) return { ok: false, reason: 'E_CANCELLED' };
     if (blockers.length) {
-      new Notice(`Unified 不可激活：${blockers.join('、')}`, 15000);
+      notifyUser(`Unified 不可激活：${blockers.join('、')}`, 15000);
       return { ok: false, blockers, reason: blockers[0] };
     }
     this.mfUs1ProductionApproval = true;
     try {
       const result = await this.mfUs1ActivateUnified();
       if (result && result.ok) {
-        new Notice('Unified 已激活（本次会话授权）。可在「暂停/撤销 Unified 授权」中立即撤销。', 12000);
+        notifyUser('Unified 已激活（本次会话授权）。可在「暂停/撤销 Unified 授权」中立即撤销。', 12000);
       }
       return result;
     } finally {
@@ -4919,14 +4939,14 @@ class IncrementalReadingPlugin extends Plugin {
     this._mfUs1HostInstance = null;
     this._refreshExcerptViews();
     if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
-    new Notice('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
+    notifyUser('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
     return { ok: true, tokenRevoked: true, hadSession: revoked.revoked, suspended: true };
   }
 
   // Emergency action #2: switch back to Legacy. Only allowed when no unresolved
   // events/batches/blocks remain; otherwise Legacy scheduling writes stay blocked.
   async mfUs1SwitchToLegacy() {
-    new Notice('MemoFlow 1.0 仅提供 MF-US-1 调度算法，已无 Legacy 模式可切换。');
+    notifyUser('MemoFlow 1.0 仅提供 MF-US-1 调度算法，已无 Legacy 模式可切换。');
     return { ok: false, reason: 'E_ALGORITHM_RETIRED' };
   }
 
@@ -4936,7 +4956,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mfUs1ModeMenu() {
-    new Notice('MemoFlow 1.0 仅提供 MF-US-1 调度算法；在设置页可查看当前算法。');
+    notifyUser('MemoFlow 1.0 仅提供 MF-US-1 调度算法；在设置页可查看当前算法。');
     return { ok: false, reason: 'E_ALGORITHM_RETIRED' };
   }
 
@@ -4944,36 +4964,36 @@ class IncrementalReadingPlugin extends Plugin {
   // snapshots must be supplied explicitly (never read from a real vault here).
   async mfUs1SyntheticMigrationDrill({ snapshots = null, batchId = 'synthetic-batch' } = {}) {
     if (!this.__mfUs1MigrationAuthorization) {
-      new Notice('迁移执行未开放：生产迁移尚未授权（合成环境需显式注入测试能力）。', 14000);
+      notifyUser('迁移执行未开放：生产迁移尚未授权（合成环境需显式注入测试能力）。', 14000);
       return { ok: false, reason: 'E_MIGRATION_NOT_OPEN' };
     }
     if (!Array.isArray(snapshots) || !snapshots.length) {
-      new Notice('迁移演练需要显式合成快照（不读取真实 Vault）。', 12000);
+      notifyUser('迁移演练需要显式合成快照（不读取真实 Vault）。', 12000);
       return { ok: false, reason: 'E_SNAPSHOTS_REQUIRED' };
     }
     const { runSyntheticMigration } = require('./src/integration/migration-host.js');
     const result = await runSyntheticMigration({ snapshots, batchId });
     this.mfUs1MigrationDrillResult = result;
-    new Notice(`迁移演练：plan ${String(result.plan.planId).slice(0, 8)} · batch ${result.batch.status} · rollback ${result.rollback.result.status}`, 14000);
+    notifyUser(`迁移演练：plan ${String(result.plan.planId).slice(0, 8)} · batch ${result.batch.status} · rollback ${result.rollback.result.status}`, 14000);
     return result;
   }
 
   async resumePendingBatches() {
     const { resumeBatch } = require('./src/integration/batch-resume.js');
     if (this._mfUs1EffectiveMode() !== 'unified') {
-      new Notice('批次恢复只在 Unified 模式可用。');
+      notifyUser('批次恢复只在 Unified 模式可用。');
       return null;
     }
     if (this.mfUs1Suspended) {
-      new Notice('Unified 授权已撤销；批次恢复被拒绝。', 12000);
+      notifyUser('Unified 授权已撤销；批次恢复被拒绝。', 12000);
       return null;
     }
     if (!this.mfUs1BatchStore || !this.mfUs1AdminWriter) {
-      new Notice('批次存储尚未初始化。');
+      notifyUser('批次存储尚未初始化。');
       return null;
     }
     const pending = await this.mfUs1BatchStore.listBatches({ unfinishedOnly: true });
-    if (!pending.length) { new Notice('没有未决批次。'); return null; }
+    if (!pending.length) { notifyUser('没有未决批次。'); return null; }
     const label = pending.slice(0, 3).map(batch => `${batch.kind}/${String(batch.batchId).slice(0, 8)}(${batch.status})`).join('、');
     const ok = await confirmDialog(this.app, '恢复未决批次',
       `${pending.length} 个未决批次：${label}。将按持久绝对目标继续未完成项（不会重算增量），确认？`);
@@ -5030,21 +5050,21 @@ class IncrementalReadingPlugin extends Plugin {
       });
       results.push({ batchId: batch.batchId, kind: batch.kind, status: outcome.status, reason: outcome.reason });
     }
-    new Notice(`批次恢复：${results.map(item => `${item.kind}=${item.status}`).join('、')}`, 12000);
+    notifyUser(`批次恢复：${results.map(item => `${item.kind}=${item.status}`).join('、')}`, 12000);
     return results;
   }
 
   async mercyUndoLast() {
     this._mfUs1RefreshRows();
     const { confirmMercyPreview, undoMercyHost, describeMercyOutcome } = require('./src/integration/mercy-host.js');
-    if (!this.mfUs1AdminWriter || !this.mfUs1BatchStore) { new Notice('MF-US-1 Mercy 尚未初始化。', 9000); return null; }
+    if (!this.mfUs1AdminWriter || !this.mfUs1BatchStore) { notifyUser('MF-US-1 Mercy 尚未初始化。', 9000); return null; }
     const batch = await this.mfUs1BatchStore.latestBatch('MERCY');
-    if (!batch || !Array.isArray(batch.results)) { new Notice('没有可撤销的 Mercy 批次记录。'); return null; }
+    if (!batch || !Array.isArray(batch.results)) { notifyUser('没有可撤销的 Mercy 批次记录。'); return null; }
     const revisionByTopic = new Map((Array.isArray(batch.revisions) ? batch.revisions : [])
       .filter(entry => entry && entry.topicId && Number.isInteger(entry.revision))
       .map(entry => [String(entry.topicId).toLowerCase(), entry.revision]));
     if (!revisionByTopic.size) {
-      new Notice('该批次缺少写入 Revision 证据，无法安全撤销。', 10000);
+      notifyUser('该批次缺少写入 Revision 证据，无法安全撤销。', 10000);
       return { status: 'blocked', reason: 'E_UNDO_EVIDENCE_MISSING' };
     }
     const ok = await confirmDialog(this.app, '撤销上次 Mercy', `恢复 ${batch.results.filter(r => r.status === 'applied').length} 个主题的原最早可见日？`);
@@ -5059,7 +5079,7 @@ class IncrementalReadingPlugin extends Plugin {
         items: batch.items,
       });
     } catch (error) {
-      new Notice(`批次凭证无效，无法撤销：${error.message || error.code}`, 9000);
+      notifyUser(`批次凭证无效，无法撤销：${error.message || error.code}`, 9000);
       return null;
     }
     const outcome = await undoMercyHost({
@@ -5081,7 +5101,7 @@ class IncrementalReadingPlugin extends Plugin {
       },
     });
     const report = describeMercyOutcome(outcome);
-    new Notice(report.message, report.nonAtomic ? 14000 : 7000);
+    notifyUser(report.message, report.nonAtomic ? 14000 : 7000);
     return outcome;
   }
 
@@ -5093,7 +5113,7 @@ class IncrementalReadingPlugin extends Plugin {
       if (fmw.date_dismissed !== undefined) delete fmw.date_dismissed;
       fmw.next_review = vaultDate;
     });
-    new Notice(`已恢复：${r.tfile.basename} · ${vaultDate}`);
+    notifyUser(`已恢复：${r.tfile.basename} · ${vaultDate}`);
   }
 
   _mfUs1GuardLegacyWrite(feature) {
@@ -5103,13 +5123,13 @@ class IncrementalReadingPlugin extends Plugin {
       if (!this.__mfUs1SuspendedNotified) this.__mfUs1SuspendedNotified = new Set();
       if (!this.__mfUs1SuspendedNotified.has(feature)) {
         this.__mfUs1SuspendedNotified.add(feature);
-        new Notice(`写入已暂停：Unified 授权已撤销且存在未决状态，「${feature}」未执行。`, 12000);
+        notifyUser(`写入已暂停：Unified 授权已撤销且存在未决状态，「${feature}」未执行。`, 12000);
       }
       return true;
     }
     const { guardLegacySchedulingWrite } = require('./src/integration/host-write-guard.js');
     const verdict = guardLegacySchedulingWrite(this, feature);
-    if (verdict.blocked && verdict.first) new Notice(verdict.message, 9000);
+    if (verdict.blocked && verdict.first) notifyUser(verdict.message, 9000);
     return verdict.blocked;
   }
 
@@ -5127,7 +5147,7 @@ class IncrementalReadingPlugin extends Plugin {
   _mfUs1ShowActionResult(result) {
     if (!result || result.status === 'legacy' || !result.message) return;
     const timeout = result.status === 'applied' || result.status === 'duplicate' ? 5000 : 9000;
-    new Notice(result.message, timeout);
+    notifyUser(result.message, timeout);
   }
 
   async _mfUs1RunHostAction(kind, descriptor, legacyWrite) {
@@ -5161,12 +5181,12 @@ class IncrementalReadingPlugin extends Plugin {
     const { buildEventPayload } = require('./src/integration/reading-actions-host.js');
     const target = this._mfUs1HostActionTarget(file);
     if (!target.ok) {
-      new Notice(target.message);
+      notifyUser(target.message);
       return { status: 'failed', message: target.message, reason: 'E_TOPIC_NOT_SCHEDULABLE' };
     }
     const built = buildEventPayload('postpone', { days });
     if (!built.ok) {
-      new Notice(built.message);
+      notifyUser(built.message);
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
@@ -5187,12 +5207,12 @@ class IncrementalReadingPlugin extends Plugin {
     const { buildEventPayload } = require('./src/integration/reading-actions-host.js');
     const target = this._mfUs1HostActionTarget(file);
     if (!target.ok) {
-      new Notice(target.message);
+      notifyUser(target.message);
       return { status: 'failed', message: target.message, reason: 'E_TOPIC_NOT_SCHEDULABLE' };
     }
     const built = buildEventPayload('schedule', { idealDue, reason });
     if (!built.ok) {
-      new Notice(built.message);
+      notifyUser(built.message);
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
@@ -5215,12 +5235,12 @@ class IncrementalReadingPlugin extends Plugin {
     const { buildEventPayload } = require('./src/integration/reading-actions-host.js');
     const target = this._mfUs1HostActionTarget(file);
     if (!target.ok) {
-      new Notice(target.message);
+      notifyUser(target.message);
       return { status: 'failed', message: target.message, reason: 'E_TOPIC_NOT_SCHEDULABLE' };
     }
     const built = buildEventPayload('priority', { priority });
     if (!built.ok) {
-      new Notice(built.message);
+      notifyUser(built.message);
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
@@ -5237,7 +5257,7 @@ class IncrementalReadingPlugin extends Plugin {
   async _promptManualSchedule(file) {
     const target = this._mfUs1HostActionTarget(file);
     if (!target.ok) {
-      new Notice(target.message);
+      notifyUser(target.message);
       return null;
     }
     const current = target.fm.next_review || '(unscheduled)';
@@ -5246,7 +5266,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (!raw || !raw.trim()) return null; // cancel: no event, no write
     const iso = this._mfUs1ParseManualScheduleInput(raw);
     if (!iso) {
-      new Notice(`无效日期：${raw.trim()}`);
+      notifyUser(`无效日期：${raw.trim()}`);
       return null;
     }
     const result = await this.scheduleFile(file, iso);
@@ -5274,27 +5294,27 @@ class IncrementalReadingPlugin extends Plugin {
   _mfUs1ReportCreationOutcome(outcome, { kind, path }) {
     const label = kind === 'source' ? 'Source' : 'Extract';
     if (outcome.status === 'applied') {
-      new Notice(`MF-US-1 ${label} created: ${path}`, 5000);
+      notifyUser(`MF-US-1 ${label} created: ${path}`, 5000);
       return;
     }
     if (outcome.status === 'duplicate') {
-      new Notice(`MF-US-1 ${label} already created for this request: ${path}`, 5000);
+      notifyUser(`MF-US-1 ${label} already created for this request: ${path}`, 5000);
       return;
     }
     const codes = (outcome.diagnostics || []).map(item => item.code).join(', ') || outcome.reason || outcome.status;
     console.error('[MemoFlow] MF-US-1 creation did not complete', outcome.status, codes, outcome);
-    new Notice(`MF-US-1 创建未完成（${outcome.status}）：${codes}。请核对 ${path} 后手动恢复。`, 9000);
+    notifyUser(`MF-US-1 创建未完成（${outcome.status}）：${codes}。请核对 ${path} 后手动恢复。`, 9000);
   }
 
   async _mfUs1CreateTopicFromHost({ requestId, kind, priority, parentFile = null, path, content }) {
     if (this.mfUs1Suspended) {
-      new Notice('Unified 授权已撤销；创建被拒绝（未写入）。', 12000);
+      notifyUser('Unified 授权已撤销；创建被拒绝（未写入）。', 12000);
       return { handled: true, outcome: { status: 'blocked', reason: 'E_UNIFIED_NOT_AUTHORIZED' } };
     }
     const authorization = this._mfUs1CreationAuthorization();
     if (!authorization) {
       if (this._mfUs1EffectiveMode() === 'unified') {
-        new Notice('Unified 创建需要授权；本次未创建（已 fail-closed）。', 9000);
+        notifyUser('Unified 创建需要授权；本次未创建（已 fail-closed）。', 9000);
         return { handled: true, outcome: { status: 'blocked', reason: 'E_CREATION_NOT_AUTHORIZED' } };
       }
       return { handled: false };
@@ -5311,7 +5331,7 @@ class IncrementalReadingPlugin extends Plugin {
       if (!parentId) {
         // No persistent parent identity => no trustworthy mf_parent_id. Refuse
         // instead of silently writing an extract that Unified cannot schedule.
-        new Notice('MF-US-1：父级缺少持久 mf_id，已阻止 Unified 创建（没有启用旧调度）。', 9000);
+        notifyUser('MF-US-1：父级缺少持久 mf_id，已阻止 Unified 创建（没有启用旧调度）。', 9000);
         return { handled: true, outcome: { status: 'blocked', reason: 'E_PARENT_REQUIRED_FOR_UNIFIED' } };
       }
     }
@@ -5399,14 +5419,14 @@ class IncrementalReadingPlugin extends Plugin {
     if (fm.type === 'source' && fm.read_point != null && !isVideo) {
       const rp = await askText(this.app, 'Page you stopped at', String(fm.read_point));
       if (rp === null) return;
-      if (!/^[1-9]\d*$/.test(rp.trim())) { new Notice('Enter a positive whole page number.'); return; }
+      if (!/^[1-9]\d*$/.test(rp.trim())) { notifyUser('Enter a positive whole page number.'); return; }
       newReadPoint = Number(rp);
     } else if (isVideo) {
       const cur = formatSeconds(Number(fm.read_point_seconds) || 0);
       const raw = await askText(this.app, 'Timestamp you stopped at (mm:ss or hh:mm:ss)', cur);
       if (raw === null) return;
       const parsed = parseTimeInput(raw);
-      if (parsed == null) { new Notice('Invalid timestamp — use mm:ss or hh:mm:ss.'); return; }
+      if (parsed == null) { notifyUser('Invalid timestamp — use mm:ss or hh:mm:ss.'); return; }
       newReadPointSeconds = parsed;
     }
 
@@ -5437,7 +5457,7 @@ class IncrementalReadingPlugin extends Plugin {
             }
             return stripped.slice(0, insertAt) + READ_POINT_MARKER + stripped.slice(insertAt);
           });
-          new Notice(`📍 moved to line ${cursor.line + 1}`);
+          notifyUser(`📍 moved to line ${cursor.line + 1}`);
         }
       }
     }
@@ -5535,9 +5555,9 @@ class IncrementalReadingPlugin extends Plugin {
     const typeLabel = fm.type === 'source' ? 'Source' : 'Extract';
     if (markedDone) {
       this.consumeSessionItem(file.path, { background: true });
-      new Notice(`${typeLabel} marked done. Future reviews cleared.`);
+      notifyUser(`${typeLabel} marked done. Future reviews cleared.`);
     } else {
-      new Notice(`${typeLabel}: priority ${priority} a=${round4(aFactor)} → next in ${interval}d (${nextReview})`);
+      notifyUser(`${typeLabel}: priority ${priority} a=${round4(aFactor)} → next in ${interval}d (${nextReview})`);
     }
     return true;
   }
@@ -5560,7 +5580,7 @@ class IncrementalReadingPlugin extends Plugin {
 
   async _activateQueueView() {
     if (!this.settings.queue.sidebar_enabled) {
-      new Notice('Sidebar disabled in Incremental Reading Toolkit settings');
+      notifyUser('Sidebar disabled in Incremental Reading Toolkit settings');
       return;
     }
     const leaves = this.app.workspace.getLeavesOfType(IR_QUEUE_VIEW_TYPE);
@@ -5627,27 +5647,27 @@ class IncrementalReadingPlugin extends Plugin {
     const name = await askText(this.app, 'Category name', '');
     if (!name) return null;
     const safe = slugifyForFolder(name);
-    if (!safe) { new Notice('Invalid category name'); return null; }
+    if (!safe) { notifyUser('Invalid category name'); return null; }
     await ensureFolder(this.app, this.categoriesFolder());
     const path = `${this.categoriesFolder()}/${safe}.md`;
-    if (this.app.vault.getAbstractFileByPath(path)) { new Notice('Category already exists'); return null; }
+    if (this.app.vault.getAbstractFileByPath(path)) { notifyUser('Category already exists'); return null; }
     const fm = ['---', 'type: category'];
     if (parentName) fm.push(`parent: ${JSON.stringify(`[[${parentName}]]`)}`);
     fm.push('tree_order: 0', 'tags:', '  - incremental-reading', '  - ir/category', '---', '', `# ${name}`, '');
     const file = await this.app.vault.create(path, fm.join('\n'));
-    new Notice(`Category created: ${name}`);
+    notifyUser(`Category created: ${name}`);
     return file;
   }
 
   async reparent(childPath, newParentName) {
     const child = this.app.vault.getAbstractFileByPath(childPath);
-    if (!child) { new Notice('Node not found'); return; }
+    if (!child) { notifyUser('Node not found'); return; }
     const idx = this.buildTreeIndex();
     if (newParentName && idx.duplicates.has(newParentName.toLowerCase())) {
-      new Notice(`Refused: more than one node is named "${newParentName}"`); return;
+      notifyUser(`Refused: more than one node is named "${newParentName}"`); return;
     }
     if (newParentName && treeCore.wouldCreateCycle(idx, child.basename, newParentName)) {
-      new Notice('Refused: would create a cycle'); return;
+      notifyUser('Refused: would create a cycle'); return;
     }
     await this.app.fileManager.processFrontMatter(child, (fm) => {
       if (newParentName) {
@@ -5658,22 +5678,22 @@ class IncrementalReadingPlugin extends Plugin {
         fm.tree_root = true;
       }
     });
-    new Notice(newParentName ? `Moved under ${newParentName}` : 'Moved to top level');
+    notifyUser(newParentName ? `Moved under ${newParentName}` : 'Moved to top level');
     this._refreshTreeViews();
   }
 
   async reparentActive() {
     const active = this.app.workspace.getActiveFile();
-    if (!active || active.extension !== 'md') { new Notice('No active markdown element'); return; }
+    if (!active || active.extension !== 'md') { notifyUser('No active markdown element'); return; }
     return await this.reparentPath(active.path);
   }
 
   async reparentPath(path) {
     const active = this.app.vault.getAbstractFileByPath(path);
-    if (!active || active.extension !== 'md') { new Notice('Tree node not found'); return false; }
+    if (!active || active.extension !== 'md') { notifyUser('Tree node not found'); return false; }
     const fm = getFm(this.app, active);
     if (!fm || !['category', 'source', 'extract', 'card'].includes(fm.type)) {
-      new Notice('Node is not an incremental reading element'); return false;
+      notifyUser('Node is not an incremental reading element'); return false;
     }
     const idx = this.buildTreeIndex();
     const candidates = idx.pages.filter(p =>
@@ -5693,7 +5713,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (!f) return;
     const idx = this.buildTreeIndex();
     const page = treeCore.pageByPath(idx, path);
-    if (!page) { new Notice('Tree node not found'); return false; }
+    if (!page) { notifyUser('Tree node not found'); return false; }
     const parentName = treeCore.effectiveParent(page.fm);
     let siblings;
     if (parentName) {
@@ -5708,10 +5728,10 @@ class IncrementalReadingPlugin extends Plugin {
     }
     const order = siblings.map(s => ({ path: s.path, tree_order: s.fm && s.fm.tree_order }));
     const curIdx = order.findIndex(s => s.path === path);
-    if (curIdx < 0) { new Notice('Could not locate this node among its siblings'); return false; }
+    if (curIdx < 0) { notifyUser('Could not locate this node among its siblings'); return false; }
     const targetIndex = curIdx + dir;
     if (targetIndex < 0 || targetIndex >= order.length) {
-      new Notice(dir < 0 ? 'Already the first sibling' : 'Already the last sibling');
+      notifyUser(dir < 0 ? 'Already the first sibling' : 'Already the last sibling');
       return false;
     }
     const writes = treeCore.computeReorder(order, path, targetIndex);
@@ -5729,12 +5749,12 @@ class IncrementalReadingPlugin extends Plugin {
     const next = await askText(this.app, 'New name', f.basename);
     if (!next || next === f.basename) return;
     const safe = slugifyForFolder(next);
-    if (!safe) { new Notice('Invalid name'); return; }
+    if (!safe) { notifyUser('Invalid name'); return; }
     const dir = f.parent ? f.parent.path : '';
     const newPath = (dir ? dir + '/' : '') + safe + '.md';
-    if (this.app.vault.getAbstractFileByPath(newPath)) { new Notice('A file with that name exists'); return; }
+    if (this.app.vault.getAbstractFileByPath(newPath)) { notifyUser('A file with that name exists'); return; }
     await this.app.fileManager.renameFile(f, newPath);
-    new Notice(`Renamed to ${safe}`);
+    notifyUser(`Renamed to ${safe}`);
     this._refreshTreeViews();
   }
 
@@ -5744,14 +5764,14 @@ class IncrementalReadingPlugin extends Plugin {
     const f = this.app.vault.getAbstractFileByPath(path);
     if (!f) return;
     if (getFm(this.app, f)?.type === 'card') {
-      new Notice('Card review state is managed by Spaced Repetition.');
+      notifyUser('Card review state is managed by Spaced Repetition.');
       return;
     }
     const ok = await confirmDialog(this.app, `Dismiss "${f.basename}"?`,
       'Sets status: dismissed (kept in the tree, removed from the review queue).');
     if (!ok) return;
     await this.app.fileManager.processFrontMatter(f, (fm) => { fm.status = 'dismissed'; });
-    new Notice('Dismissed');
+    notifyUser('Dismissed');
     this._refreshTreeViews();
   }
 
@@ -5762,7 +5782,7 @@ class IncrementalReadingPlugin extends Plugin {
       .map(path => this.app.vault.getAbstractFileByPath(path))
       .filter(file => file instanceof TFile && ['source', 'extract', 'card'].includes(getFm(this.app, file)?.type));
     const pending = files.filter(file => getFm(this.app, file)?.status !== 'done');
-    if (!pending.length) { new Notice('The selected items are already done.'); return 0; }
+    if (!pending.length) { notifyUser('The selected items are already done.'); return 0; }
     if (confirm) {
       const label = pending.length === 1 ? `"${pending[0].basename}"` : `${pending.length} selected items`;
       const ok = await confirmDialog(
@@ -5785,7 +5805,7 @@ class IncrementalReadingPlugin extends Plugin {
     }
     this._invalidateIRCollection();
     this._refreshTreeViews();
-    new Notice(`${pending.length} item${pending.length === 1 ? '' : 's'} marked done. Future reviews cleared.`);
+    notifyUser(`${pending.length} item${pending.length === 1 ? '' : 's'} marked done. Future reviews cleared.`);
     return pending.length;
   }
 
@@ -5794,7 +5814,7 @@ class IncrementalReadingPlugin extends Plugin {
     const files = [...new Set(paths || [])]
       .map(path => this.app.vault.getAbstractFileByPath(path))
       .filter(file => file instanceof TFile && ['source', 'extract', 'card'].includes(getFm(this.app, file)?.type));
-    if (!files.length) { new Notice('No resettable items selected.'); return 0; }
+    if (!files.length) { notifyUser('No resettable items selected.'); return 0; }
     if (confirm) {
       const label = files.length === 1 ? `"${files[0].basename}"` : `${files.length} selected items`;
       const ok = await confirmDialog(
@@ -5818,17 +5838,17 @@ class IncrementalReadingPlugin extends Plugin {
     }
     this._invalidateIRCollection();
     this._refreshTreeViews();
-    new Notice(`${files.length} item${files.length === 1 ? '' : 's'} reset.`);
+    notifyUser(`${files.length} item${files.length === 1 ? '' : 's'} reset.`);
     return files.length;
   }
 
   async seedInlineCards() {
     const active = this.app.workspace.getActiveFile();
-    if (!active) { new Notice('No active file'); return; }
+    if (!active) { notifyUser('No active file'); return; }
     const cache = this.app.metadataCache.getFileCache(active);
     const fm = cache?.frontmatter;
     if (!fm || (fm.type !== 'source' && fm.type !== 'extract')) {
-      new Notice('Active file is not a source/extract');
+      notifyUser('Active file is not a source/extract');
       return;
     }
     const body = await this.app.vault.cachedRead(active);
@@ -5836,10 +5856,10 @@ class IncrementalReadingPlugin extends Plugin {
     try {
       parsed = parseInlineCards(active.path, body, this.settings);
     } catch (error) {
-      new Notice(error.message, 8000);
+      notifyUser(error.message, 8000);
       return;
     }
-    if (!parsed.length) { new Notice('No inline cards found'); return; }
+    if (!parsed.length) { notifyUser('No inline cards found'); return; }
 
     const grouped = new Map();
     for (const card of parsed) {
@@ -5874,7 +5894,7 @@ class IncrementalReadingPlugin extends Plugin {
       existingIds.add(id);
       created++;
     }
-    new Notice(created
+    notifyUser(created
       ? `Exported ${created} inline card${created === 1 ? '' : 's'} to Spaced Repetition`
       : 'All inline cards are already exported');
   }
@@ -5882,10 +5902,10 @@ class IncrementalReadingPlugin extends Plugin {
   async addCheckpoint(noteOverride) {
     if (this._mfUs1EffectiveMode() === 'unified') return this._addCheckpointUnified(noteOverride);
     const active = this.app.workspace.getActiveFile();
-    if (!active) { new Notice('No active file'); return; }
+    if (!active) { notifyUser('No active file'); return; }
     const cache = this.app.metadataCache.getFileCache(active);
     if (!isActiveIR(cache?.frontmatter) || cache.frontmatter.type === 'card') {
-      new Notice('Checkpoints apply to sources and extracts only.'); return;
+      notifyUser('Checkpoints apply to sources and extracts only.'); return;
     }
 
     let note = noteOverride;
@@ -5918,7 +5938,7 @@ class IncrementalReadingPlugin extends Plugin {
       }
     });
 
-    new Notice(interval != null ? `Checkpoint saved, next in ${interval}d` : 'Checkpoint saved');
+    notifyUser(interval != null ? `Checkpoint saved, next in ${interval}d` : 'Checkpoint saved');
   }
 
   // ---- Done / Dismiss / Postpone / Schedule ------------------------------
@@ -5931,7 +5951,7 @@ class IncrementalReadingPlugin extends Plugin {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: true, allowPdfFallback: true });
     if (!r) return;
     const { tfile, fm } = r;
-    if (fm.status === 'done') { new Notice('Already done.'); return; }
+    if (fm.status === 'done') { notifyUser('Already done.'); return; }
     await this.markPathsDone([tfile.path]);
   }
 
@@ -5953,12 +5973,12 @@ class IncrementalReadingPlugin extends Plugin {
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
     if (!r) return;
     const { tfile, fm } = r;
-    if (fm.status === 'dismissed') { new Notice('Already dismissed.'); return; }
+    if (fm.status === 'dismissed') { notifyUser('Already dismissed.'); return; }
     await this.app.fileManager.processFrontMatter(tfile, (fmw) => {
       fmw.status = 'dismissed';
       fmw.date_dismissed = todayDateString(this.settings);
     });
-    new Notice('Dismissed. Set status: active to restore.');
+    notifyUser('Dismissed. Set status: active to restore.');
   }
 
   async postpone() {
@@ -5980,7 +6000,7 @@ class IncrementalReadingPlugin extends Plugin {
       fmw.next_review = newDate;
       fmw.interval = choice;
     });
-    new Notice(`Postponed +${choice}d · Next review: ${newDate}`);
+    notifyUser(`Postponed +${choice}d · Next review: ${newDate}`);
   }
 
   async schedule() {
@@ -5993,7 +6013,7 @@ class IncrementalReadingPlugin extends Plugin {
     const input = raw.trim();
 
     const isoDate = this._mfUs1ParseManualScheduleInput(input);
-    if (!isoDate) { new Notice(`Invalid ${dateFormat} date: ${input}`); return; }
+    if (!isoDate) { notifyUser(`Invalid ${dateFormat} date: ${input}`); return; }
     // Legacy keeps writing the Vault-formatted date and recalculating interval;
     // Unified writes mf_ideal_due and clears mf_not_before via applyEvent.
     const legacyDate = formatDateValue(dateCore.parseDateExact(isoDate, 'YYYY-MM-DD'), this.settings);
@@ -6009,7 +6029,7 @@ class IncrementalReadingPlugin extends Plugin {
       fmw.next_review = newDate;
       if (newInterval != null) fmw.interval = newInterval;
     });
-    new Notice(`Scheduled: ${cur} → ${newDate}`);
+    notifyUser(`Scheduled: ${cur} → ${newDate}`);
   }
 
   // ---- Set Priority / Boost ---------------------------------------------
@@ -6020,15 +6040,15 @@ class IncrementalReadingPlugin extends Plugin {
     const cur = r.fm.priority ?? 50;
     const raw = await askText(this.app, 'New priority (1-100, 1=highest)', String(cur));
     if (raw === null) return; // cancel: no event, no write
-    if (!/^\d+$/.test(raw.trim())) { new Notice('Invalid priority — integer 1-100.'); return; }
+    if (!/^\d+$/.test(raw.trim())) { notifyUser('Invalid priority — integer 1-100.'); return; }
     const p = Number(raw);
-    if (!Number.isInteger(p) || p < 1 || p > 100) { new Notice('Invalid priority — integer 1-100.'); return; }
+    if (!Number.isInteger(p) || p < 1 || p > 100) { notifyUser('Invalid priority — integer 1-100.'); return; }
     return this.setPriorityFile(r.tfile, p, { legacy: () => this._setPriorityLegacyWrite(r, p) });
   }
 
   async _setPriorityLegacyWrite(r, p) {
     await this.app.fileManager.processFrontMatter(r.tfile, (fmw) => { fmw.priority = p; });
-    new Notice(`Priority → ${p} (next_review unchanged — A-Factor-driven)`);
+    notifyUser(`Priority → ${p} (next_review unchanged — A-Factor-driven)`);
   }
 
   async boost() {
@@ -6046,9 +6066,9 @@ class IncrementalReadingPlugin extends Plugin {
     if (amount === 'custom') {
       const raw = await askText(this.app, 'Boost amount (1-99)', '10');
       if (!raw) return;
-      if (!/^\d+$/.test(raw.trim())) { new Notice('Invalid amount.'); return; }
+      if (!/^\d+$/.test(raw.trim())) { notifyUser('Invalid amount.'); return; }
       const n = Number(raw);
-      if (!Number.isInteger(n) || n < 1 || n > 99) { new Notice('Invalid amount.'); return; }
+      if (!Number.isInteger(n) || n < 1 || n > 99) { notifyUser('Invalid amount.'); return; }
       delta = n;
     } else { delta = amount; }
 
@@ -6066,7 +6086,7 @@ class IncrementalReadingPlugin extends Plugin {
           strict: true,
         });
       } catch (error) {
-        new Notice(`Cascade boost refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
+        notifyUser(`Cascade boost refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
         return;
       }
     }
@@ -6100,11 +6120,11 @@ class IncrementalReadingPlugin extends Plugin {
       const state = rootUpdated
         ? `root updated; ${cascaded} descendant${cascaded === 1 ? '' : 's'} updated`
         : 'no changes applied';
-      new Notice(`Boost stopped at ${failedPath}: ${error.message || 'write failed'}. ${state}; no atomic rollback.`, 12000);
+      notifyUser(`Boost stopped at ${failedPath}: ${error.message || 'write failed'}. ${state}; no atomic rollback.`, 12000);
       return;
     }
     const cmsg = cascade ? ` + ${cascaded} descendant${cascaded === 1 ? '' : 's'}` : '';
-    new Notice(`Boosted: ${orig} → ${newPri}${cmsg}. boost_from preserved.`);
+    notifyUser(`Boosted: ${orig} → ${newPri}${cmsg}. boost_from preserved.`);
   }
 
   // ---- Subset Review / Mercy / Postpone Subtree --------------------------
@@ -6128,10 +6148,10 @@ class IncrementalReadingPlugin extends Plugin {
       onIssue: () => { issueCount++; },
     })
       .filter(p => p.tfile.path !== r.tfile.path);
-    if (issueCount > 0) new Notice(`Subset review excluded ${issueCount} ambiguous or invalid relation${issueCount === 1 ? '' : 's'}.`, 8000);
+    if (issueCount > 0) notifyUser(`Subset review excluded ${issueCount} ambiguous or invalid relation${issueCount === 1 ? '' : 's'}.`, 8000);
     if (filter === 'due') subset = subset.filter(p => isDue(p.fm, today, this.settings));
     subset = subset.filter(p => p.fm.status !== 'done' && p.fm.status !== 'container' && p.fm.status !== 'dismissed');
-    if (subset.length === 0) { new Notice(`No descendants match.`); return; }
+    if (subset.length === 0) { notifyUser(`No descendants match.`); return; }
 
     subset.sort((a, b) => urgency(b.fm, today, this.settings) - urgency(a.fm, today, this.settings));
     const statusIcon = (fm) => {
@@ -6167,7 +6187,7 @@ class IncrementalReadingPlugin extends Plugin {
       if (!isPastDue(fm, today, this.settings)) continue;
       overdue.push({ tfile: f, fm });
     }
-    if (overdue.length === 0) { new Notice('Nothing overdue.'); return; }
+    if (overdue.length === 0) { notifyUser('Nothing overdue.'); return; }
     overdue.sort((a, b) => urgency(b.fm, today, this.settings) - urgency(a.fm, today, this.settings));
     let updated = 0;
     for (let rank = 0; rank < overdue.length; rank++) {
@@ -6177,7 +6197,7 @@ class IncrementalReadingPlugin extends Plugin {
       await this.app.fileManager.processFrontMatter(overdue[rank].tfile, (fmw) => { fmw.next_review = newDate; fmw.interval = Math.max(1, off); });
       updated++;
     }
-    new Notice(`Mercy: ${updated} overdue spread across ${choice}d.`);
+    notifyUser(`Mercy: ${updated} overdue spread across ${choice}d.`);
   }
 
   async postponeSubtree() {
@@ -6187,10 +6207,10 @@ class IncrementalReadingPlugin extends Plugin {
       // Unified may start from a Source OR an Extract; a card is not a subtree
       // root (do not silently walk up to its parent).
       const active = this.app.workspace.getActiveFile();
-      if (!active || active.extension !== 'md') { new Notice('请先打开来源或摘录笔记。'); return; }
+      if (!active || active.extension !== 'md') { notifyUser('请先打开来源或摘录笔记。'); return; }
       const rootFm = getFm(this.app, active);
       if (!rootFm || (rootFm.type !== 'source' && rootFm.type !== 'extract')) {
-        new Notice('子树延期只能以来源或摘录为根（卡片请先打开其父节点）。');
+        notifyUser('子树延期只能以来源或摘录为根（卡片请先打开其父节点）。');
         return;
       }
       root = { tfile: active, fm: rootFm };
@@ -6219,7 +6239,7 @@ class IncrementalReadingPlugin extends Plugin {
         strict: true,
       });
     } catch (error) {
-      new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
+      notifyUser(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
       return;
     }
     let postponed = 0;
@@ -6242,10 +6262,10 @@ class IncrementalReadingPlugin extends Plugin {
         postponed++;
       }
     } catch (error) {
-      new Notice(`Subtree postpone stopped at ${failedPath}: ${error.message || 'write failed'}. ${postponed} element${postponed === 1 ? '' : 's'} updated; no atomic rollback.`, 12000);
+      notifyUser(`Subtree postpone stopped at ${failedPath}: ${error.message || 'write failed'}. ${postponed} element${postponed === 1 ? '' : 's'} updated; no atomic rollback.`, 12000);
       return;
     }
-    new Notice(`Subtree postponed +${choice}d · ${postponed} element${postponed === 1 ? '' : 's'}.`);
+    notifyUser(`Subtree postponed +${choice}d · ${postponed} element${postponed === 1 ? '' : 's'}.`);
   }
 
   // Unified subtree postpone: one A5.2 POSTPONE event per node, in a fixed
@@ -6264,19 +6284,19 @@ class IncrementalReadingPlugin extends Plugin {
   _mfUs1ReportBatch(report) {
     if (!report || !report.message) return;
     const timeout = ['partial', 'uncertain', 'failed'].includes(report.status) ? 14000 : 6000;
-    new Notice(report.message, timeout);
+    notifyUser(report.message, timeout);
   }
 
   async postponeSubtreeHost(rootFile, days, rootFm = null) {
     const { planSubtreePostpone, runSubtreePostpone, describeBatchOutcome } = require('./src/integration/subtree-postpone-host.js');
     const fm = rootFm || (rootFile ? getFm(this.app, rootFile) : null);
     if (!fm || typeof fm.mf_id !== 'string' || !fm.mf_id) {
-      new Notice('子树延期未执行：根节点缺少持久 mf_id（不做隐式迁移）。', 10000);
+      notifyUser('子树延期未执行：根节点缺少持久 mf_id（不做隐式迁移）。', 10000);
       return { status: 'blocked', reason: 'E_ROOT_ID_REQUIRED' };
     }
     const rootIndex = await this._mfUs1WaitForIRIndex(rootFile);
     if (!rootIndex.found) {
-      new Notice('子树延期未执行：增量阅读索引尚未就绪，请稍后重试。', 10000);
+      notifyUser('子树延期未执行：增量阅读索引尚未就绪，请稍后重试。', 10000);
       return { status: 'blocked', reason: 'E_INDEX_NOT_READY', writesPerformed: false };
     }
     // One date for the whole batch, even if the clock crosses midnight.
@@ -6288,7 +6308,7 @@ class IncrementalReadingPlugin extends Plugin {
         strict: true,
       });
     } catch (error) {
-      new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
+      notifyUser(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
       return { status: 'refused', reason: error.code || 'SUBTREE_RELATION' };
     }
     // Children must be written before their parents: a child's CAS verifies the
@@ -6341,7 +6361,7 @@ class IncrementalReadingPlugin extends Plugin {
     try {
       plan = planSubtreePostpone({ nodes, rootTopicId: fm.mf_id, days, today });
     } catch (error) {
-      new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
+      notifyUser(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
       return { status: 'refused', reason: error.code || 'E_SUBTREE_PLAN' };
     }
     if (typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true) {
@@ -6380,21 +6400,21 @@ class IncrementalReadingPlugin extends Plugin {
   async extractSelection() {
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') {
-      new Notice('Extract Selection requires an open markdown source.');
+      notifyUser('Extract Selection requires an open markdown source.');
       return;
     }
     const fm = getFm(this.app, active);
-    if (fm?.type !== 'source') { new Notice('Run from a source note.'); return; }
+    if (fm?.type !== 'source') { notifyUser('Run from a source note.'); return; }
     const editor = getEditorForFile(this.app, active);
     const selection = editor?.getSelection?.() || '';
-    if (!selection.trim()) { new Notice('No text selected.'); return; }
+    if (!selection.trim()) { notifyUser('No text selected.'); return; }
     const from = editor.getCursor('from');
     const to = editor.getCursor('to');
     const selectedText = selection.trim();
     const created = await this._writeExtract(active, fm, selectedText);
     if (!created) return;
     if (editor.getRange(from, to).trim() !== selectedText) {
-      new Notice('Extract created, but the source changed before its passage could be highlighted.');
+      notifyUser('Extract created, but the source changed before its passage could be highlighted.');
       return;
     }
     editor.replaceRange(excerptHighlightMarkup(editor.getRange(from, to)), from, to);
@@ -6409,8 +6429,8 @@ class IncrementalReadingPlugin extends Plugin {
     if (!r) return;
     let clip = '';
     try { clip = (await navigator.clipboard.readText()).trim(); }
-    catch (e) { new Notice('Could not read clipboard.'); return; }
-    if (!clip) { new Notice('Clipboard empty.'); return; }
+    catch (e) { notifyUser('Could not read clipboard.'); return; }
+    if (!clip) { notifyUser('Clipboard empty.'); return; }
     await this._writeExtract(r.tfile, r.fm, clip);
   }
 
@@ -6433,7 +6453,7 @@ class IncrementalReadingPlugin extends Plugin {
     const customStr = await askText(this.app, `First interval in days (blank for auto: ${autoInterval}d)`, '');
     if (customStr === null) return false;
     if (customStr.trim() && !/^[1-9]\d*$/.test(customStr.trim())) {
-      new Notice('Invalid interval — enter a positive whole number of days.'); return false;
+      notifyUser('Invalid interval — enter a positive whole number of days.'); return false;
     }
     const interval = customStr.trim() ? Number(customStr) : autoInterval;
     const nextReview = futureDateString(interval, this.settings);
@@ -6458,7 +6478,7 @@ ${body}
 `;
     const path = `${extractsFolder}/${name}.md`;
     if (this.app.vault.getAbstractFileByPath(path)) {
-      new Notice(`Extract already exists at ${path}`); return false;
+      notifyUser(`Extract already exists at ${path}`); return false;
     }
     const mfCreation = await this._mfUs1CreateTopicFromHost({
       requestId: `extract:${path}`,
@@ -6479,7 +6499,7 @@ ${body}
     }
     const bump = await this._bumpAFactor(sourceFile, fm, this.settings.scheduling.extract_bump);
     const bumpMsg = bump ? ` · a ${bump.from}→${bump.to}` : '';
-    new Notice(`Extract: ${name} · p${priority}→${newPri} · review +${interval}d (${nextReview})${bumpMsg}`);
+    notifyUser(`Extract: ${name} · p${priority}→${newPri} · review +${interval}d (${nextReview})${bumpMsg}`);
     return true;
   }
 
@@ -6498,8 +6518,8 @@ ${body}
 
     let clip = '';
     try { clip = (await navigator.clipboard.readText()).trim(); }
-    catch (e) { new Notice('Could not read clipboard.'); return; }
-    if (!clip) { new Notice('Clipboard empty (no text or image).'); return; }
+    catch (e) { notifyUser('Could not read clipboard.'); return; }
+    if (!clip) { notifyUser('Clipboard empty (no text or image).'); return; }
     this._dbg('flashcard: clip length', clip.length, 'inline-match', /^[^\n]+::[^\n]+$/.test(clip));
 
     const parentTitle = parentFile.basename;
@@ -6553,7 +6573,7 @@ ${body}
           if (!edited) return;
           text = edited;
         }
-        if (!new RegExp(HL_CLOZE_SRC).test(text)) { new Notice('No ==marks== — aborted.'); return; }
+        if (!new RegExp(HL_CLOZE_SRC).test(text)) { notifyUser('No ==marks== — aborted.'); return; }
         questionText = text;
       } else {
         answerText = await askText(this.app, 'Answer (rule 4: keep it short)', '');
@@ -6578,7 +6598,7 @@ ${body}
       answer: answerText,
     });
     const kind = cardFormat === 'reverse' ? 'Bidirectional card' : (cardFormat === 'cloze' ? 'Cloze card' : 'Card');
-    new Notice(`${kind} created for Spaced Repetition: ${created.name}`);
+    notifyUser(`${kind} created for Spaced Repetition: ${created.name}`);
   }
 
   // Build a basic image-based flashcard (image is the question, user supplies
@@ -6603,7 +6623,7 @@ ${body}
     } else if (vaultPath) {
       imgPath = vaultPath;
     } else {
-      new Notice('No image provided.');
+      notifyUser('No image provided.');
       return;
     }
 
@@ -6613,7 +6633,7 @@ ${body}
       if (caption === null) return;
     }
     const answer = await askText(this.app, 'Answer — name what this is', '');
-    if (answer === null || !answer.trim()) { new Notice('Answer required.'); return; }
+    if (answer === null || !answer.trim()) { notifyUser('Answer required.'); return; }
 
     const questionText = caption && caption.trim()
       ? `${caption.trim()}\n![[${imgPath}]]`
@@ -6624,7 +6644,7 @@ ${body}
       question: questionText,
       answer: answerText,
     });
-    new Notice(`Image card created for Spaced Repetition: ${created.name}`);
+    notifyUser(`Image card created for Spaced Repetition: ${created.name}`);
   }
 
   // "Name this image" flashcard: image is the only thing on the front,
@@ -6663,7 +6683,7 @@ ${body}
 
     const list = Array.from(candidates.values());
     if (list.length === 0) {
-      new Notice('No image on clipboard and no images linked to this note.');
+      notifyUser('No image on clipboard and no images linked to this note.');
       return;
     }
 
@@ -6702,12 +6722,12 @@ ${body}
       const mdLinkMatch = clipText.match(/!\[[^\]]*\]\(([^)]+\.(?:png|jpe?g|webp|gif))\)/i);
       const linkPath = wikilinkMatch?.[1] || mdLinkMatch?.[1] || null;
       if (!linkPath) {
-        new Notice('No image on clipboard. With PDF++: enable "Rectangular selection" + "Auto-copy", drag rect, then run this command.');
+        notifyUser('No image on clipboard. With PDF++: enable "Rectangular selection" + "Auto-copy", drag rect, then run this command.');
         return;
       }
       const sourceTf = this.app.vault.getAbstractFileByPath(linkPath)
         || this.app.metadataCache.getFirstLinkpathDest(linkPath, r.tfile.path);
-      if (!sourceTf) { new Notice(`Image not found in vault: ${linkPath}`); return; }
+      if (!sourceTf) { notifyUser(`Image not found in vault: ${linkPath}`); return; }
       bytes = await this.app.vault.readBinary(sourceTf);
       ext = (sourceTf.extension || 'png').toLowerCase();
       if (ext === 'jpeg') ext = 'jpg';
@@ -6756,12 +6776,12 @@ ${body}
       const dir = `${this.attachmentsFolder()}/${slugifyForFolder(parentBase)}`;
       const folder = this.app.vault.getAbstractFileByPath(dir);
       if (!folder) {
-        new Notice('No images for this source. Use Image-extract (Mod+Shift+K) first or embed an image.');
+        notifyUser('No images for this source. Use Image-extract (Mod+Shift+K) first or embed an image.');
         return;
       }
       const files = filesInFolder(this.app, dir).filter(f =>
         f.path.startsWith(dir + '/') && /\.(png|jpe?g|webp|gif)$/i.test(f.name));
-      if (files.length === 0) { new Notice('No images in attachment folder.'); return; }
+      if (files.length === 0) { notifyUser('No images in attachment folder.'); return; }
       const picked = await pickFuzzy(this.app, files, f => f.name, 'Pick image');
       if (!picked) return;
       imgVaultPath = picked.path;
@@ -6769,7 +6789,7 @@ ${body}
 
     const tf = this.app.vault.getAbstractFileByPath(imgVaultPath)
       || this.app.metadataCache.getFirstLinkpathDest(imgVaultPath, r.tfile.path);
-    if (!tf) { new Notice(`Image not found: ${imgVaultPath}`); return; }
+    if (!tf) { notifyUser(`Image not found: ${imgVaultPath}`); return; }
     const resolvedPath = tf.path;
     const src = this.app.vault.adapter.getResourcePath(resolvedPath);
 
@@ -6777,7 +6797,7 @@ ${body}
     if (!result) return;
 
     const cardSpecs = generateCardsFromRects(result.rects, result.mode);
-    if (!cardSpecs || cardSpecs.length === 0) { new Notice('No cards generated.'); return; }
+    if (!cardSpecs || cardSpecs.length === 0) { notifyUser('No cards generated.'); return; }
 
     let written = 0;
 
@@ -6809,7 +6829,7 @@ ${body}
       written++;
     }
 
-    new Notice(`Occlusion: ${written} Spaced Repetition card(s) from ${result.rects.length} rect(s)`);
+    notifyUser(`Occlusion: ${written} Spaced Repetition card(s) from ${result.rects.length} rect(s)`);
   }
 
   // ---- New source / Import clipping --------------------------------------
@@ -6831,11 +6851,11 @@ ${body}
     const priStr = await askText(this.app, 'Priority (1-100, 1=highest)', '50');
     if (priStr === null) return;
     if (!/^\d+$/.test(priStr.trim())) {
-      new Notice('Invalid priority — enter an integer from 1 to 100.'); return;
+      notifyUser('Invalid priority — enter an integer from 1 to 100.'); return;
     }
     const pNum = Number(priStr);
     if (!Number.isInteger(pNum) || pNum < 1 || pNum > 100) {
-      new Notice('Invalid priority — enter an integer from 1 to 100.'); return;
+      notifyUser('Invalid priority — enter an integer from 1 to 100.'); return;
     }
 
     const today = todayDateString(this.settings);
@@ -6852,7 +6872,7 @@ ${body}
       const pages = await askText(this.app, 'Total pages', '');
       if (pages === null) return;
       if (pages.trim() && !/^[1-9]\d*$/.test(pages.trim())) {
-        new Notice('Invalid total pages — enter a positive integer.'); return;
+        notifyUser('Invalid total pages — enter a positive integer.'); return;
       }
       total_pages = pages.trim() ? Number(pages) : null;
       read_point = 1;
@@ -6860,15 +6880,15 @@ ${body}
       source_url = (await askText(this.app, 'Source URL (optional)', '')) || null;
     } else if (sourceType === 'youtube') {
       video_url = await askText(this.app, 'YouTube URL', '');
-      if (!video_url) { new Notice('YouTube URL required.'); return; }
+      if (!video_url) { notifyUser('YouTube URL required.'); return; }
       const m = video_url.match(/(?:youtu\.be\/|v=|embed\/)([\w-]{11})/);
-      if (!m) { new Notice('Bad YouTube URL.'); return; }
+      if (!m) { notifyUser('Bad YouTube URL.'); return; }
       video_id = m[1];
       author = (await askText(this.app, 'Author / channel (optional)', '')) || null;
       const dur = await askText(this.app, 'Total duration mm:ss or hh:mm:ss (optional)', '');
       if (dur === null) return;
       total_seconds = parseTimeInput(dur);
-      if (dur.trim() && total_seconds == null) { new Notice('Invalid duration — use mm:ss or hh:mm:ss.'); return; }
+      if (dur.trim() && total_seconds == null) { notifyUser('Invalid duration — use mm:ss or hh:mm:ss.'); return; }
       read_point_seconds = 0;
     } else if (sourceType === 'video') {
       const videosFolder = `${this.sourcesFolder()}/Videos`;
@@ -6876,7 +6896,7 @@ ${body}
         .filter(f => f.path.startsWith(videosFolder + '/') && /\.(mp4|webm|mov|mkv)$/i.test(f.name))
         .sort((a, b) => a.name.localeCompare(b.name));
       if (videos.length === 0) {
-        new Notice(`Drop a video into ${videosFolder}/ first.`); return;
+        notifyUser(`Drop a video into ${videosFolder}/ first.`); return;
       }
       const picked = await pickFuzzy(this.app, videos, v => v.name, 'Pick a video file');
       if (!picked) return;
@@ -6885,7 +6905,7 @@ ${body}
       const dur = await askText(this.app, 'Total duration mm:ss or hh:mm:ss (optional)', '');
       if (dur === null) return;
       total_seconds = parseTimeInput(dur);
-      if (dur.trim() && total_seconds == null) { new Notice('Invalid duration — use mm:ss or hh:mm:ss.'); return; }
+      if (dur.trim() && total_seconds == null) { notifyUser('Invalid duration — use mm:ss or hh:mm:ss.'); return; }
       read_point_seconds = 0;
     }
 
@@ -6932,12 +6952,12 @@ ${body}
     body += `## Reading Notes\n\n\n## Extracts\n\n`;
 
     const safeTitle = slugifyForFolder(title);
-    if (!safeTitle) { new Notice('Source title does not contain a valid filename.'); return; }
+    if (!safeTitle) { notifyUser('Source title does not contain a valid filename.'); return; }
     const sourcesFolder = this.sourcesFolder();
     await ensureFolder(this.app, sourcesFolder);
     const path = `${sourcesFolder}/${safeTitle}.md`;
     if (this.app.vault.getAbstractFileByPath(path)) {
-      new Notice(`Already exists: ${path}`); return;
+      notifyUser(`Already exists: ${path}`); return;
     }
     const sourceContent = fmLines.join('\n') + body;
     const mfCreation = await this._mfUs1CreateTopicFromHost({
@@ -6956,27 +6976,27 @@ ${body}
     }
     const f = await this.app.vault.create(path, sourceContent);
     await this.app.workspace.getLeaf(false).openFile(f);
-    new Notice(`Created ${title} (${status}) a=${aFactorInit}`);
+    notifyUser(`Created ${title} (${status}) a=${aFactorInit}`);
   }
 
   async importClipping() {
     if (this._mfUs1EffectiveMode() === 'unified') {
-      new Notice('Unified 下不隐式接管已有笔记。请先使用「Migration preview / 迁移」。', 10000);
+      notifyUser('Unified 下不隐式接管已有笔记。请先使用「Migration preview / 迁移」。', 10000);
       return { status: 'blocked', reason: 'E_IMPORT_IS_IDENTITY_MIGRATION' };
     }
     if (this._mfUs1GuardLegacyWrite('导入剪藏')) return null;
     const active = this.app.workspace.getActiveFile();
     if (!active || active.extension !== 'md') {
-      new Notice('Open a clipper note first.'); return;
+      notifyUser('Open a clipper note first.'); return;
     }
     const existing = getFm(this.app, active);
-    if (existing?.type === 'source') { new Notice('Already an incremental reading source.'); return; }
+    if (existing?.type === 'source') { notifyUser('Already an incremental reading source.'); return; }
 
     const priStr = await askText(this.app, 'Priority (1-100, 1=highest)', '50');
     if (priStr === null) return;
-    if (!/^\d+$/.test(priStr.trim())) { new Notice('Invalid priority.'); return; }
+    if (!/^\d+$/.test(priStr.trim())) { notifyUser('Invalid priority.'); return; }
     const p = Number(priStr);
-    if (!Number.isInteger(p) || p < 1 || p > 100) { new Notice('Invalid priority.'); return; }
+    if (!Number.isInteger(p) || p < 1 || p > 100) { notifyUser('Invalid priority.'); return; }
 
     const today = todayDateString(this.settings);
     const interval = priorityToInterval(p);
@@ -7024,7 +7044,7 @@ ${body}
       if (!fm.tags.includes('ir/source')) fm.tags.push('ir/source');
     });
 
-    new Notice(`Imported (${initialStatus}) · p${p} · review +${interval}d`);
+    notifyUser(`Imported (${initialStatus}) · p${p} · review +${interval}d`);
   }
 
   // ---- Navigation --------------------------------------------------------
@@ -7069,22 +7089,22 @@ ${body}
 
   async openParent() {
     const active = this.app.workspace.getActiveFile();
-    if (!active) { new Notice('No active file.'); return; }
+    if (!active) { notifyUser('No active file.'); return; }
     const fm = getFm(this.app, active);
-    if (!fm) { new Notice('No frontmatter.'); return; }
+    if (!fm) { notifyUser('No frontmatter.'); return; }
     if (fm.type !== 'source' && fm.type !== 'extract' && fm.type !== 'card') {
-      new Notice('Not an incremental reading element.'); return;
+      notifyUser('Not an incremental reading element.'); return;
     }
 
     let parent = null;
     if (fm.type === 'extract') {
       if (fm.tree_root === true) {
-        new Notice('Tree root: no parent navigation.');
+        notifyUser('Tree root: no parent navigation.');
         return;
       }
       const hasParent = Object.prototype.hasOwnProperty.call(fm, 'parent');
       const link = hasParent ? fm.parent : fm.source;
-      if (!hasParent && !link) { new Notice('No parent link.'); return; }
+      if (!hasParent && !link) { notifyUser('No parent link.'); return; }
       const resolved = this._resolveExtractNavigationTarget(active, link);
       if (resolved.error) {
         const label = hasParent ? 'Parent' : 'Source';
@@ -7095,20 +7115,20 @@ ${body}
             : hasParent
               ? 'Parent field is invalid, empty, or missing its target; not falling back to source.'
               : 'Source link is invalid or missing its target.';
-        new Notice(message);
+        notifyUser(message);
         return;
       }
       parent = resolved.target;
     } else {
       const parentName = fm.type === 'card' ? linkTarget(fm.source) : linkTarget(fm.parent);
-      if (!parentName) { new Notice('No parent link.'); return; }
+      if (!parentName) { notifyUser('No parent link.'); return; }
       parent = this.app.metadataCache.getFirstLinkpathDest(parentName, active.path);
-      if (!parent) { new Notice(`Parent "${parentName}" not found.`); return; }
-      if (parent.path === active.path) { new Notice('Parent points to the current note; refusing to navigate.'); return; }
+      if (!parent) { notifyUser(`Parent "${parentName}" not found.`); return; }
+      if (parent.path === active.path) { notifyUser('Parent points to the current note; refusing to navigate.'); return; }
     }
 
     await this.app.workspace.getLeaf(false).openFile(parent);
-    new Notice(`↑ ${parent.basename}`);
+    notifyUser(`↑ ${parent.basename}`);
   }
 
   async openPdf() {
@@ -7116,11 +7136,11 @@ ${body}
     if (!r) return;
     const fm = r.fm;
     const configured = fm.pdf_vault_path || fm.pdf_path || fm.sioyek_path;
-    if (!configured) { new Notice('No pdf_path or pdf_vault_path is set.'); return; }
+    if (!configured) { notifyUser('No pdf_path or pdf_vault_path is set.'); return; }
     const rawPath = String(configured);
     const ext = (rawPath.split('.').pop() || '').toLowerCase();
-    if (ext === 'epub') { new Notice('Epub not supported by Obsidian viewer.'); return; }
-    if (ext !== 'pdf') { new Notice(`Unsupported extension .${ext}`); return; }
+    if (ext === 'epub') { notifyUser('Epub not supported by Obsidian viewer.'); return; }
+    if (ext !== 'pdf') { notifyUser(`Unsupported extension .${ext}`); return; }
     const vaultBase = vaultAbsPath(this.app, '');
     const rel = rawPath.startsWith(vaultBase) ? rawPath.slice(vaultBase.length) : rawPath.replace(/^\/+/, '');
     const vaultFile = this.app.vault.getAbstractFileByPath(rel);
@@ -7129,7 +7149,7 @@ ${body}
     else {
       const absolute = rawPath.startsWith('/') ? rawPath : vaultAbsPath(this.app, rawPath);
       const fs = require('fs');
-      if (!fs.existsSync(absolute)) { new Notice(`PDF not found at ${rawPath}`); return; }
+      if (!fs.existsSync(absolute)) { notifyUser(`PDF not found at ${rawPath}`); return; }
       url = require('url').pathToFileURL(absolute).href;
     }
     const ps = Number(fm.page_start) || null, pe = Number(fm.page_end) || null, rp = Number(fm.read_point) || null;
@@ -7141,15 +7161,15 @@ ${body}
 
   async toggleReadPoint() {
     const active = this.app.workspace.getActiveFile();
-    if (!active || active.extension !== 'md') { new Notice('Open a markdown source.'); return; }
+    if (!active || active.extension !== 'md') { notifyUser('Open a markdown source.'); return; }
     const fm = getFm(this.app, active);
-    if (!fm || fm.type !== 'source') { new Notice('Not an incremental reading source.'); return; }
+    if (!fm || fm.type !== 'source') { notifyUser('Not an incremental reading source.'); return; }
     if (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path) {
-      new Notice('PDF source — use Open PDF (Toolkit viewer).'); return;
+      notifyUser('PDF source — use Open PDF (Toolkit viewer).'); return;
     }
     const editor = getEditorForFile(this.app, active);
     const cursor = editor?.getCursor?.();
-    if (!editor || !cursor) { new Notice('No editor cursor.'); return; }
+    if (!editor || !cursor) { notifyUser('No editor cursor.'); return; }
     const content = editor.getValue();
     READ_POINT_RE.lastIndex = 0;
     const hasMarker = READ_POINT_RE.test(content);
@@ -7186,16 +7206,16 @@ ${body}
       if (action === 'clear') delete next.read_point_line;
       else next.read_point_line = cursor.line + 1;
     });
-    new Notice(action === 'clear' ? '📍 cleared.' : `📍 ${action} at line ${cursor.line + 1}`);
+    notifyUser(action === 'clear' ? '📍 cleared.' : `📍 ${action} at line ${cursor.line + 1}`);
   }
 
   async jumpToReadPoint({ silent = false } = {}) {
     const active = this.app.workspace.getActiveFile();
-    if (!active || active.extension !== 'md') { if (!silent) new Notice('Not a markdown source.'); return; }
+    if (!active || active.extension !== 'md') { if (!silent) notifyUser('Not a markdown source.'); return; }
     const fm = getFm(this.app, active);
-    if (!fm || fm.type !== 'source') { if (!silent) new Notice('Not an incremental reading source.'); return; }
+    if (!fm || fm.type !== 'source') { if (!silent) notifyUser('Not an incremental reading source.'); return; }
     if (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path) {
-      if (!silent) new Notice('PDF — use Open PDF (Toolkit viewer).'); return;
+      if (!silent) notifyUser('PDF — use Open PDF (Toolkit viewer).'); return;
     }
     const openEditor = getEditorForFile(this.app, active);
     let line = Math.max(0, (Number(fm.read_point_line) || 0) - 1);
@@ -7203,7 +7223,7 @@ ${body}
     if (!fm.read_point_line) {
       const content = openEditor?.getValue?.() ?? await this.app.vault.cachedRead(active);
       const m = content.match(/(?:📍\s*)?<!--ir-readpoint-->/);
-      if (!m) { if (!silent) new Notice('No 📍 read-point.'); return; }
+      if (!m) { if (!silent) notifyUser('No 📍 read-point.'); return; }
       const before = content.slice(0, m.index);
       line = (before.match(/\n/g) || []).length;
       ch = m.index - (before.lastIndexOf('\n') + 1);
@@ -7218,8 +7238,8 @@ ${body}
     if (editor) {
       editor.setCursor({ line, ch });
       editor.scrollIntoView({ from: { line, ch }, to: { line, ch } }, true);
-      if (!silent) new Notice(`Jumped to 📍 (line ${line + 1})`);
-    } else if (!silent) new Notice('Editor not available.');
+      if (!silent) notifyUser(`Jumped to 📍 (line ${line + 1})`);
+    } else if (!silent) notifyUser('Editor not available.');
   }
 
   // ---- Stats -------------------------------------------------------------
@@ -7261,7 +7281,7 @@ ${body}
       due_pool_ms: Math.round(dueMs * 10) / 10,
     };
     console.info('[Incremental Reading Toolkit] performance diagnostics', result);
-    new Notice([
+    notifyUser([
       `IR diagnostics · ${result.files} files (${result.cards} cards)`,
       `Folder scan ${result.folder_scan_ms}ms · metadata ${result.metadata_ms}ms`,
       `Tree index ${result.tree_index_ms}ms · due pool ${result.due_pool_ms}ms`,
@@ -7276,13 +7296,13 @@ ${body}
     const unified = this._mfUs1EffectiveMode() === 'unified';
     if (!unified && this._mfUs1GuardLegacyWrite('拆分文章')) return null;
     const active = this.app.workspace.getActiveFile();
-    if (!active || active.extension !== 'md') { new Notice('Open a source note.'); return; }
+    if (!active || active.extension !== 'md') { notifyUser('Open a source note.'); return; }
     const fm = getFm(this.app, active);
-    if (!fm || fm.type !== 'source') { new Notice('Not a source.'); return; }
-    if (fm.source_type !== 'article') { new Notice('Articles only — books use Split Book.'); return; }
-    if (fm.status === 'container') { new Notice('Already split.'); return; }
+    if (!fm || fm.type !== 'source') { notifyUser('Not a source.'); return; }
+    if (fm.source_type !== 'article') { notifyUser('Articles only — books use Split Book.'); return; }
+    if (fm.status === 'container') { notifyUser('Already split.'); return; }
     if (unified && (typeof fm.mf_id !== 'string' || !fm.mf_id)) {
-      new Notice('Unified：该来源尚未迁移（缺少 mf_id），请先执行迁移。', 9000);
+      notifyUser('Unified：该来源尚未迁移（缺少 mf_id），请先执行迁移。', 9000);
       return null;
     }
 
@@ -7290,7 +7310,7 @@ ${body}
     const fmEnd = content.indexOf('\n---', 3);
     const body = fmEnd !== -1 ? content.slice(fmEnd + 4) : content;
     const headings = [...body.matchAll(/^## (.+)$/gm)].map(m => ({ title: m[1].trim(), index: m.index }));
-    if (headings.length === 0) { new Notice('No H2 headings found.'); return; }
+    if (headings.length === 0) { notifyUser('No H2 headings found.'); return; }
 
     const confirmed = await askLong(this.app,
       'Headings to split on (delete lines to skip)',
@@ -7374,7 +7394,7 @@ ${sectionBody}
     }
 
     if (failures.length) {
-      new Notice(`拆分部分失败 ${links.length}/${selected.length}：${failures.slice(0, 3).join('；')}。未修改父来源状态，可重试。`, 14000);
+      notifyUser(`拆分部分失败 ${links.length}/${selected.length}：${failures.slice(0, 3).join('；')}。未修改父来源状态，可重试。`, 14000);
       return { created: links.length, failed: failures.length, failures };
     }
 
@@ -7384,9 +7404,9 @@ ${sectionBody}
     if (!unified) {
       await this.app.fileManager.processFrontMatter(active, (fmw) => { fmw.status = 'container'; });
     } else {
-      new Notice('Unified：父来源状态未直接改写（container 需迁移/事件处理）。', 9000);
+      notifyUser('Unified：父来源状态未直接改写（container 需迁移/事件处理）。', 9000);
     }
-    new Notice(`Split into ${selected.length} sub-topic${selected.length === 1 ? '' : 's'}.`);
+    notifyUser(`Split into ${selected.length} sub-topic${selected.length === 1 ? '' : 's'}.`);
     return { created: links.length, failed: 0 };
   }
 
@@ -7394,12 +7414,12 @@ ${sectionBody}
     const unified = this._mfUs1EffectiveMode() === 'unified';
     if (!unified && this._mfUs1GuardLegacyWrite('拆分书籍')) return null;
     const active = this.app.workspace.getActiveFile();
-    if (!active || active.extension !== 'md') { new Notice('Open a book source note.'); return; }
+    if (!active || active.extension !== 'md') { notifyUser('Open a book source note.'); return; }
     const fm = getFm(this.app, active);
-    if (!fm || fm.type !== 'source') { new Notice('Not a source.'); return; }
-    if (fm.status === 'container') { new Notice('Already a container.'); return; }
+    if (!fm || fm.type !== 'source') { notifyUser('Not a source.'); return; }
+    if (fm.status === 'container') { notifyUser('Already a container.'); return; }
     if (unified && (typeof fm.mf_id !== 'string' || !fm.mf_id)) {
-      new Notice('Unified：该书籍尚未迁移（缺少 mf_id），请先执行迁移。', 9000);
+      notifyUser('Unified：该书籍尚未迁移（缺少 mf_id），请先执行迁移。', 9000);
       return null;
     }
     if (fm.source_type !== 'book' && fm.source_type !== 'pdf') {
@@ -7411,13 +7431,13 @@ ${sectionBody}
       '');
     if (!toc) return;
     const lines = toc.split('\n').map(l => l.trim()).filter(Boolean);
-    if (!lines.length) { new Notice('Enter at least one chapter.'); return; }
+    if (!lines.length) { notifyUser('Enter at least one chapter.'); return; }
     const chapters = [];
     for (const line of lines) {
       const m = line.match(/^(\d+)\s*(?:[-–—]\s*(\d+))?\s*[:：]\s*(.+)$/);
-      if (!m) { new Notice(`Can't parse: "${line}"`); return; }
+      if (!m) { notifyUser(`Can't parse: "${line}"`); return; }
       const title = m[3].trim();
-      if (!title) { new Notice(`Chapter title is missing: "${line}"`); return; }
+      if (!title) { notifyUser(`Chapter title is missing: "${line}"`); return; }
       chapters.push({ start: Number(m[1]), end: m[2] ? Number(m[2]) : null, title });
     }
     for (let i = 0; i < chapters.length; i++) {
@@ -7432,13 +7452,13 @@ ${sectionBody}
       const chapter = chapters[i];
       const previous = chapters[i - 1];
       if (chapter.start < 1 || chapter.end < chapter.start) {
-        new Notice(`Invalid page range for "${chapter.title}".`); return;
+        notifyUser(`Invalid page range for "${chapter.title}".`); return;
       }
       if (previous && chapter.start <= previous.end) {
-        new Notice(`Chapter ranges overlap or are out of order near "${chapter.title}".`); return;
+        notifyUser(`Chapter ranges overlap or are out of order near "${chapter.title}".`); return;
       }
       if (totalPages && chapter.end > totalPages) {
-        new Notice(`"${chapter.title}" ends after the source's ${totalPages} pages.`); return;
+        notifyUser(`"${chapter.title}" ends after the source's ${totalPages} pages.`); return;
       }
     }
 
@@ -7538,7 +7558,7 @@ tags:
     }
 
     if (failures.length) {
-      new Notice(`拆分部分失败 ${created}/${chapters.length}：${failures.slice(0, 3).join('；')}。未修改父来源状态，可重试。`, 14000);
+      notifyUser(`拆分部分失败 ${created}/${chapters.length}：${failures.slice(0, 3).join('；')}。未修改父来源状态，可重试。`, 14000);
       return { created, failed: failures.length, failures };
     }
     if (!unified) {
@@ -7547,7 +7567,7 @@ tags:
         fmw.next_review = null;
       });
     } else {
-      new Notice('Unified：父来源状态未直接改写（container 需迁移/事件处理）。', 9000);
+      notifyUser('Unified：父来源状态未直接改写（container 需迁移/事件处理）。', 9000);
     }
     await this.app.vault.process(active, (cur) => {
       if (cur.includes('## Chapters')) return cur;
@@ -7560,7 +7580,7 @@ tags:
       return cur.trimEnd() + `\n\n## Chapters\n\n${list}\n`;
     });
     const skipMsg = skipped.length ? ` | Skipped ${skipped.length} (already exist)` : '';
-    new Notice(`Split: ${created} chapter(s).${skipMsg}`);
+    notifyUser(`Split: ${created} chapter(s).${skipMsg}`);
     return { created, failed: 0, skipped: skipped.length };
   }
 }

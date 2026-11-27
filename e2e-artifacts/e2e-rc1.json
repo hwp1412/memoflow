@@ -1,0 +1,170 @@
+{
+  "mode": "unified",
+  "settingsMode": "unified",
+  "autoAuth": true,
+  "review1": {
+    "value": {
+      "status": "applied",
+      "duplicate": false,
+      "recovered": false,
+      "writesPerformed": true,
+      "record": {
+        "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+        "topicId": "00000000-0000-4000-8000-0000000000a1",
+        "fingerprint": "a15f7178f261ca819df201c1e4a4defbf1344accb4ae75f92e4bc5891cbb4e96",
+        "type": "ADVANCED",
+        "algorithmVersion": 1,
+        "expectedRevision": 0,
+        "today": "2026-11-27",
+        "eventDate": "2026-11-27",
+        "payload": null,
+        "status": "applied",
+        "beforeHash": "18b5a65398edef9590dfd6f77fe8c0f03c666e79780e0ff439c709fd1563a469",
+        "expectedAfterHash": "0a397b6302806597aea71326a761e526db6942c962c76ad40ebde5f79b17b447",
+        "afterHash": "0a397b6302806597aea71326a761e526db6942c962c76ad40ebde5f79b17b447",
+        "actualRevision": 1,
+        "fields": {
+          "mf_revision": 1,
+          "mf_last_event_id": "00000000-0000-4000-8000-e586e1ffe89d",
+          "mf_interval_days": 12,
+          "mf_ideal_due": "2026-12-09",
+          "review_count": 2,
+          "last_reviewed": "2026-11-27",
+          "next_review": "09-12-2026"
+        },
+        "audit": {
+          "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+          "topicId": "00000000-0000-4000-8000-0000000000a1",
+          "algorithmVersion": 1,
+          "type": "ADVANCED",
+          "today": "2026-11-27",
+          "expectedRevision": 0,
+          "actualRevision": 1,
+          "before": {
+            "priority": 60,
+            "intervalDays": 8,
+            "aFactor": 1.5,
+            "idealDue": "2026-11-10",
+            "notBefore": null,
+            "effectiveDue": "2026-11-10",
+            "reviewCount": 1,
+            "status": "active"
+          },
+          "after": {
+            "priority": 60,
+            "intervalDays": 12,
+            "aFactor": 1.5,
+            "idealDue": "2026-12-09",
+            "notBefore": null,
+            "effectiveDue": "2026-12-09",
+            "reviewCount": 2,
+            "status": "active"
+          },
+          "writesPerformed": true,
+          "result": "applied",
+          "reason": null,
+          "requiresManualRecovery": false
+        },
+        "result": "applied",
+        "reason": null,
+        "writeAttempted": true,
+        "writesPerformed": true
+      },
+      "audit": {
+        "eventId": "00000000-0000-4000-8000-e586e1ffe89d",
+        "topicId": "00000000-0000-4000-8000-0000000000a1",
+        "algorithmVersion": 1,
+        "type": "ADVANCED",
+        "today": "2026-11-27",
+        "expectedRevision": 0,
+        "actualRevision": 1,
+        "before": {
+          "priority": 60,
+          "intervalDays": 8,
+          "aFactor": 1.5,
+          "idealDue": "2026-11-10",
+          "notBefore": null,
+          "effectiveDue": "2026-11-10",
+          "reviewCount": 1,
+          "status": "active"
+        },
+        "after": {
+          "priority": 60,
+          "intervalDays": 12,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-09",
+          "notBefore": null,
+          "effectiveDue": "2026-12-09",
+          "reviewCount": 2,
+          "status": "active"
+        },
+        "writesPerformed": true,
+        "result": "applied",
+        "reason": null,
+        "requiresManualRecovery": false
+      }
+    },
+    "error": null
+  },
+  "rev1": 1,
+  "createExtract": {
+    "handled": true,
+    "outcome": {
+      "status": "applied",
+      "route": "unified",
+      "requestId": "rc-extract",
+      "mfId": "1d2b05cc-f007-4f2b-83a6-4567210275a1",
+      "path": "Sources/Incremental Reading/Extracts/E1.md",
+      "topic": {
+        "type": "extract",
+        "priority": 50,
+        "status": "active",
+        "mf_id": "1d2b05cc-f007-4f2b-83a6-4567210275a1",
+        "mf_parent_id": "00000000-0000-4000-8000-0000000000a1",
+        "mf_root_id": "00000000-0000-4000-8000-0000000000a1",
+        "mf_ideal_due": "2026-11-29",
+        "mf_not_before": null,
+        "mf_interval_days": 2,
+        "mf_last_event_id": null,
+        "mf_revision": 0,
+        "mf_scheduler_version": 1,
+        "a_factor": 1.8,
+        "review_count": 0
+      },
+      "fileCreated": true,
+      "verified": true,
+      "ledgerRecorded": false,
+      "writesPerformed": true,
+      "requiresManualRecovery": false,
+      "diagnostics": []
+    }
+  },
+  "postpone": {
+    "status": "failed",
+    "message": "只能对来源或摘录执行该操作（卡片由 Spaced Repetition 管理）。",
+    "reason": "E_TOPIC_NOT_SCHEDULABLE"
+  },
+  "priority": {
+    "status": "failed",
+    "message": "只能对来源或摘录执行该操作（卡片由 Spaced Repetition 管理）。",
+    "reason": "E_TOPIC_NOT_SCHEDULABLE"
+  },
+  "queue": {
+    "value": null,
+    "error": null
+  },
+  "queueDom": "Reading queueTimeline: S",
+  "expectedTopics": 2,
+  "diagTopics": 2,
+  "cardFiles": 1,
+  "srCards": null,
+  "e1Fm": {
+    "notBefore": null,
+    "priority": 50
+  },
+  "update": {
+    "state": "error",
+    "current": "0.1.0",
+    "message": "Request failed, status 403"
+  }
+}

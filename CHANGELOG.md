@@ -1,4 +1,24 @@
-# Incremental Reading Toolkit changelog
+# MemoFlow changelog
+
+## 1.0.0 — 2026-11-27
+
+### Added
+- MF-US-1 统一调度：所有 Source/Extract 的评阅、延期、排期、优先级、Boost、Mercy、子树延期均走同一调度算法。
+- 设置页「调度算法」选择器（当前唯一选项 MF-US-1，为未来算法预留扩展点）。
+- 启动自动初始化 MF-US-1，无需人工激活或授权；重启后继续生效。
+- 设置页「检查更新」：从 GitHub Releases 获取最新稳定版本，支持更新说明与打开发布页（API 受限时也可直接查看 Releases）。
+
+### Changed
+- 移除 Legacy / Shadow 调度模式与旧调度 Write 路径；旧的 `legacy`/`shadow` 偏好加载时自动转换为 MF-US-1，不再恢复旧算法。
+- 失败时保持当前算法并阻止受影响写入，不静默切换算法。
+
+### Known limitations
+- 旧格式 MemoFlow/Toolkit Vault 暂不支持无缝迁移；检测到旧数据会明确提示并阻止受影响的 Unified 写入。
+- 移动端/窄屏界面仍在校验中。
+
+---
+
+# Incremental Reading Toolkit changelog (upstream history)
 
 ## 1.1.8 — 2026-08-07
 

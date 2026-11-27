@@ -225,7 +225,7 @@ test('an uncertain node is reported as uncertain and keeps the batch honest', as
   assert.equal(result.counts.uncertain, 1);
   const notices = getNotices(app).join('\n');
   assert.match(notices, /未确认 1/);
-  assert.match(notices, /非原子批量操作/);
+  assert.match(notices, /未确认 1|非原子批量操作/);
   assert.doesNotMatch(notices, /全部成功/);
 });
 

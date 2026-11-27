@@ -152,9 +152,11 @@ class MemoFlowSettingTab extends PluginSettingTab {
         this._updateState = await this.plugin.checkForUpdates();
         this.display();
       }));
-    if (state && state.state === 'update' && state.url) {
-      setting.addButton(button => button.setButtonText('打开发布页').onClick(() => window.open(state.url)));
-    }
+    // Always offer the Releases page: when the GitHub API is rate-limited (403)
+    // users must still be able to check releases manually.
+    setting.addButton(button => button.setButtonText('打开发布页').onClick(() => window.open(
+      (state && state.url) || 'https://github.com/hwp1412/memoflow/releases',
+    )));
   }
 
   _scheduling(root) {
