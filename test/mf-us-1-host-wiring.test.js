@@ -110,3 +110,12 @@ test('the legacy bodies are preserved behind distinct methods', () => {
   assert.ok(srcSource.includes('async _spreadOverdueLegacy('));
   assert.equal(baseSource.length > 0, true);
 });
+
+test('multi-level extract creation keeps the direct parent', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const start = src.indexOf('async _createTimestampExtractLegacy(');
+  const end = src.indexOf('\n  async ', start + 10);
+  const body = src.slice(start, end < 0 ? undefined : end);
+  assert.match(body, /parentFile: direct\.file/, 'creation parent must be the direct active topic');
+  assert.equal(/parentFile: scheduling\.file/.test(body), false, 'root must never become the creation parent');
+});

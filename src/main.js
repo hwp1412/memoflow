@@ -1479,13 +1479,14 @@ class MemoFlowPlugin extends BasePlugin {
       citation,
     });
 
-    // MF-US-1 creation gateway: without a synthetic authorization it is a
-    // strict no-op and the 0.1 write below runs byte-for-byte as before.
+    // MF-US-1 creation gateway: the creation parent is the DIRECT active
+    // topic (an Extract keeps its multi-level hierarchy); root stays only for
+    // the legacy scheduling-field write below.
     const mfCreation = await this._mfUs1CreateTopicFromHost({
       requestId: `extract:${path}`,
       kind: 'extract',
       priority,
-      parentFile: scheduling.file,
+      parentFile: direct.file,
       path,
       content,
     });
