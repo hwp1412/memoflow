@@ -4692,11 +4692,14 @@ class IncrementalReadingPlugin extends Plugin {
     const storage = this.mfUs1HostStorage || this._mfUs1EnsureStorageAndStores();
     let creationAuthorization = null;
     let resumeAuthorization = null;
+    let activationCapability = null;
+    const hadUnifiedAuthority = (Number(evidence.topicCount) - Number(evidence.legacyTopicCount || 0)) > 0;
     try {
       const { issueSyntheticUnifiedCapability } = require('./src/scheduling/index.js');
       const { issueSyntheticCreationAuthorization } = require('./src/integration/topic-creation-host.js');
       const { issueSyntheticBatchResumeAuthorization } = require('./src/integration/batch-resume.js');
       const capability = issueSyntheticUnifiedCapability();
+      activationCapability = capability;
       creationAuthorization = issueSyntheticCreationAuthorization();
       resumeAuthorization = issueSyntheticBatchResumeAuthorization();
       if (!capability || !creationAuthorization || !resumeAuthorization) {
@@ -4717,22 +4720,40 @@ class IncrementalReadingPlugin extends Plugin {
         });
       }
     } catch (error) {
-      // Never keep a partially authorized activation: revoke the session, drop
-      // every issued capability and rebuild a locked legacy runtime.
+      // Never keep a partially authorized activation: revoke the session and
+      // drop every capability. If the vault already has Unified authority, do
+      // NOT fall back to legacy scheduling writes; stay paused and keep the
+      // scene instead.
       coordinator.revoke();
-      this.__mfUs1CreationAuthorization = null;
-      this.__mfUs1ResumeAuthorization = null;
-      this.__mfUs1CreationAuthorization = null;
+      this._mfUs1RevokeSessionCapabilities();
       this.__mfUs1E2EApprovalArmed = false;
-      this.mfUs1Suspended = false;
       this._mfUs1HostInstance = null;
+      if (hadUnifiedAuthority) {
+        this.mfUs1Suspended = true;
+        this.settings.mf_us1_mode = 'unified';
+        this.__mfUs1SuspendedNotified = null;
+        try {
+          await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'unified', conditions: {}, authorization: null });
+        } catch (rebuildError) {
+          console.error('[IR] MF-US-1 could not rebuild a locked unified lifecycle', rebuildError);
+        }
+        if (typeof this.saveSettings === 'function') await this.saveSettings();
+        new Notice('Unified 激活失败：授权能力未全部就绪；已保持暂停并保留现场，Legacy 调度写入保持阻断。', 16000);
+        return {
+          ok: false,
+          reason: 'E_ACTIVATION_CAPABILITY_INCOMPLETE',
+          blockers: ['E_ACTIVATION_CAPABILITY_INCOMPLETE'],
+          suspended: true,
+          detail: String((error && (error.message || error)) || 'unknown'),
+        };
+      }
+      this.mfUs1Suspended = false;
+      this.settings.mf_us1_mode = 'legacy';
       try {
         await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'legacy', conditions: {}, authorization: null });
       } catch (rebuildError) {
         console.error('[IR] MF-US-1 could not roll back to a legacy lifecycle', rebuildError);
       }
-      this.settings.mf_us1_mode = 'legacy';
-      this.mfUs1AdminWriter = null;
       if (typeof this.saveSettings === 'function') await this.saveSettings();
       new Notice(`Unified 激活失败：所需授权能力未全部就绪（${(error && (error.code || error.message)) || 'unknown'}），本次激活已撤销。`, 15000);
       return {
@@ -4744,6 +4765,12 @@ class IncrementalReadingPlugin extends Plugin {
     }
     this.__mfUs1CreationAuthorization = creationAuthorization;
     this.__mfUs1ResumeAuthorization = resumeAuthorization;
+    this.mfUs1SessionCapabilities = {
+      host: result.authorization,
+      creation: creationAuthorization,
+      resume: resumeAuthorization,
+      capability: activationCapability,
+    };
     this.settings.mf_us1_mode = 'unified';
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
@@ -4766,24 +4793,42 @@ class IncrementalReadingPlugin extends Plugin {
     };
   }
 
-  // Emergency action #1: revoke the capability immediately. This only touches
-  // in-memory authorization state: it never writes a Topic, the Ledger or a
-  // Batch record.
-  async mfUs1RevokeUnifiedAuthorization() {
-    const coordinator = this._mfUs1ActivationCoordinator();
-    const revoked = coordinator.revoke();
+  _mfUs1RevokeSessionCapabilities() {
+    const session = this.mfUs1SessionCapabilities || null;
+    this.mfUs1SessionCapabilities = null;
     this.__mfUs1CreationAuthorization = null;
     this.__mfUs1ResumeAuthorization = null;
-    this.mfUs1Suspended = true;
-    this._mfUs1HostInstance = null;
-    // Drop the capability from EXISTING writer instances as well: tokens live in
-    // a module WeakSet, so a stale writer object would otherwise stay valid.
     if (this.mfUs1HostStorage) {
       const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
       this.mfUs1AdminWriter = createProtectedAdminWriter({ storage: this.mfUs1HostStorage, authorization: null });
     } else {
       this.mfUs1AdminWriter = null;
     }
+    if (!session) return { revoked: false };
+    try {
+      const { revokeSyntheticHostAuthorization } = require('./src/integration/host-runtime.js');
+      const { revokeSyntheticCreationAuthorization } = require('./src/integration/topic-creation-host.js');
+      const { revokeSyntheticBatchResumeAuthorization } = require('./src/integration/batch-resume.js');
+      const { revokeSyntheticUnifiedCapability } = require('./src/scheduling/index.js');
+      revokeSyntheticHostAuthorization(session.host);
+      revokeSyntheticCreationAuthorization(session.creation);
+      revokeSyntheticBatchResumeAuthorization(session.resume);
+      revokeSyntheticUnifiedCapability(session.capability);
+    } catch (error) {
+      console.error('[IR] MF-US-1 could not revoke a session capability', error);
+    }
+    return { revoked: true };
+  }
+
+  // Emergency action #1: revoke the capability immediately. This only touches
+  // in-memory authorization state: it never writes a Topic, the Ledger or a
+  // Batch record.
+  async mfUs1RevokeUnifiedAuthorization() {
+    const coordinator = this._mfUs1ActivationCoordinator();
+    const revoked = coordinator.revoke();
+    this._mfUs1RevokeSessionCapabilities();
+    this.mfUs1Suspended = true;
+    this._mfUs1HostInstance = null;
     new Notice('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
     return { ok: true, tokenRevoked: true, hadSession: revoked.revoked, suspended: true };
   }
@@ -4806,14 +4851,7 @@ class IncrementalReadingPlugin extends Plugin {
     }
     const coordinator = this._mfUs1ActivationCoordinator();
     coordinator.revoke();
-    this.__mfUs1CreationAuthorization = null;
-    this.__mfUs1ResumeAuthorization = null;
-    if (this.mfUs1HostStorage) {
-      const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
-      this.mfUs1AdminWriter = createProtectedAdminWriter({ storage: this.mfUs1HostStorage, authorization: null });
-    } else {
-      this.mfUs1AdminWriter = null;
-    }
+    this._mfUs1RevokeSessionCapabilities();
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
     const storage = this.mfUs1HostStorage;

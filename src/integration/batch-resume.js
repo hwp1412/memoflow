@@ -22,6 +22,11 @@ function hasBatchResumeAuthorization(token) {
   return Boolean(token && typeof token === 'object' && SYNTHETIC_RESUME.has(token));
 }
 
+function revokeSyntheticBatchResumeAuthorization(token) {
+  if (!token || typeof token !== 'object') return false;
+  return SYNTHETIC_RESUME.delete(token);
+}
+
 function normalizeNotBefore(value) {
   if (value == null || value === 'null' || value === '') return null;
   return String(value);
@@ -134,4 +139,9 @@ function classify(outcome) {
   return STATUS.failed;
 }
 
-module.exports = { issueSyntheticBatchResumeAuthorization, hasBatchResumeAuthorization, resumeBatch };
+module.exports = {
+  issueSyntheticBatchResumeAuthorization,
+  hasBatchResumeAuthorization,
+  revokeSyntheticBatchResumeAuthorization,
+  resumeBatch,
+};

@@ -226,6 +226,11 @@ function issueSyntheticUnifiedCapability(label = 'synthetic-test') {
   return capability;
 }
 
+function revokeSyntheticUnifiedCapability(capability) {
+  if (!capability || typeof capability !== 'object') return false;
+  return SYNTHETIC_CAPABILITIES.delete(capability);
+}
+
 function issueSyntheticMercyConfirmation(batchId, previewDigest) {
   if (typeof batchId !== 'string' || !batchId) fail('E_BATCH_ID_REQUIRED', 'a mercy confirmation needs a batch id');
   if (typeof previewDigest !== 'string' || !previewDigest) {
@@ -262,6 +267,7 @@ module.exports = {
   assertTrustedLedgerStore,
   assertTrustedBatchStore,
   issueSyntheticUnifiedCapability,
+  revokeSyntheticUnifiedCapability,
   assertSyntheticUnifiedCapability,
   issueSyntheticMercyConfirmation,
   assertSyntheticMercyConfirmation,

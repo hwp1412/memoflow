@@ -355,7 +355,7 @@ test('partial capability issuance aborts activation and leaves no authorization'
   }
 });
 
-test('revocation invalidates existing writers and creation behaviourally', async () => {
+test('revocation invalidates captured writer/token references, not only fields', async () => {
   const { plugin, app } = setupPlugin();
   plugin.__mfUs1ActivationApproval = () => true;
   const topic = makeFile(app, 'Sources/W.md', {
@@ -365,16 +365,41 @@ test('revocation invalidates existing writers and creation behaviourally', async
   }, '# W\n');
   const activated = await plugin.mfUs1ActivateUnified();
   assert.equal(activated.ok, true);
-  assert.ok(plugin.mfUs1AdminWriter);
+
+  // Capture the OLD references before revoking.
+  const oldWriter = plugin.mfUs1AdminWriter;
+  const oldCreation = plugin.__mfUs1CreationAuthorization;
+  const oldResume = plugin.__mfUs1ResumeAuthorization;
+  const session = plugin.mfUs1SessionCapabilities;
+  assert.ok(oldWriter && oldCreation && oldResume && session && session.host);
+
   await plugin.mfUs1RevokeUnifiedAuthorization();
+
+  const { hasSyntheticHostAuthorization } = require('../src/integration/host-runtime.js');
+  const { hasSyntheticCreationAuthorization } = require('../src/integration/topic-creation-host.js');
+  const { hasBatchResumeAuthorization, resumeBatch } = require('../src/integration/batch-resume.js');
+  assert.equal(hasSyntheticHostAuthorization(session.host), false, 'captured session token invalidated');
+  assert.equal(hasSyntheticCreationAuthorization(oldCreation), false, 'captured creation token invalidated');
+  assert.equal(hasBatchResumeAuthorization(oldResume), false, 'captured resume token invalidated');
+
   const before = app.vault.readContent(topic);
-  const writerResult = await plugin.mfUs1AdminWriter.write({
+  const oldWriterResult = await oldWriter.write({
     topicId: uuid(77),
     updates: { mf_not_before: '2026-12-12' },
   });
-  assert.equal(writerResult.status, 'blocked');
-  assert.equal(writerResult.reason, 'E_UNIFIED_NOT_AUTHORIZED');
-  assert.equal(app.vault.readContent(topic), before, 'no unauthorised write');
+  assert.equal(oldWriterResult.status, 'blocked');
+  assert.equal(oldWriterResult.reason, 'E_UNIFIED_NOT_AUTHORIZED');
+  assert.equal(app.vault.readContent(topic), before, 'captured writer performs zero writes');
+
+  const capturedResume = await resumeBatch({
+    store: { async getBatch() { return { batchId: 'b1', kind: 'MERCY', status: 'prepared', items: [] }; } },
+    batchId: 'b1',
+    readTopic: async () => ({ entry: null }),
+    runItem: async () => ({ status: 'applied' }),
+    authorization: oldResume,
+  });
+  assert.equal(capturedResume.status, 'blocked');
+  assert.equal(capturedResume.reason, 'E_BATCH_RESUME_NOT_AUTHORIZED');
 
   const creation = await plugin._mfUs1CreateTopicFromHost({
     requestId: 'revoked-create', kind: 'source', priority: 50,
@@ -383,4 +408,30 @@ test('revocation invalidates existing writers and creation behaviourally', async
   assert.equal(creation.handled, true);
   assert.equal(creation.outcome.status, 'blocked');
   assert.equal(app.vault.getAbstractFileByPath('Sources/Revoked.md'), null);
+});
+
+test('activation failure keeps legacy writes blocked when Unified authority already exists', async () => {
+  const { plugin, app } = setupPlugin();
+  plugin.__mfUs1ActivationApproval = () => true;
+  // A migrated topic exists, so falling back to legacy writes would be unsafe.
+  makeFile(app, 'Sources/M.md', {
+    type: 'source', status: 'active', priority: 50, interval: 8,
+    mf_id: uuid(78), mf_revision: 1, mf_scheduler_version: 1,
+    mf_ideal_due: '2026-11-20', mf_not_before: 'null', mf_interval_days: 8, mf_last_event_id: 'null',
+  }, '# M\n');
+  const creationHost = require('../src/integration/topic-creation-host.js');
+  const original = creationHost.issueSyntheticCreationAuthorization;
+  creationHost.issueSyntheticCreationAuthorization = () => { throw new Error('issuance failed'); };
+  try {
+    const result = await plugin.mfUs1ActivateUnified();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'E_ACTIVATION_CAPABILITY_INCOMPLETE');
+    assert.equal(result.suspended, true);
+    const diagnostics = plugin.mfUs1ActivationDiagnostics();
+    assert.equal(diagnostics.authorized, false);
+    assert.equal(diagnostics.suspended, true);
+    assert.equal(plugin._mfUs1GuardLegacyWrite('legacy-write-probe'), true, 'legacy scheduling writes stay blocked');
+  } finally {
+    creationHost.issueSyntheticCreationAuthorization = original;
+  }
 });

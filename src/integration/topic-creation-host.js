@@ -53,6 +53,11 @@ function hasSyntheticCreationAuthorization(token) {
   return Boolean(token && typeof token === 'object' && SYNTHETIC_CREATION_AUTHORIZATIONS.has(token));
 }
 
+function revokeSyntheticCreationAuthorization(token) {
+  if (!token || typeof token !== 'object') return false;
+  return SYNTHETIC_CREATION_AUTHORIZATIONS.delete(token);
+}
+
 function assertPlainRequest(request, field) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) {
     fail('E_CREATION_REQUEST', `${field} must be a plain object`);
@@ -277,6 +282,7 @@ module.exports = {
   CANONICAL_KEYS,
   issueSyntheticCreationAuthorization,
   hasSyntheticCreationAuthorization,
+  revokeSyntheticCreationAuthorization,
   planTopicCreation,
   creationFieldLines,
   composeCreationContent,
