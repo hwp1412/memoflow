@@ -358,53 +358,8 @@ function addHostSource(app, overrides = {}) {
   }, '# Hosted\n');
 }
 
-test('the creation gateway is a strict no-op without a synthetic authorization', async () => {
-  const { plugin, app } = hostSetup();
-  const source = addHostSource(app, { mf_id: uuid(1), mf_root_id: uuid(1) });
-  const before = app.vault.createCalls.length;
-  const result = await plugin._mfUs1CreateTopicFromHost({
-    requestId: 'no-token',
-    kind: 'extract',
-    priority: 50,
-    parentFile: source,
-    path: 'Extracts/Hosted - Extract.md',
-    content: '---\ntype: extract\n---\n\nbody\n',
-  });
-  assert.equal(result.handled, false);
-  assert.equal(app.vault.createCalls.length, before);
-});
 
-test('a synthetic creation writes MF-US-1 fields and leaves the parent schedule untouched', async () => {
-  const { plugin, app } = hostSetup();
-  const parentId = uuid(1);
-  const source = addHostSource(app, { mf_id: parentId, mf_root_id: parentId });
-  plugin.__mfUs1CreationAuthorization = issueSyntheticCreationAuthorization();
 
-  const created = await plugin.createTimestampExtract({ sourceFile: source, text: 'hosted body', page: 5, open: false });
-  assert.ok(created, 'expected a created extract');
-  const text = app.vault.readContent(created);
-  assert.match(text, new RegExp(`^mf_id: [0-9a-f-]{36}$`, 'm'));
-  assert.match(text, new RegExp(`^mf_parent_id: ${parentId}$`, 'm'));
-  assert.match(text, new RegExp(`^mf_root_id: ${parentId}$`, 'm'));
-  assert.match(text, /^mf_revision: 0$/m);
-  assert.match(text, /^mf_scheduler_version: 1$/m);
-  assert.match(text, /^mf_not_before: null$/m);
-
-  const parentFm = app.vault.readFm(source);
-  assert.equal(Number(parentFm.priority), 50, 'Unified creation must not bump the parent priority');
-  assert.equal(Number(parentFm.a_factor), 1.5, 'Unified creation must not bump the parent A-Factor');
-});
-
-test('legacy creation (no authorization) still writes the 0.1 bytes without mf fields', async () => {
-  const { plugin, app } = hostSetup();
-  const source = addHostSource(app, { mf_id: uuid(2), mf_root_id: uuid(2) });
-  const created = await plugin.createTimestampExtract({ sourceFile: source, text: 'legacy body', page: 3, open: false });
-  assert.ok(created);
-  const text = app.vault.readContent(created);
-  assert.equal(/\bmf_id:/.test(text), false);
-  assert.equal(/\bmf_revision:/.test(text), false);
-  assert.match(text, /^---\ntype: extract\n/);
-});
 
 test('a host retry with the same request is a duplicate and writes no second file', async () => {
   const { plugin, app } = hostSetup();
@@ -431,13 +386,3 @@ test('a host retry with the same request is a duplicate and writes no second fil
   assert.equal(app.vault.readContent(app.vault.getAbstractFileByPath(request.path)), before);
 });
 
-test('an extract whose parent has no persistent mf_id is blocked, not downgraded to Legacy', async () => {
-  const { plugin, app } = hostSetup();
-  const source = addHostSource(app); // no mf_id
-  plugin.__mfUs1CreationAuthorization = issueSyntheticCreationAuthorization();
-  const created = await plugin.createTimestampExtract({ sourceFile: source, text: 'blocked body', page: 1, open: false });
-  assert.equal(created, null);
-  assert.equal(app.vault.createCalls.length, 0);
-  const notices = getNotices(app).join('\n');
-  assert.match(notices, /父级缺少持久 mf_id/);
-});

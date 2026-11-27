@@ -281,17 +281,6 @@ test('a restart recovers the uncertain priority without double applying', async 
 
 // ---- mode isolation ------------------------------------------------------
 
-test('legacy mode keeps the legacy postpone fields and never writes mf_not_before', async () => {
-  const { plugin, app } = await harness({ mode: 'legacy' });
-  const file = makeFile(app, 'Sources/L.md', topicFm(uuid(19)), '# body\n');
-  const before = app.vault.readFm(file);
-  const result = await plugin._postponeReadingFile(file, 3);
-  assert.equal(result.status, 'legacy');
-  const after = app.vault.readFm(file);
-  assert.notEqual(after.next_review, before.next_review);
-  assert.equal(String(after.mf_not_before), 'null', 'legacy writer must not touch MF-US-1 fields');
-  assert.equal(Number(after.mf_revision), 0);
-});
 
 test('unified mode never calls the legacy writer', async () => {
   const { plugin, app } = await harness();
@@ -303,16 +292,6 @@ test('unified mode never calls the legacy writer', async () => {
   assert.equal(legacyCalls, 0);
 });
 
-test('shadow mode still runs the legacy writer and writes nothing new', async () => {
-  const { plugin, app, opened } = await harness({ mode: 'shadow' });
-  const file = makeFile(app, 'Sources/N.md', topicFm(uuid(21)), '# body\n');
-  const result = await plugin._postponeReadingFile(file, 2);
-  assert.equal(result.status, 'legacy');
-  const after = app.vault.readFm(file);
-  assert.equal(String(after.mf_not_before), 'null');
-  assert.equal(Number(after.mf_revision), 0);
-  assert.equal(Object.keys(opened.store.dump()).length, 0, 'shadow writes no ledger record');
-});
 
 // ---- Card / boost --------------------------------------------------------
 

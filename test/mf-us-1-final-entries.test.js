@@ -51,14 +51,6 @@ test('unified checkpoint refuses an interval override instead of rewriting sched
 });
 
 
-test('shadow observer failure is contained and legacy still writes', async () => {
-  const { plugin, app } = setup('shadow');
-  const legacyFile = makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, next_review: '2026-11-20', interval: 8 }, '# legacy\n');
-  app.activeFile = legacyFile;
-  await plugin.postponeFile(legacyFile, 2);
-  assert.ok(app.vault.readFm(legacyFile).next_review);
-  assert.equal(plugin.mfUs1ShadowLast ? plugin.mfUs1ShadowLast.writesPerformed : false, false);
-});
 
 test('skip only moves the session pointer and never writes scheduling fields', async () => {
   const { plugin, app, file } = setup('unified');

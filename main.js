@@ -2877,8 +2877,13 @@ class IncrementalReadingPlugin extends Plugin {
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       this.settings[key] = Object.assign({}, DEFAULT_SETTINGS[key], this.settings[key] || {});
     }
-    // Repair any previously mis-serialised mode before anything reads it.
-    this.settings.mf_us1_mode = this._mfUs1NormalizeMode(this.settings.mf_us1_mode);
+    // Old legacy/shadow preferences are converted (and saved) to MF-US-1 so no
+    // later code path can resurrect an old algorithm.
+    const convertedMode = this._mfUs1NormalizeMode(this.settings.mf_us1_mode);
+    if (this.settings.mf_us1_mode !== convertedMode) {
+      this.settings.mf_us1_mode = convertedMode;
+      Promise.resolve().then(() => this.saveSettings && this.saveSettings()).catch(() => {});
+    }
     this.settings.session.types = { ...(this.settings.session.types || {}) };
     this.settings.session.readPoints = { ...(this.settings.session.readPoints || {}) };
     this.cardDueCache = new Map();
@@ -3966,10 +3971,9 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   _mfUs1EffectiveMode() {
-    // Settings are normalised to MF-US-1 on load. Internally the raw value is
-    // kept so shared Phase-1 code paths remain readable in unit tests; product
-    // entry points all force MF-US-1 and never expose a legacy/shadow switch.
-    return (this.settings && this.settings.mf_us1_mode) || 'legacy';
+    // MemoFlow 1.0 has exactly one scheduler: MF-US-1. There is no raw legacy or
+    // shadow value left to return; old preferences are converted on load.
+    return 'unified';
   }
 
   // Guard for residual direct writers that are not yet routed through the host.
@@ -4704,7 +4708,6 @@ class IncrementalReadingPlugin extends Plugin {
       this.mfUs1Suspended = true;
       this.settings.mf_us1_mode = 'unified';
       try {
-        await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'legacy', conditions: {}, authorization: null });
       } catch (rebuildError) {
         console.error('[IR] MF-US-1 could not roll back to a legacy lifecycle', rebuildError);
       }

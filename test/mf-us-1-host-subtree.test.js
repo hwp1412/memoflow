@@ -319,23 +319,6 @@ test('an identity change between planning and execution blocks that node', async
   assert.equal(result.results.find(item => item.status === 'blocked').reason, 'E_TOPIC_IDENTITY_CHANGED');
 });
 
-test('legacy mode keeps the old fields and never writes mf_not_before', async () => {
-  const { plugin, app } = await harness({ mode: 'legacy' });
-  const { source, first } = tree(app);
-  let unifiedCalls = 0;
-  const original = plugin._mfUs1UnifiedTransport;
-  plugin.postponeSubtreeHost = async () => { unifiedCalls += 1; return null; };
-  app.activeFile = source;
-  app.__promptState.quality = 3;
-  plugin.irFilesCache = null;
-  plugin.irRowsCache = null;
-  await plugin.postponeSubtree();
-  assert.equal(unifiedCalls, 0);
-  assert.notEqual(app.vault.readFm(source).next_review, '2026-11-20');
-  assert.equal(String(app.vault.readFm(source).mf_not_before), 'null');
-  assert.equal(String(app.vault.readFm(first).mf_not_before), 'null');
-  plugin.__mfUs1UnifiedTransport = original;
-});
 
 test('shadow mode writes legacy fields only and records no ledger event', async () => {
   const { plugin, app, opened } = await harness({ mode: 'shadow' });
