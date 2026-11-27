@@ -299,7 +299,6 @@ function createDashboard(container, { onAction = () => {}, isMobile = false } = 
     left.appendChild(renderQuickActions());
     const rail = el('aside', { cls: 'mf-rail' }, [
       renderRhythm(model),
-      renderForecast(model),
       renderTree(model, state),
       renderSources(model),
     ]);
@@ -482,8 +481,13 @@ function createDashboard(container, { onAction = () => {}, isMobile = false } = 
   }
 
   function renderRhythm(model) {
-    const panel = el('section', { cls: 'mf-card mf-panel mf-rhythm-panel', dataset: { section: 'analytics' } });
-    panel.appendChild(el('div', { cls: 'mf-panel-head' }, [panelHeading(copy.rhythm)]));
+    const items = model.forecast || [];
+    const forecastTotal = items.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
+    const panel = el('section', { cls: 'mf-card mf-panel mf-rhythm-panel is-combined', dataset: { section: 'analytics' } });
+    panel.appendChild(el('div', { cls: 'mf-panel-head' }, [
+      panelHeading(copy.rhythmLoad),
+      el('span', { cls: 'mf-panel-count', text: copy.forecastTotal(forecastTotal) }),
+    ]));
     const top = el('div', { cls: 'mf-rhythm-top' });
     const streak = Number(model.streak) || 0;
     const reviews = Number(model.reviews14d) || 0;
@@ -509,15 +513,14 @@ function createDashboard(container, { onAction = () => {}, isMobile = false } = 
       panel.appendChild(el('p', { cls: 'mf-panel-note', text: copy.rhythmEmpty }));
       panel.appendChild(el('div', { cls: 'mf-activity is-muted' }, [barChart(model.activity || [], { showValues: false, label: '近 14 天复习活动' })]));
     }
-    return panel;
-  }
-
-  function renderForecast(model) {
-    const items = model.forecast || [];
-    const total = items.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
-    const panel = simplePanel({ title: copy.forecast, count: total, cls: 'mf-forecast-panel' });
-    panel.appendChild(el('div', { cls: 'mf-forecast' }, [barChart(items, { showValues: true, label: '未来 7 天负荷' })]));
-    if (!total) panel.appendChild(el('p', { cls: 'mf-panel-note', text: '未来 7 天没有安排。' }));
+    panel.appendChild(el('div', { cls: 'mf-rhythm-load' }, [
+      el('div', { cls: 'mf-rhythm-load-head' }, [
+        el('span', { cls: 'mf-eyebrow', text: copy.forecast }),
+        el('span', { cls: 'mf-rhythm-load-total', text: copy.forecastTotal(forecastTotal) }),
+      ]),
+      el('div', { cls: 'mf-forecast' }, [barChart(items, { showValues: true, label: '未来 7 天负荷' })]),
+    ]));
+    if (!forecastTotal) panel.appendChild(el('p', { cls: 'mf-panel-note', text: '未来 7 天没有安排。' }));
     return panel;
   }
 

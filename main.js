@@ -2450,6 +2450,7 @@ class KnowledgeTreeView extends ItemView {
     this.selectedPaths = new Set();
     this.renderedSelectablePaths = [];
     this.lastSelectedPath = null;
+    this.boardMode = 'tree';
   }
 
   getViewType() { return this.mode === 'sidebar' ? KNOWLEDGE_TREE_SIDEBAR_TYPE : KNOWLEDGE_TREE_VIEW_TYPE; }
@@ -2508,6 +2509,14 @@ class KnowledgeTreeView extends ItemView {
 
     const bar = root.createDiv({ cls: 'ir-tree-toolbar' });
     if (this.mode === 'main') {
+      const boardToggle = bar.createEl('button', {
+        text: this.boardMode === 'constellation' ? '← 树视图' : '✦ 星图看板',
+        cls: 'ir-tree-board-toggle',
+      });
+      boardToggle.onclick = () => {
+        this.boardMode = this.boardMode === 'constellation' ? 'tree' : 'constellation';
+        this._render();
+      };
       const b1 = bar.createEl('button', { text: '+ Category' });
       b1.onclick = async () => { await this.plugin.createCategory(); this._renderBody(); };
       const b2 = bar.createEl('button', { text: 'Expand all' });
@@ -2548,6 +2557,10 @@ class KnowledgeTreeView extends ItemView {
     if (!this._bodyEl) { this._render(); return; }
     this._bodyEl.empty();
     this.index = this.plugin.buildTreeIndex();
+    if (this.mode === 'main' && this.boardMode === 'constellation') {
+      this._renderConstellation();
+      return;
+    }
     const currentPaths = new Set(this.index.pages.map(page => page.path));
     for (const path of this.selectedPaths) {
       if (!currentPaths.has(path)) this.selectedPaths.delete(path);
@@ -2565,6 +2578,154 @@ class KnowledgeTreeView extends ItemView {
     }
     if (this.lastSelectedPath && !this.selectedPaths.has(this.lastSelectedPath)) this.lastSelectedPath = null;
     this._renderBulkBar();
+  }
+
+  _renderConstellation() {
+    const body = this._bodyEl;
+    body.addClass('is-constellation');
+    const pages = (this.index?.pages || []).filter(page => page.fm && (page.fm.type === 'source' || page.fm.type === 'extract'));
+    const byName = this.index?.byName || new Map();
+    const parentOf = page => {
+      const name = treeCore.effectiveParent(page.fm);
+      return name ? byName.get(String(name).toLowerCase()) || null : null;
+    };
+    const children = new Map();
+    const roots = [];
+    for (const page of pages) {
+      const parent = parentOf(page);
+      if (parent && pages.includes(parent)) {
+        if (!children.has(parent.path)) children.set(parent.path, []);
+        children.get(parent.path).push(page);
+      } else {
+        roots.push(page);
+      }
+    }
+    const counts = { sources: 0, extracts: 0, overdue: 0 };
+    for (const page of pages) {
+      if (page.fm.type === 'source') counts.sources += 1; else counts.extracts += 1;
+      if (['done', 'dismissed'].includes(page.fm.status)) continue;
+      const due = String(page.fm.mf_ideal_due || page.fm.next_review || '');
+      if (due && due < this.plugin._todayKey() && page.fm.status === 'active') counts.overdue += 1;
+    }
+    const header = body.createDiv({ cls: 'mf-constellation-head' });
+    header.createEl('div', { cls: 'mf-constellation-title', text: '✦ 知识星图' });
+    header.createEl('div', {
+      cls: 'mf-constellation-stats',
+      text: `${counts.sources} 个来源 · ${counts.extracts} 个摘录 · ${counts.overdue} 个待复习`,
+    });
+    header.createEl('div', { cls: 'mf-constellation-hint', text: '点击节点打开笔记 · 拖拽/筛选仍可在树视图使用' });
+    const wrap = body.createDiv({ cls: 'mf-constellation' });
+    const SVG = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 900 560');
+    svg.setAttribute('class', 'mf-constellation-svg');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', '知识星图');
+    const defs = document.createElementNS(SVG, 'defs');
+    defs.innerHTML = `<filter id="mfGlow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><radialGradient id="mfStarBg" cx="50%" cy="45%" r="70%"><stop offset="0%" stop-color="#2a2f3a"/><stop offset="100%" stop-color="#10131a"/></radialGradient>`;
+    svg.appendChild(defs);
+    const bg = document.createElementNS(SVG, 'rect');
+    bg.setAttribute('width', '900'); bg.setAttribute('height', '560');
+    bg.setAttribute('fill', 'url(#mfStarBg)');
+    svg.appendChild(bg);
+    const rng = (() => { let seed = 20261128; return () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; }; })();
+    for (let i = 0; i < 90; i += 1) {
+      const star = document.createElementNS(SVG, 'circle');
+      star.setAttribute('cx', String(Math.round(rng() * 900)));
+      star.setAttribute('cy', String(Math.round(rng() * 560)));
+      star.setAttribute('r', String((rng() * 1.2 + 0.3).toFixed(2)));
+      star.setAttribute('fill', '#dfe8ff');
+      star.setAttribute('opacity', String((rng() * 0.5 + 0.15).toFixed(2)));
+      svg.appendChild(star);
+    }
+    const dueKey = this.plugin._todayKey();
+    const positions = new Map();
+    const layout = (page, x, y, angleStart, angleEnd, depth) => {
+      positions.set(page.path, { x, y, depth });
+      const kids = children.get(page.path) || [];
+      if (!kids.length) return;
+      const spread = Math.max(0.25, (angleEnd - angleStart) / Math.max(1, kids.length));
+      kids.forEach((child, index) => {
+        const angle = angleStart + spread * (index + 0.5);
+        const radius = Math.min(210, 92 + depth * 58);
+        layout(child, x + Math.cos(angle) * radius, y + Math.sin(angle) * radius, angle - spread / 2, angle + spread / 2, depth + 1);
+      });
+    };
+    const topRoots = roots.filter(p => p.fm.type === 'source');
+    const rootCount = Math.max(1, topRoots.length);
+    topRoots.forEach((root, index) => {
+      const angle = (Math.PI * 2 * index) / rootCount - Math.PI / 2;
+      layout(root, 450 + Math.cos(angle) * 120, 280 + Math.sin(angle) * 100, angle - Math.PI / rootCount, angle + Math.PI / rootCount, 0);
+    });
+    const linkLayer = document.createElementNS(SVG, 'g');
+    const nodeLayer = document.createElementNS(SVG, 'g');
+    const isOverdue = page => ['done', 'dismissed'].includes(page.fm.status) ? false
+      : Boolean(page.fm.status === 'active' && String(page.fm.mf_ideal_due || page.fm.next_review || '') && String(page.fm.mf_ideal_due || page.fm.next_review || '') < dueKey);
+    for (const page of pages) {
+      const parent = parentOf(page);
+      const self = positions.get(page.path);
+      const parentPos = parent && positions.get(parent.path);
+      if (!self || !parentPos) continue;
+      const path = document.createElementNS(SVG, 'path');
+      const mx = (self.x + parentPos.x) / 2 + (self.y - parentPos.y) * 0.12;
+      const my = (self.y + parentPos.y) / 2 - (self.x - parentPos.x) * 0.12;
+      path.setAttribute('d', `M ${parentPos.x} ${parentPos.y} Q ${mx} ${my} ${self.x} ${self.y}`);
+      path.setAttribute('stroke', isOverdue(page) ? '#e8a87c' : '#7d90b0');
+      path.setAttribute('stroke-width', String(Math.max(0.6, 2.4 - self.depth * 0.35)));
+      path.setAttribute('fill', 'none');
+      path.setAttribute('opacity', '0.45');
+      linkLayer.appendChild(path);
+    }
+    for (const page of pages) {
+      const pos = positions.get(page.path);
+      if (!pos) continue;
+      const priority = Number(page.fm.priority) || 50;
+      const typeSize = page.fm.type === 'source' ? 18 : Math.max(7, 17 - priority / 8);
+      const overdue = isOverdue(page);
+      const dormant = ['done', 'dismissed'].includes(page.fm.status);
+      const color = dormant ? '#5b6472' : (page.fm.type === 'source' ? '#e9c46a' : (overdue ? '#e07a5f' : '#6fa8dc'));
+      const halo = document.createElementNS(SVG, 'circle');
+      halo.setAttribute('cx', String(pos.x)); halo.setAttribute('cy', String(pos.y));
+      halo.setAttribute('r', String(typeSize + 7));
+      halo.setAttribute('fill', color); halo.setAttribute('opacity', dormant ? '0.04' : '0.12');
+      nodeLayer.appendChild(halo);
+      const node = document.createElementNS(SVG, 'circle');
+      node.setAttribute('cx', String(pos.x)); node.setAttribute('cy', String(pos.y));
+      node.setAttribute('r', String(typeSize));
+      node.setAttribute('fill', color);
+      node.setAttribute('stroke', overdue ? '#ffd7b0' : '#0b1018');
+      node.setAttribute('stroke-width', '1');
+      node.setAttribute('opacity', dormant ? '0.35' : '0.96');
+      node.setAttribute('filter', 'url(#mfGlow)');
+      node.setAttribute('class', `mf-const-node${overdue ? ' is-overdue' : ''}`);
+      const title = document.createElementNS(SVG, 'title');
+      title.textContent = `${page.basename} · ${page.fm.type === 'source' ? '来源' : '摘录'} · P${priority}${overdue ? ' · 待复习' : ''}`;
+      node.appendChild(title);
+      node.addEventListener('click', async () => {
+        const file = this.plugin.app.vault.getAbstractFileByPath(page.path);
+        if (file) await this.plugin.app.workspace.getLeaf('tab').openFile(file);
+      });
+      nodeLayer.appendChild(node);
+      if (page.fm.type === 'source') {
+        const label = document.createElementNS(SVG, 'text');
+        label.setAttribute('x', String(pos.x));
+        label.setAttribute('y', String(pos.y - typeSize - 8));
+        label.setAttribute('text-anchor', 'middle');
+        label.setAttribute('class', 'mf-const-label');
+        label.textContent = String(page.basename).slice(0, 12);
+        nodeLayer.appendChild(label);
+      }
+    }
+    svg.append(linkLayer, nodeLayer);
+    wrap.appendChild(svg);
+    const legend = body.createDiv({ cls: 'mf-constellation-legend' });
+    for (const [color, label] of [['#e9c46a', '来源'], ['#6fa8dc', '摘录'], ['#e07a5f', '待复习']]) {
+      const item = legend.createDiv({ cls: 'mf-constellation-legend-item' });
+      const dot = item.createSpan({ cls: 'mf-constellation-dot' });
+      dot.style.background = color;
+      item.createSpan({ text: label });
+    }
+    if (!pages.length) body.createDiv({ cls: 'mf-constellation-empty', text: '还没有 Source / Extract，创建后会在这里形成你的知识星图。' });
   }
 
   _computeFilter() {
