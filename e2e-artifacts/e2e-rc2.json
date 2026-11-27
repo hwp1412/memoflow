@@ -1,0 +1,113 @@
+{
+  "autoAuth": true,
+  "mode": "unified",
+  "review2": {
+    "value": {
+      "status": "applied",
+      "duplicate": false,
+      "recovered": false,
+      "writesPerformed": true,
+      "record": {
+        "eventId": "00000000-0000-4000-8000-3080a9eb9a0d",
+        "topicId": "00000000-0000-4000-8000-0000000000a1",
+        "fingerprint": "1882cdbf12a7061439c414a5a0eac1d0bae51f7c22962ec3c94293f2191570a4",
+        "type": "ADVANCED",
+        "algorithmVersion": 1,
+        "expectedRevision": 1,
+        "today": "2026-11-27",
+        "eventDate": "2026-11-27",
+        "payload": null,
+        "status": "applied",
+        "beforeHash": "0a397b6302806597aea71326a761e526db6942c962c76ad40ebde5f79b17b447",
+        "expectedAfterHash": "2cef89f783815eceec9547c23dc4900b8dc6b25871fee5f37b41396513a53613",
+        "afterHash": "2cef89f783815eceec9547c23dc4900b8dc6b25871fee5f37b41396513a53613",
+        "actualRevision": 2,
+        "fields": {
+          "mf_revision": 2,
+          "mf_last_event_id": "00000000-0000-4000-8000-3080a9eb9a0d",
+          "mf_interval_days": 18,
+          "mf_ideal_due": "2026-12-15",
+          "review_count": 3,
+          "next_review": "15-12-2026"
+        },
+        "audit": {
+          "eventId": "00000000-0000-4000-8000-3080a9eb9a0d",
+          "topicId": "00000000-0000-4000-8000-0000000000a1",
+          "algorithmVersion": 1,
+          "type": "ADVANCED",
+          "today": "2026-11-27",
+          "expectedRevision": 1,
+          "actualRevision": 2,
+          "before": {
+            "priority": 60,
+            "intervalDays": 12,
+            "aFactor": 1.5,
+            "idealDue": "2026-12-09",
+            "notBefore": null,
+            "effectiveDue": "2026-12-09",
+            "reviewCount": 2,
+            "status": "active"
+          },
+          "after": {
+            "priority": 60,
+            "intervalDays": 18,
+            "aFactor": 1.5,
+            "idealDue": "2026-12-15",
+            "notBefore": null,
+            "effectiveDue": "2026-12-15",
+            "reviewCount": 3,
+            "status": "active"
+          },
+          "writesPerformed": true,
+          "result": "applied",
+          "reason": null,
+          "requiresManualRecovery": false
+        },
+        "result": "applied",
+        "reason": null,
+        "writeAttempted": true,
+        "writesPerformed": true
+      },
+      "audit": {
+        "eventId": "00000000-0000-4000-8000-3080a9eb9a0d",
+        "topicId": "00000000-0000-4000-8000-0000000000a1",
+        "algorithmVersion": 1,
+        "type": "ADVANCED",
+        "today": "2026-11-27",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "before": {
+          "priority": 60,
+          "intervalDays": 12,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-09",
+          "notBefore": null,
+          "effectiveDue": "2026-12-09",
+          "reviewCount": 2,
+          "status": "active"
+        },
+        "after": {
+          "priority": 60,
+          "intervalDays": 18,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-15",
+          "notBefore": null,
+          "effectiveDue": "2026-12-15",
+          "reviewCount": 3,
+          "status": "active"
+        },
+        "writesPerformed": true,
+        "result": "applied",
+        "reason": null,
+        "requiresManualRecovery": false
+      }
+    },
+    "error": null
+  },
+  "rev2": 2,
+  "queue2": {
+    "value": null,
+    "error": null
+  },
+  "diagTopics": 2
+}
