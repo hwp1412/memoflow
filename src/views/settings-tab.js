@@ -43,6 +43,7 @@ class MemoFlowSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     this._about(containerEl);
+    this._unifiedScheduler(containerEl);
     this._scheduling(containerEl);
     this._queue(containerEl);
     this._inlineCards(containerEl);
@@ -74,6 +75,52 @@ class MemoFlowSettingTab extends PluginSettingTab {
       .addButton(button => button
         .setButtonText('运行环境检查')
         .onClick(() => this._runSetupCheck()));
+  }
+
+  _unifiedScheduler(root) {
+    const sec = root.createDiv({ cls: 'ir-settings-section' });
+    new Setting(sec).setName('Unified Scheduler (MF-US-1)').setHeading();
+    let status = null;
+    try {
+      status = this.plugin.mfUs1ActivationDiagnostics();
+    } catch (error) {
+      status = null;
+    }
+    const mode = this.plugin._mfUs1EffectiveMode();
+    const authorized = Boolean(status && status.authorized);
+    const suspended = Boolean(status && status.suspended);
+    const blockers = status && Array.isArray(status.activationBlockers) ? status.activationBlockers : [];
+    let evidence = null;
+    try {
+      evidence = this.plugin._mfUs1ActivationEvidence();
+    } catch (error) {
+      evidence = null;
+    }
+    const sessionLabel = authorized
+      ? '本次会话：已授权 Unified 写入'
+      : (suspended
+        ? '本次会话：已暂停（写入被拒绝）'
+        : (mode === 'unified'
+          ? '本次会话：Unified 未授权（写入被阻断，需重新确认激活）'
+          : '本次会话：未授权（默认 Legacy）'));
+    const describe = [
+      `当前模式：${mode}`,
+      sessionLabel,
+      evidence ? `Topic：${evidence.topicCount}（旧格式 ${evidence.legacyTopicCount}；索引完整=${evidence.indexComplete ? '是' : '未知'}）` : null,
+      blockers.length ? `阻断项：${blockers.join('、')}` : '阻断项：无',
+    ].filter(Boolean).join(' · ');
+    new Setting(sec)
+      .setName('状态与授权')
+      .setDesc(`${describe}。激活只在本次会话有效，重启后必须重新确认；旧库迁移暂不支持。`)
+      .addButton(button => button.setButtonText('激活 Unified…').onClick(async () => {
+        await this.plugin.mfUs1ProductionActivate();
+        this.display();
+      }))
+      .addButton(button => button.setButtonText('暂停/撤销授权…').onClick(async () => {
+        await this.plugin.mfUs1ProductionRevoke();
+        this.display();
+      }))
+      .addButton(button => button.setButtonText('刷新状态').onClick(() => this.display()));
   }
 
   _numberSetting(section, name, description, target, key, { min, max, step = 'any' } = {}) {

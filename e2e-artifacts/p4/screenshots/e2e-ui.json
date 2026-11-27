@@ -1,0 +1,33 @@
+{
+  "unauthorizedText": null,
+  "blockedText": null,
+  "activation": {
+    "value": {
+      "ok": true,
+      "session": {
+        "issuedAt": "2026-11-27T08:19:46.697Z",
+        "revoked": false,
+        "conditions": {
+          "migrationComplete": true,
+          "migrationNotRequired": true,
+          "pendingRecovery": false,
+          "singleWriterReady": true,
+          "backupVerified": true,
+          "userConfirmed": true,
+          "storageSupportsCas": true
+        }
+      }
+    },
+    "error": null
+  },
+  "authorizedText": null,
+  "revoke": {
+    "value": {
+      "ok": true,
+      "tokenRevoked": true,
+      "hadSession": true,
+      "suspended": true
+    },
+    "error": null
+  }
+}

@@ -1895,6 +1895,7 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     this._about(containerEl);
+    this._unifiedScheduler(containerEl);
     this._scheduling(containerEl);
     this._queue(containerEl);
     this._inlineCards(containerEl);
@@ -1916,6 +1917,56 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
       .setName('Setup status')
       .setDesc(ready ? 'Spaced Repetition is ready for card review.' : 'Spaced Repetition is not ready; enable it before reviewing cards.')
       .addButton(button => button.setButtonText('Run setup check').onClick(() => this.plugin.runSetupCheck()));
+  }
+
+  _unifiedScheduler(root) {
+    const sec = root.createDiv({ cls: 'ir-settings-section' });
+    new Setting(sec).setName('Unified Scheduler (MF-US-1)').setHeading();
+    let status = null;
+    try {
+      status = this.plugin.mfUs1ActivationDiagnostics();
+    } catch (error) {
+      status = null;
+    }
+    const mode = this.plugin._mfUs1EffectiveMode();
+    const authorized = Boolean(status && status.authorized);
+    const suspended = Boolean(status && status.suspended);
+    const blockers = status && Array.isArray(status.activationBlockers) ? status.activationBlockers : [];
+    const evidence = (() => {
+      try {
+        return this.plugin._mfUs1ActivationEvidence();
+      } catch (error) {
+        return null;
+      }
+    })();
+    const sessionLabel = authorized
+      ? '本次会话：已授权 Unified 写入'
+      : (suspended
+        ? '本次会话：已暂停（写入被拒绝）'
+        : (mode === 'unified'
+          ? '本次会话：Unified 未授权（写入被阻断，需重新确认激活）'
+          : '本次会话：未授权（默认 Legacy）'));
+    const describe = [
+      `当前模式：${mode}`,
+      sessionLabel,
+      evidence ? `Topic：${evidence.topicCount}（旧格式 ${evidence.legacyTopicCount}；索引完整=${evidence.indexComplete ? '是' : '未知'}）` : null,
+      blockers.length ? `阻断项：${blockers.join('、')}` : '阻断项：无',
+    ].filter(Boolean).join(' · ');
+    const setting = new Setting(sec)
+      .setName('状态与授权')
+      .setDesc(describe + '。激活只在本次会话有效，重启后必须重新确认；旧库迁移暂不支持。')
+      .addButton(button => button.setButtonText('激活 Unified…').onClick(async () => {
+        await this.plugin.mfUs1ProductionActivate();
+        this.display();
+      }))
+      .addButton(button => button.setButtonText('暂停/撤销授权…').onClick(async () => {
+        await this.plugin.mfUs1ProductionRevoke();
+        this.display();
+      }))
+      .addButton(button => button.setButtonText('刷新状态').onClick(() => this.display()));
+    if (blockers.length) {
+      setting.setDesc(`${describe}。请先处理阻断项，然后在 Advanced tools 中查看诊断。激活只在本次会话有效，重启后必须重新确认；旧库迁移暂不支持。`);
+    }
   }
 
   _numberSetting(section, name, description, target, key, { min, max, step = 'any' } = {}) {
@@ -3180,9 +3231,7 @@ class IncrementalReadingPlugin extends Plugin {
       { label: 'Undo last Mercy', run: () => this.mercyUndoLast() },
       { label: 'Resume pending batches…', run: () => this.resumePendingBatches() },
       { label: 'Migration preview (read-only)…', run: () => this.mfUs1MigrationPreview() },
-      { label: 'MF-US-1 mode…', run: () => this.mfUs1ModeMenu() },
-      { label: 'MF-US-1: 激活 Unified（需确认）…', run: () => this.mfUs1ProductionActivate() },
-      { label: 'MF-US-1: 暂停/撤销 Unified 授权…', run: () => this.mfUs1ProductionRevoke() },
+      { label: 'MF-US-1 模式切换…（Unified 需确认）', run: () => this.mfUs1ModeMenu() },
     ]);
   }
 
@@ -4781,6 +4830,8 @@ class IncrementalReadingPlugin extends Plugin {
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
     if (typeof this.saveSettings === 'function') await this.saveSettings();
+    this._refreshExcerptViews();
+    if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
     new Notice('Unified 已激活（会话级授权）；可随时撤销。', 12000);
     return { ok: true, session: coordinator.currentSession() };
   }
@@ -4871,6 +4922,8 @@ class IncrementalReadingPlugin extends Plugin {
     this._mfUs1RevokeSessionCapabilities();
     this.mfUs1Suspended = true;
     this._mfUs1HostInstance = null;
+    this._refreshExcerptViews();
+    if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
     new Notice('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
     return { ok: true, tokenRevoked: true, hadSession: revoked.revoked, suspended: true };
   }
@@ -4912,7 +4965,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mfUs1ModeMenu() {
-    const modes = await pickFromList(this.app, ['Legacy', 'Shadow', 'Unified（需要激活条件）'], ['legacy', 'shadow', 'unified'], 'MF-US-1 mode');
+    const modes = await pickFromList(this.app, ['Legacy', 'Shadow', 'Unified（需确认激活）'], ['legacy', 'shadow', 'unified'], 'MF-US-1 mode');
     if (!modes) return null;
     if (modes === 'unified') {
       return this.mfUs1ProductionActivate();
@@ -4932,6 +4985,8 @@ class IncrementalReadingPlugin extends Plugin {
       await this._mfUs1RebuildAsyncLifecycle({ storage: this.mfUs1HostStorage, mode: modes, conditions: {}, authorization: null });
     }
     if (typeof this.saveSettings === 'function') await this.saveSettings();
+    this._refreshExcerptViews();
+    if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
     new Notice(`MF-US-1 模式已切换为 ${modes}（Legacy/Shadow 写入行为不变）。`);
     return { ok: true, mode: modes };
   }

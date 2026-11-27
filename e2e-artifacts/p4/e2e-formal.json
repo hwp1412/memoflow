@@ -1,0 +1,509 @@
+{
+  "stage": "queue",
+  "steps": {
+    "activation": {
+      "value": {
+        "ok": true,
+        "session": {
+          "issuedAt": "2026-11-27T08:08:49.572Z",
+          "revoked": false,
+          "conditions": {
+            "migrationComplete": true,
+            "migrationNotRequired": true,
+            "pendingRecovery": false,
+            "singleWriterReady": true,
+            "backupVerified": true,
+            "userConfirmed": true,
+            "storageSupportsCas": true
+          }
+        }
+      },
+      "error": null
+    },
+    "boost": {
+      "value": {
+        "batchId": "fcfcc51585f5ebebebae827f8671e01313c86bdbb9d273335e32096c86dad6cd",
+        "kind": "BOOST",
+        "today": "2026-11-27",
+        "results": [
+          {
+            "path": "Sources/Incremental Reading/Sources/S.md",
+            "basename": "S",
+            "topicId": "00000000-0000-4000-8000-000000000a11",
+            "status": "applied",
+            "reason": null
+          },
+          {
+            "path": "Sources/Incremental Reading/Extracts/E1.md",
+            "basename": "E1",
+            "topicId": "00000000-0000-4000-8000-000000000a12",
+            "status": "applied",
+            "reason": null
+          },
+          {
+            "path": "Sources/Incremental Reading/Extracts/E2.md",
+            "basename": "E2",
+            "topicId": "00000000-0000-4000-8000-000000000a13",
+            "status": "applied",
+            "reason": null
+          }
+        ],
+        "skipped": [],
+        "counts": {
+          "applied": 3,
+          "duplicate": 0,
+          "noOp": 0,
+          "skipped": 0,
+          "blocked": 0,
+          "conflict": 0,
+          "failed": 0,
+          "uncertain": 0
+        },
+        "total": 3,
+        "status": "applied",
+        "targets": [
+          {
+            "topicId": "00000000-0000-4000-8000-000000000a11",
+            "path": "Sources/Incremental Reading/Sources/S.md",
+            "basename": "S",
+            "from": 60,
+            "to": 55,
+            "revision": 0
+          },
+          {
+            "topicId": "00000000-0000-4000-8000-000000000a12",
+            "path": "Sources/Incremental Reading/Extracts/E1.md",
+            "basename": "E1",
+            "from": 50,
+            "to": 45,
+            "revision": 0
+          },
+          {
+            "topicId": "00000000-0000-4000-8000-000000000a13",
+            "path": "Sources/Incremental Reading/Extracts/E2.md",
+            "basename": "E2",
+            "from": 50,
+            "to": 45,
+            "revision": 0
+          }
+        ],
+        "delta": 5,
+        "intentPersisted": true,
+        "resultPersisted": true,
+        "writesPerformed": true
+      },
+      "error": null
+    },
+    "postpone": {
+      "value": {
+        "status": "applied",
+        "message": "已延期 · 最早可展示 2026-11-29（理想到期 2026-11-10 不变）",
+        "reason": null,
+        "writesPerformed": true,
+        "confirmed": true,
+        "outcome": {
+          "status": "applied",
+          "duplicate": false,
+          "recovered": false,
+          "writesPerformed": true,
+          "record": {
+            "eventId": "00000000-0000-4000-8000-37373ac257d2",
+            "topicId": "00000000-0000-4000-8000-000000000a11",
+            "fingerprint": "fc1ac4789caafd16ce3bb65018b4ca00cd19d46f03bc82b05e71d49e0a9cdf8c",
+            "type": "POSTPONE",
+            "algorithmVersion": 1,
+            "expectedRevision": 1,
+            "today": "2026-11-27",
+            "eventDate": "2026-11-27",
+            "payload": {
+              "days": 2
+            },
+            "status": "applied",
+            "beforeHash": "fa5e2968430ab28d8e24af708b0405d39e2e52455bf3129a32a0acb3f8d04458",
+            "expectedAfterHash": "468266a022be2e72abb7a5e097f67def5078ae281b82e2db86d2efae8878a619",
+            "afterHash": "468266a022be2e72abb7a5e097f67def5078ae281b82e2db86d2efae8878a619",
+            "actualRevision": 2,
+            "fields": {
+              "mf_revision": 2,
+              "mf_last_event_id": "00000000-0000-4000-8000-37373ac257d2",
+              "mf_not_before": "2026-11-29",
+              "next_review": "29-11-2026"
+            },
+            "audit": {
+              "eventId": "00000000-0000-4000-8000-37373ac257d2",
+              "topicId": "00000000-0000-4000-8000-000000000a11",
+              "algorithmVersion": 1,
+              "type": "POSTPONE",
+              "today": "2026-11-27",
+              "expectedRevision": 1,
+              "actualRevision": 2,
+              "before": {
+                "priority": 55,
+                "intervalDays": 8,
+                "aFactor": 1.5,
+                "idealDue": "2026-11-10",
+                "notBefore": null,
+                "effectiveDue": "2026-11-10",
+                "reviewCount": 1,
+                "status": "active"
+              },
+              "after": {
+                "priority": 55,
+                "intervalDays": 8,
+                "aFactor": 1.5,
+                "idealDue": "2026-11-10",
+                "notBefore": "2026-11-29",
+                "effectiveDue": "2026-11-29",
+                "reviewCount": 1,
+                "status": "active"
+              },
+              "writesPerformed": true,
+              "result": "applied",
+              "reason": null,
+              "requiresManualRecovery": false
+            },
+            "result": "applied",
+            "reason": null,
+            "writeAttempted": true,
+            "writesPerformed": true
+          },
+          "audit": {
+            "eventId": "00000000-0000-4000-8000-37373ac257d2",
+            "topicId": "00000000-0000-4000-8000-000000000a11",
+            "algorithmVersion": 1,
+            "type": "POSTPONE",
+            "today": "2026-11-27",
+            "expectedRevision": 1,
+            "actualRevision": 2,
+            "before": {
+              "priority": 55,
+              "intervalDays": 8,
+              "aFactor": 1.5,
+              "idealDue": "2026-11-10",
+              "notBefore": null,
+              "effectiveDue": "2026-11-10",
+              "reviewCount": 1,
+              "status": "active"
+            },
+            "after": {
+              "priority": 55,
+              "intervalDays": 8,
+              "aFactor": 1.5,
+              "idealDue": "2026-11-10",
+              "notBefore": "2026-11-29",
+              "effectiveDue": "2026-11-29",
+              "reviewCount": 1,
+              "status": "active"
+            },
+            "writesPerformed": true,
+            "result": "applied",
+            "reason": null,
+            "requiresManualRecovery": false
+          }
+        }
+      },
+      "error": null
+    },
+    "priority": {
+      "value": {
+        "status": "applied",
+        "message": "优先级 → P70",
+        "reason": null,
+        "writesPerformed": true,
+        "confirmed": true,
+        "outcome": {
+          "status": "applied",
+          "duplicate": false,
+          "recovered": false,
+          "writesPerformed": true,
+          "record": {
+            "eventId": "00000000-0000-4000-8000-5a620d7fd17d",
+            "topicId": "00000000-0000-4000-8000-000000000a12",
+            "fingerprint": "85d7246122b2afa8a07e217041a0fe2f452ae5c053aea3ec3e413ce273b0fc8b",
+            "type": "SET_PRIORITY",
+            "algorithmVersion": 1,
+            "expectedRevision": 1,
+            "today": "2026-11-27",
+            "eventDate": "2026-11-27",
+            "payload": {
+              "priority": 70
+            },
+            "status": "applied",
+            "beforeHash": "9074f4d80877433835859a1cc323f5ceb221a99ff64970393982f561f82a34d1",
+            "expectedAfterHash": "e52b59f07d067b037b4b5874d3c03e8f41a4da2e22e768e40e55facc03d943ec",
+            "afterHash": "e52b59f07d067b037b4b5874d3c03e8f41a4da2e22e768e40e55facc03d943ec",
+            "actualRevision": 2,
+            "fields": {
+              "mf_revision": 2,
+              "mf_last_event_id": "00000000-0000-4000-8000-5a620d7fd17d",
+              "priority": 70
+            },
+            "audit": {
+              "eventId": "00000000-0000-4000-8000-5a620d7fd17d",
+              "topicId": "00000000-0000-4000-8000-000000000a12",
+              "algorithmVersion": 1,
+              "type": "SET_PRIORITY",
+              "today": "2026-11-27",
+              "expectedRevision": 1,
+              "actualRevision": 2,
+              "before": {
+                "priority": 45,
+                "intervalDays": 8,
+                "aFactor": 1.5,
+                "idealDue": "2026-11-10",
+                "notBefore": null,
+                "effectiveDue": "2026-11-10",
+                "reviewCount": 1,
+                "status": "active"
+              },
+              "after": {
+                "priority": 70,
+                "intervalDays": 8,
+                "aFactor": 1.5,
+                "idealDue": "2026-11-10",
+                "notBefore": null,
+                "effectiveDue": "2026-11-10",
+                "reviewCount": 1,
+                "status": "active"
+              },
+              "writesPerformed": true,
+              "result": "applied",
+              "reason": null,
+              "requiresManualRecovery": false
+            },
+            "result": "applied",
+            "reason": null,
+            "writeAttempted": true,
+            "writesPerformed": true
+          },
+          "audit": {
+            "eventId": "00000000-0000-4000-8000-5a620d7fd17d",
+            "topicId": "00000000-0000-4000-8000-000000000a12",
+            "algorithmVersion": 1,
+            "type": "SET_PRIORITY",
+            "today": "2026-11-27",
+            "expectedRevision": 1,
+            "actualRevision": 2,
+            "before": {
+              "priority": 45,
+              "intervalDays": 8,
+              "aFactor": 1.5,
+              "idealDue": "2026-11-10",
+              "notBefore": null,
+              "effectiveDue": "2026-11-10",
+              "reviewCount": 1,
+              "status": "active"
+            },
+            "after": {
+              "priority": 70,
+              "intervalDays": 8,
+              "aFactor": 1.5,
+              "idealDue": "2026-11-10",
+              "notBefore": null,
+              "effectiveDue": "2026-11-10",
+              "reviewCount": 1,
+              "status": "active"
+            },
+            "writesPerformed": true,
+            "result": "applied",
+            "reason": null,
+            "requiresManualRecovery": false
+          }
+        }
+      },
+      "error": null
+    },
+    "mercy": {
+      "value": {
+        "batchId": "mercy-060f9ad6968bc5cd72a35b43",
+        "kind": "MERCY",
+        "today": "2026-11-27",
+        "results": [
+          {
+            "path": null,
+            "basename": null,
+            "topicId": "00000000-0000-4000-8000-000000000a12",
+            "status": "applied",
+            "reason": null
+          },
+          {
+            "path": null,
+            "basename": null,
+            "topicId": "00000000-0000-4000-8000-000000000a13",
+            "status": "applied",
+            "reason": null
+          }
+        ],
+        "skipped": [],
+        "counts": {
+          "applied": 2,
+          "duplicate": 0,
+          "noOp": 0,
+          "skipped": 0,
+          "blocked": 0,
+          "conflict": 0,
+          "failed": 0,
+          "uncertain": 0
+        },
+        "total": 2,
+        "status": "applied",
+        "previewDigest": "7802aae403a59757f2a5060da2508ac8b52427888292e6e5766a1a90c5a27793",
+        "windowDays": 3,
+        "items": [
+          {
+            "topicId": "00000000-0000-4000-8000-000000000a12",
+            "path": null,
+            "basename": null,
+            "notBefore": "2026-11-28",
+            "currentNotBefore": null
+          },
+          {
+            "topicId": "00000000-0000-4000-8000-000000000a13",
+            "path": null,
+            "basename": null,
+            "notBefore": "2026-11-28",
+            "currentNotBefore": null
+          }
+        ],
+        "durable": true,
+        "revisionEvidencePersisted": true
+      },
+      "error": null
+    },
+    "undo": {
+      "value": {
+        "batchId": "mercy-060f9ad6968bc5cd72a35b43",
+        "kind": "MERCY",
+        "today": "2026-11-27",
+        "results": [
+          {
+            "path": null,
+            "basename": null,
+            "topicId": "00000000-0000-4000-8000-000000000a12",
+            "status": "applied",
+            "reason": null
+          },
+          {
+            "path": null,
+            "basename": null,
+            "topicId": "00000000-0000-4000-8000-000000000a13",
+            "status": "applied",
+            "reason": null
+          }
+        ],
+        "skipped": [],
+        "counts": {
+          "applied": 2,
+          "duplicate": 0,
+          "noOp": 0,
+          "skipped": 0,
+          "blocked": 0,
+          "conflict": 0,
+          "failed": 0,
+          "uncertain": 0
+        },
+        "total": 2,
+        "status": "applied",
+        "previewDigest": "7802aae403a59757f2a5060da2508ac8b52427888292e6e5766a1a90c5a27793",
+        "items": [
+          {
+            "topicId": "00000000-0000-4000-8000-000000000a12",
+            "path": null,
+            "basename": null,
+            "notBefore": "2026-11-28",
+            "currentNotBefore": null
+          },
+          {
+            "topicId": "00000000-0000-4000-8000-000000000a13",
+            "path": null,
+            "basename": null,
+            "notBefore": "2026-11-28",
+            "currentNotBefore": null
+          }
+        ],
+        "operation": "undo",
+        "restoredCount": 2
+      },
+      "error": null
+    },
+    "subtree": {
+      "value": {
+        "batchId": "aae657c40c626670bab417d60ed5b2a259c0c23ffe11cfbbb7937aa673f08941",
+        "days": 3,
+        "today": "2026-11-27",
+        "results": [
+          {
+            "path": "Sources/Incremental Reading/Extracts/E2.md",
+            "basename": "E2",
+            "topicId": "00000000-0000-4000-8000-000000000a13",
+            "status": "applied",
+            "reason": null
+          },
+          {
+            "path": "Sources/Incremental Reading/Extracts/E1.md",
+            "basename": "E1",
+            "topicId": "00000000-0000-4000-8000-000000000a12",
+            "status": "applied",
+            "reason": null
+          },
+          {
+            "path": "Sources/Incremental Reading/Sources/S.md",
+            "basename": "S",
+            "topicId": "00000000-0000-4000-8000-000000000a11",
+            "status": "applied",
+            "reason": null
+          }
+        ],
+        "skipped": [],
+        "counts": {
+          "applied": 3,
+          "duplicate": 0,
+          "noOp": 0,
+          "skipped": 0,
+          "blocked": 0,
+          "conflict": 0,
+          "failed": 0,
+          "uncertain": 0
+        },
+        "total": 3,
+        "status": "applied"
+      },
+      "error": null
+    },
+    "queue": {
+      "value": null,
+      "error": null
+    }
+  },
+  "progresses": [
+    "activation",
+    "boost",
+    "postpone",
+    "priority",
+    "mercy",
+    "undo",
+    "subtree",
+    "queue"
+  ],
+  "build": {
+    "e2eCommand": false,
+    "productionEntry": "function"
+  },
+  "auth": true,
+  "priorities": {
+    "S": 55,
+    "E1": 45,
+    "E2": 45
+  },
+  "mercyNotBefore": "2026-11-28",
+  "mercyAfterUndo": null,
+  "subtreeAfter": {
+    "S": "2026-11-30",
+    "E1": "2026-11-30",
+    "E2": "2026-11-30"
+  },
+  "queue": {
+    "value": null,
+    "error": null
+  }
+}

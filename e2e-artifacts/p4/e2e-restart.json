@@ -1,0 +1,130 @@
+{
+  "stage": "reviewAfterRestart",
+  "steps": {
+    "reviewAfterRestart": {
+      "value": null,
+      "error": "the async host runtime is not authorized for a unified write"
+    }
+  },
+  "progresses": [
+    "reviewAfterRestart"
+  ],
+  "mode": "restart",
+  "diag": {
+    "activationBlockers": [
+      "USER_CONFIRMATION_REQUIRED"
+    ],
+    "conditions": {
+      "migrationComplete": true,
+      "migrationNotRequired": true,
+      "pendingRecovery": false,
+      "singleWriterReady": true,
+      "backupVerified": true,
+      "userConfirmed": false,
+      "storageSupportsCas": true
+    },
+    "transportSource": "lifecycle-runtime",
+    "transportAvailable": true,
+    "runtime": {
+      "present": true,
+      "mode": "unified",
+      "allowed": false,
+      "writeEnabled": false,
+      "blockers": [
+        "MIGRATION_INCOMPLETE",
+        "PENDING_RECOVERY",
+        "LEGACY_WRITER_STILL_ACTIVE",
+        "BACKUP_NOT_VERIFIED",
+        "USER_CONFIRMATION_REQUIRED",
+        "RUNTIME_AUTHORIZATION_REQUIRED",
+        "STORAGE_WITHOUT_CAS",
+        "PRODUCTION_WRITE_UNAUTHORIZED"
+      ]
+    },
+    "authorized": false,
+    "suspended": false,
+    "unresolved": {
+      "pendingEvents": 0,
+      "pendingBatch": 0,
+      "blockedTopics": 0,
+      "unsafe": false
+    },
+    "migrationPreviewed": false,
+    "recoveryHealthy": true,
+    "batchRecoveryError": null,
+    "duplicateIds": [],
+    "blockedTopicIds": [],
+    "topicCount": 3,
+    "legacyTopicCount": 0,
+    "migrationNotRequired": true
+  },
+  "ledgerCountAfterRestart": 8,
+  "batchCountAfterRestart": 2,
+  "files": {
+    "S": [
+      "type",
+      "priority",
+      "status",
+      "interval",
+      "a_factor",
+      "review_count",
+      "next_review",
+      "last_reviewed",
+      "date_added",
+      "mf_revision",
+      "mf_scheduler_version",
+      "mf_ideal_due",
+      "mf_not_before",
+      "mf_interval_days",
+      "mf_last_event_id",
+      "mf_id",
+      "mf_root_id"
+    ],
+    "E1": [
+      "type",
+      "priority",
+      "source",
+      "status",
+      "interval",
+      "a_factor",
+      "review_count",
+      "next_review",
+      "last_reviewed",
+      "date_added",
+      "mf_revision",
+      "mf_scheduler_version",
+      "mf_ideal_due",
+      "mf_not_before",
+      "mf_interval_days",
+      "mf_last_event_id",
+      "mf_id",
+      "mf_parent_id",
+      "mf_root_id"
+    ],
+    "E2": [
+      "type",
+      "priority",
+      "source",
+      "status",
+      "interval",
+      "a_factor",
+      "review_count",
+      "next_review",
+      "last_reviewed",
+      "date_added",
+      "mf_revision",
+      "mf_scheduler_version",
+      "mf_ideal_due",
+      "mf_not_before",
+      "mf_interval_days",
+      "mf_last_event_id",
+      "mf_id",
+      "mf_parent_id",
+      "mf_root_id"
+    ]
+  },
+  "reviewAfterRestart": {
+    "value": null,
+    "error": "the async host runtime is not authorized for a unified write"
+  }
+}
