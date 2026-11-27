@@ -6421,7 +6421,9 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async _createExtract(fromClipboard) {
-    return this._mfUs1RunLegacy({ action: 'CREATE_EXTRACT' }, () => this._createExtractLegacy(fromClipboard));
+    // Same as newSource(): the extract writer handles Unified creation itself;
+    // the scheduling host has no CREATE_EXTRACT route.
+    return this._createExtractLegacy(fromClipboard);
   }
 
   async _createExtractLegacy(fromClipboard) {
@@ -6835,7 +6837,10 @@ ${body}
   // ---- New source / Import clipping --------------------------------------
 
   async newSource() {
-    return this._mfUs1RunLegacy({ action: 'CREATE_SOURCE' }, () => this._newSourceLegacy());
+    // Creation prompts for its own input and the writer below already routes the
+    // write through the MF-US-1 creation gateway. Going through the scheduling
+    // host gate first made "New source" a silent no-op in Unified mode.
+    return this._newSourceLegacy();
   }
 
   async _newSourceLegacy() {

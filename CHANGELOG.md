@@ -1,5 +1,16 @@
 # MemoFlow changelog
 
+## 1.0.1 — 2026-11-28
+
+### Fixed
+- 「新建来源 / 导入 PDF」在 Unified 模式下没有反应：创建动作不再经过没有 CREATE_SOURCE 路由的调度 Host，而是直接走创建向导 + MF-US-1 创建网关。
+- 同样修复剪贴板 / 选区创建 Extract 的同类静默失败（CREATE_EXTRACT 不再经过调度 Host）。
+
+### 发布产物
+- `main.js` / `manifest.json` / `styles.css`（版本 1.0.1）
+
+---
+
 ## 1.0.0 — 2026-11-27
 
 ### Added
