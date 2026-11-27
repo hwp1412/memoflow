@@ -680,7 +680,7 @@ class MemoFlowPlugin extends BasePlugin {
     dot.className = 'mf-rb-dot';
     const label = document.createElement('span');
     label.className = 'mf-rb-label';
-    label.textContent = `今日队列 · ${info.index} / ${info.total}`;
+    label.textContent = info.standalone ? '独立阅读' : `今日队列 · ${info.index} / ${info.total}`;
     const sep = document.createElement('span');
     sep.className = 'mf-rb-sep';
     const type = document.createElement('span');
@@ -755,6 +755,7 @@ class MemoFlowPlugin extends BasePlugin {
     } else {
       addButton(fm.type === 'extract' ? '完成并下一项' : '评阅并下一项', 'complete', 'is-primary');
       addButton('跳过', 'skip');
+      addButton('剪贴摘录', 'clipboard-extract', '', '复制文字后在当前 Source/Extract 下生成子摘录（多级摘录）');
       addButton('制卡', 'create-card');
       if (fm.type === 'extract') addButton('精简', 'refine-extract');
       const postpone = addButton('延后');
@@ -779,7 +780,12 @@ class MemoFlowPlugin extends BasePlugin {
         if (!contentEl || !(file instanceof TFile)) continue;
         const existing = contentEl.querySelector(':scope > .mf-reading-bar');
         const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-        const info = fm && READER_TYPES.has(fm.type) ? this._sessionInfo(file.path) : null;
+        // A Source/Extract always gets its action bar, even when it is opened
+        // outside today's session (needed for multi-level Extract: open an
+        // Extract and continue extracting from it).
+        const info = fm && READER_TYPES.has(fm.type)
+          ? (this._sessionInfo(file.path) || { index: 0, total: 0, standalone: true })
+          : null;
         if (!info) {
           existing?.remove();
           continue;

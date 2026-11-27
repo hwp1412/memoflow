@@ -5,6 +5,7 @@
 ### Fixed
 - 阅读条「剪贴摘录」失败（提示 `eventId must be a UUID`）：时间戳摘录不再经过调度 Host，直接走创建向导 + MF-US-1 创建网关。
 - 从 Extract 继续摘录时（多级摘录），新 Extract 的 `mf_parent_id` 现在指向**直接父 Extract**（不再被挂到根 Source），多级层级保持正确。
+- Source / Extract 打开时都会显示阅读操作条（独立阅读），并新增「剪贴摘录」按钮，可直接在**当前 Extract** 下生成子摘录。
 
 ---
 
