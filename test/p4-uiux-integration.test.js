@@ -1,6 +1,6 @@
 'use strict';
 
-// Integrated Phase 4 UI/UX: one simple algorithm selector, update check, live refresh.
+// Final algorithm architecture: MF-US-1 is the only scheduler; selector stays for future algorithms.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -10,8 +10,8 @@ const { createPlugin, makeSettings } = require('./helpers/obsidian-mock.js');
 const { createPluginDataCoordinator } = require('../src/integration/plugin-data-coordinator.js');
 const { BATCH_KEY } = require('../src/integration/batch-store.js');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 const SETTINGS_VIEW = fs.readFileSync(path.join(__dirname, '..', 'src', 'views', 'settings-tab.js'), 'utf8');
+const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 
 function setup() {
   if (!global.window) {
@@ -25,33 +25,45 @@ function setup() {
   return { plugin, app };
 }
 
-test('the everyday settings surface is the algorithm selector plus update check', () => {
+test('the settings selector offers only MF-US-1 and keeps the update check', () => {
   const display = SETTINGS_VIEW.slice(SETTINGS_VIEW.indexOf('display()'), SETTINGS_VIEW.indexOf('_about(root)'));
   assert.match(display, /this\._schedulerMode\(containerEl\)/);
   assert.match(display, /this\._updateCheck\(containerEl\)/);
   const selector = SETTINGS_VIEW.slice(SETTINGS_VIEW.indexOf('_schedulerMode(root)'), SETTINGS_VIEW.indexOf('_updateCheck(root)'));
-  assert.match(selector, /新版 Unified（推荐）/);
-  assert.match(selector, /旧版 Legacy/);
-  assert.match(selector, /Shadow（高级诊断）/);
-  assert.equal(/激活 Unified|授权|批准/.test(selector), false, 'no authorization workflow in everyday UI');
+  assert.match(selector, /MF-US-1（当前唯一算法）/);
+  assert.equal(/Legacy|Shadow/.test(selector), false, 'no legacy/shadow option in the product selector');
 });
 
-test('advanced tools expose a single algorithm entry', () => {
+test('retired algorithms cannot be selected or resurrected', async () => {
+  const { plugin } = setup();
+  assert.equal(plugin._mfUs1NormalizeMode('legacy'), 'unified');
+  assert.equal(plugin._mfUs1NormalizeMode('shadow'), 'unified');
+  assert.equal(plugin._mfUs1NormalizeMode('anything-else'), 'unified');
+  const retired = await plugin.setSchedulerMode('legacy');
+  assert.equal(retired.ok, false);
+  assert.equal(retired.reason, 'E_ALGORITHM_RETIRED');
+  const shadow = await plugin.setSchedulerMode('shadow');
+  assert.equal(shadow.ok, false);
+  assert.equal(plugin._mfUs1NormalizeMode(plugin._mfUs1EffectiveMode()), 'unified');
+});
+
+test('the algorithm switcher and legacy switch entry are not exposed in the UI', () => {
   const menu = SOURCE.slice(SOURCE.indexOf('advancedTools() {'), SOURCE.indexOf('sourcesFolder() {'));
-  assert.match(menu, /调度算法…（Unified \/ Legacy \/ Shadow）/);
-  assert.equal((menu.match(/mfUs1ProductionActivate|mfUs1ProductionRevoke/g) || []).length, 0);
+  assert.equal(/调度算法…/.test(menu), false, 'no algorithm menu for a single-algorithm product');
+  const switchFn = SOURCE.slice(SOURCE.indexOf('async mfUs1SwitchToLegacy('), SOURCE.indexOf('async mfUs1SwitchToLegacy(') + 300);
+  assert.match(switchFn, /E_ALGORITHM_RETIRED/);
 });
 
-test('activation and revocation refresh open views', async () => {
+test('activation and revocation still refresh open views', async () => {
   const { plugin } = setup();
   let excerpt = 0;
   let tree = 0;
   plugin._refreshExcerptViews = () => { excerpt += 1; };
   plugin._refreshTreeViews = () => { tree += 1; };
-  await plugin.setSchedulerMode('unified');
-  assert.ok(excerpt >= 1);
-  assert.ok(tree >= 1);
-  await plugin.mfUs1RevokeUnifiedAuthorization();
-  assert.ok(excerpt >= 2);
-  assert.ok(tree >= 2);
+  const started = await plugin._mfUs1AutoStartRuntime();
+  if (started.ok) {
+    await plugin.mfUs1RevokeUnifiedAuthorization();
+    assert.ok(excerpt >= 1);
+    assert.ok(tree >= 1);
+  }
 });

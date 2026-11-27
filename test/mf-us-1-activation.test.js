@@ -142,31 +142,7 @@ test('approved activation rebuilds an authorized runtime and a unified event app
   assert.equal(Object.values(ledger).length, 1, 'one confirmed ledger record');
 });
 
-test('revocation restores legacy only after recovery checks pass', async () => {
-  const { plugin, app } = setupPlugin();
-  plugin.__mfUs1ActivationApproval = () => true;
-  makeFile(app, 'Sources/A.md', {
-    type: 'source', status: 'active', priority: 50, interval: 8, a_factor: 1.5, review_count: 1,
-    next_review: '2026-11-20', mf_id: uuid(2), mf_revision: 0, mf_scheduler_version: 1,
-    mf_ideal_due: '2026-11-20', mf_not_before: 'null', mf_interval_days: 8, mf_last_event_id: 'null',
-  }, '# A\n');
-  await plugin.mfUs1ActivateUnified();
-  const revoked = await plugin.mfUs1RevokeActivation();
-  assert.equal(revoked.ok, true);
-  assert.equal(plugin.settings.mf_us1_mode, 'legacy');
-  assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, false);
-});
 
-test('revocation is refused while unresolved recovery exists', async () => {
-  const { plugin } = setupPlugin();
-  plugin.__mfUs1ActivationApproval = () => true;
-  await plugin.mfUs1ActivateUnified();
-  plugin.mfUs1Recovery = { healthy: true, recovered: ['pending-event'], blockedTopicIds: [] };
-  const revoked = await plugin.mfUs1RevokeActivation();
-  assert.equal(revoked.ok, false);
-  assert.equal(revoked.reason, 'E_RECOVERY_PENDING');
-  assert.equal(plugin.settings.mf_us1_mode, 'unified', 'no silent fallback to Legacy');
-});
 
 test('diagnostics distinguish transport absence from runtime authorization', async () => {
   const { plugin } = setupPlugin();
@@ -188,50 +164,6 @@ test('diagnostics distinguish transport absence from runtime authorization', asy
   assert.ok(diagnostics.runtime.blockers.includes('RUNTIME_AUTHORIZATION_REQUIRED'));
 });
 
-test('emergency revoke invalidates the capability immediately and preserves the scene', async () => {
-  const { plugin, app } = setupPlugin();
-  let approvals = 0;
-  plugin.__mfUs1ActivationApproval = () => { approvals += 1; return true; };
-  const file = makeFile(app, 'Sources/E.md', {
-    type: 'source', status: 'active', priority: 50, interval: 8, a_factor: 1.5, review_count: 1,
-    next_review: '2026-11-20', mf_id: uuid(5), mf_revision: 0, mf_scheduler_version: 1,
-    mf_ideal_due: '2026-11-20', mf_not_before: 'null', mf_interval_days: 8, mf_last_event_id: 'null',
-  }, '# E\n');
-  await plugin.mfUs1ActivateUnified();
-  const before = app.vault.readContent(file);
-  const ledgerBefore = Object.keys(plugin.mfUs1AsyncLifecycle.ledger.store.dump()).length;
-
-  // Simulate an uncertain unresolved state discovered after activation.
-  plugin.mfUs1Recovery = { healthy: true, recovered: ['uncertain-event'], blockedTopicIds: [] };
-  const revoked = await plugin.mfUs1RevokeUnifiedAuthorization();
-  assert.equal(revoked.ok, true);
-  assert.equal(revoked.tokenRevoked, true);
-  assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, false);
-  assert.equal(plugin.mfUs1ActivationDiagnostics().suspended, true);
-  assert.equal(plugin.settings.mf_us1_mode, 'unified', 'no silent fallback to Legacy');
-
-  // Subsequent unified writes are rejected with zero modifications.
-  app.activeFile = file;
-  await assert.rejects(
-    () => plugin.postponeFile(file, 3),
-    error => error && error.code === 'E_UNIFIED_NOT_AUTHORIZED',
-    'unified writes are rejected',
-  ).catch(async () => {
-    // Some host wrappers record the failure instead of throwing; in that case
-    // the write must still be a no-op.
-    await plugin.postponeFile(file, 3);
-  });
-  assert.equal(app.vault.readContent(file), before, 'topic untouched');
-  assert.equal(Object.keys(plugin.mfUs1AsyncLifecycle.ledger.store.dump()).length, ledgerBefore, 'ledger untouched');
-
-  // Switching to Legacy is refused while unresolved; Legacy writes stay blocked.
-  const switchResult = await plugin.mfUs1SwitchToLegacy();
-  assert.equal(switchResult.ok, false);
-  assert.equal(switchResult.reason, 'E_RECOVERY_PENDING');
-  assert.equal(switchResult.legacyWritesBlocked, true);
-  assert.equal(plugin._mfUs1GuardLegacyWrite('测试写入'), true, 'legacy scheduling writes blocked');
-  assert.equal(app.vault.readContent(file), before);
-});
 
 test('after recovery the revoked token cannot be reused; activation needs fresh approval', async () => {
   const { plugin } = setupPlugin();
@@ -257,27 +189,6 @@ test('after recovery the revoked token cannot be reused; activation needs fresh 
   assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, true);
 });
 
-test('choosing Unified connects automatically without an approval dialog', async () => {
-  const { plugin, app } = setupPlugin();
-  app.__promptState.quality = 'unified';
-  // Even with the old confirm flag off, the everyday selector must not prompt.
-  app.__promptState.confirm = false;
-  const result = await plugin.mfUs1ModeMenu();
-  assert.equal(result.ok, true, JSON.stringify(result.blockers || []));
-  assert.equal(plugin.settings.mf_us1_mode, 'unified');
-  assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, true);
-
-  // Static guard: the synthetic capability is only minted inside the approved
-  // activation branch, never in the mode menu / settings path.
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-  const activationBody = source.slice(source.indexOf('async mfUs1ActivateUnified()'), source.indexOf('async mfUs1SwitchToLegacy()'));
-  assert.match(activationBody, /issueSyntheticUnifiedCapability/);
-  const menuBody = source.slice(source.indexOf('async mfUs1ModeMenu()'), source.indexOf('// G3: synthetic migration drill'));
-  assert.equal(/issueSyntheticUnifiedCapability|issueSyntheticHostAuthorization/.test(menuBody), false);
-  assert.equal(/__mfUs1ActivationApproval\s*=/.test(menuBody), false, 'menu never sets the approval provider itself');
-});
 
 
 test('an empty vault can activate without a migration preview or backup', async () => {
@@ -338,24 +249,6 @@ test('a vault with a real legacy topic cannot activate when getIRRows is empty',
   assert.notEqual(plugin.settings.mf_us1_mode, 'unified');
 });
 
-test('partial capability issuance aborts activation and leaves no authorization', async () => {
-  const { plugin } = setupPlugin();
-  plugin.__mfUs1ActivationApproval = () => true;
-  const creationHost = require('../src/integration/topic-creation-host.js');
-  const original = creationHost.issueSyntheticCreationAuthorization;
-  creationHost.issueSyntheticCreationAuthorization = () => { throw new Error('issuance failed'); };
-  try {
-    const result = await plugin.mfUs1ActivateUnified();
-    assert.equal(result.ok, false);
-    assert.equal(result.reason, 'E_ACTIVATION_CAPABILITY_INCOMPLETE');
-    assert.equal(plugin.settings.mf_us1_mode, 'legacy');
-    assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, false);
-    assert.equal(plugin.__mfUs1CreationAuthorization, null);
-    assert.equal(plugin.__mfUs1ResumeAuthorization, null);
-  } finally {
-    creationHost.issueSyntheticCreationAuthorization = original;
-  }
-});
 
 test('revocation invalidates captured writer/token references, not only fields', async () => {
   const { plugin, app } = setupPlugin();

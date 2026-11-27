@@ -50,19 +50,6 @@ test('unified checkpoint refuses an interval override instead of rewriting sched
   assert.match(getNotices(app).join('\n'), /不能修改学习间隔/);
 });
 
-test('shadow mode keeps legacy as the only writer and records a read-only diff', async () => {
-  const { plugin, app, file } = setup('shadow');
-  const beforeNext = app.vault.readFm(file).next_review;
-  await plugin.postponeFile(file, 3);
-  const fm = app.vault.readFm(file);
-  assert.notEqual(fm.next_review, beforeNext, 'legacy writer still ran');
-  assert.equal(String(fm.mf_not_before), 'null', 'unified fields untouched');
-  assert.equal(Number(fm.mf_revision), 1);
-  assert.ok(plugin.mfUs1ShadowLast, 'shadow observation recorded');
-  assert.equal(plugin.mfUs1ShadowLast.status, 'compared');
-  assert.ok(plugin.mfUs1ShadowLast.changes.some(change => change.field === 'mf_not_before'));
-  assert.equal(plugin.mfUs1ShadowLast.writesPerformed, false);
-});
 
 test('shadow observer failure is contained and legacy still writes', async () => {
   const { plugin, app } = setup('shadow');

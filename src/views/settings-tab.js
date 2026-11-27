@@ -111,20 +111,18 @@ class MemoFlowSettingTab extends PluginSettingTab {
     }
     const authorized = Boolean(status && status.authorized);
     const blockers = status && Array.isArray(status.activationBlockers) ? status.activationBlockers : [];
-    const lines = [current === 'unified' ? '当前使用新版 Unified 调度。' : (current === 'shadow' ? '当前使用 Shadow（高级诊断）。' : '当前使用旧版 Legacy 调度。')];
+    const lines = ['当前算法：MF-US-1（MemoFlow 1.0 唯一的调度算法）。'];
     if (current === 'unified') {
       lines.push(authorized ? '调度服务已就绪。' : '写入当前被阻断；请查看下方提示处理后再试。');
       if (blockers.length) lines.push(`提示：${blockers.join('、')}`);
     }
-    lines.push('切换后立即生效，并会在下次启动时继续使用；旧格式数据不会被自动迁移。');
+    lines.push('未来新增算法时会在此处扩展；旧格式数据不会被自动迁移。');
     new Setting(sec)
       .setName('选择算法')
       .setDesc(lines.join(' '))
       .addDropdown(dropdown => dropdown
-        .addOption('unified', '新版 Unified（推荐）')
-        .addOption('legacy', '旧版 Legacy')
-        .addOption('shadow', 'Shadow（高级诊断）')
-        .setValue(current)
+        .addOption('unified', 'MF-US-1（当前唯一算法）')
+        .setValue('unified')
         .onChange(async value => {
           await this.plugin.setSchedulerMode(value);
           this.display();
