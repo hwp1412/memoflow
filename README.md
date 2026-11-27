@@ -1,10 +1,25 @@
 # MemoFlow
 
-MemoFlow 是一个以 **SuperMemo 增量阅读工作流** 为目标、在 Obsidian 里运行的插件。它 fork 自 [Incremental Reading Toolkit 1.1.8](https://github.com/kja140/incremental-reading)（MIT），保留上游的 A-Factor 主题调度、摘录、知识树、队列与 Spaced Repetition 集成，并在上面重建一个纸墨风的「今日学习」总览台。
+MemoFlow 是一个以 **SuperMemo 增量阅读工作流** 为目标、在 Obsidian 里运行的插件。它 fork 自 [Incremental Reading Toolkit 1.1.8](https://github.com/kja140/incremental-reading)（MIT），在其摘录、知识树、队列与 Spaced Repetition 集成之上，用 **MF-US-1 统一调度** 重建了阅读与调度体验，并提供纸墨风的「今日学习」总览台。
 
-> **个人自用项目，不发布。** 作者：**三斤的多多 / DeepSeek**。当前阶段 v0.1.0：个人每日增量阅读与 SR 复习可用；移动端尚未实机验收。
+> 当前版本 **1.0.0**。作者：**三斤的多多 / DeepSeek**。桌面端已验证；移动端/窄屏仍在验收中（见下方「已知限制」）。
 
-> 上游 Incremental Reading Toolkit 1.1.8（MIT）的调度引擎与版权署名保留；MemoFlow 只服务个人学习工作流。
+## 安装
+
+1. 从 [GitHub Releases](https://github.com/hwp1412/memoflow/releases) 下载与版本对应的 `main.js`、`manifest.json`、`styles.css`；
+2. 放入 Vault 的 `.obsidian/plugins/memoflow/`；
+3. 在 Obsidian「第三方插件」中启用 MemoFlow。
+
+更新时同样替换这三个文件（或通过 Obsidian 官方插件渠道更新）。插件不会自动从 GitHub 安装或覆盖文件。
+
+## 升级与旧 Vault
+
+- **全新 Vault：** 默认使用 MF-US-1，启动即自动运行，无需激活或授权。
+- **已有 Legacy/Shadow 偏好的 Vault：** 旧偏好会在加载时转换并保存为 MF-US-1；不会恢复旧算法。
+- **旧格式 MemoFlow/Toolkit 数据：** 1.0 暂不支持无缝迁移。检测到旧格式 Topic 时会明确提示并阻止受影响的 Unified 写入，**不会静默转换或自动排序旧库**。升级前请备份 Vault；需要迁移支持请关注后续版本。
+- Card/SR 数据不受影响，继续由 Spaced Repetition 插件独立管理。
+
+> 上游 Incremental Reading Toolkit 1.1.8（MIT）的代码与版权署名保留。
 
 ![MemoFlow dashboard](preview/screenshots/light-1440.png)
 

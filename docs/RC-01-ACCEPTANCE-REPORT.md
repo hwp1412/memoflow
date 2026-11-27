@@ -2,7 +2,11 @@
 
 前提：最终 MF-US-1 整合 PR 已合入 `personal/main = cb2efa3`（PR #43，`b8f573e` 在主线）。
 
-## 1. 结论：**Blocked（仅发布资料阻塞，未发现日常使用阻塞缺陷）**
+## 0. 发布资料修正后状态：**Ready for Release（资料阻塞已解除，待实际打 tag/Release）**
+
+已于 RC 修复分支完成：manifest 版本 1.0.0、versions.json 映射、CHANGELOG 1.0.0、README 安装/升级与旧库限制、RELEASING.md 重写。以下为修正前结论，保留审计记录。
+
+## 1. 修正前结论：Blocked（仅发布资料阻塞，未发现日常使用阻塞缺陷）
 
 产品行为本身已通过本轮验证；阻塞项全部在发布元数据/文档/Release 产物对应关系，不属于调度或数据安全缺陷。
 
@@ -52,11 +56,11 @@
 
 | 检查 | 结果 |
 |---|---|
-| `dist/memoflow/manifest.json` 版本 | **Fail**：当前 `0.1.0`、id `memoflow`、minAppVersion `1.12.7`；与 "MemoFlow 1.0" 正式版本号不一致 |
+| `dist/memoflow/manifest.json` 版本 | ✅ Fixed：`plugin/manifest.json` 升为 **1.0.0**，`versions.json` 增加 1.0.0 映射；正式构建重新生成 |
 | 发布文件集合 | **Pass**：`main.js`、`manifest.json`、`styles.css` 齐全 |
-| README / 安装说明 / 更新说明 | **Fail**：README 仍写"个人自用项目，不发布"、"当前阶段 v0.1.0"；无正式安装/升级说明 |
-| GitHub Release 版本与产物对应 | **Fail**：尚无 MemoFlow 1.0 Release/tag/产物映射说明；`RELEASING.md` 仍是上游 Incremental Reading Toolkit 的内容 |
-| 旧格式 Vault 不支持无缝升级的限制 | **Fail**：README 未明确说明；仅有内部文档提及 |
+| README / 安装说明 / 更新说明 | ✅ Fixed：README 改为 1.0.0 发布版，新增「安装」「升级与旧 Vault」说明 |
+| GitHub Release 版本与产物对应 | ✅ Fixed：`RELEASING.md` 重写为 MemoFlow 1.0 流程（版本一致、三产物、tag=1.0.0、Release 说明含限制）；实际 tag/Release 仍由项目负责人执行 |
+| 旧格式 Vault 不支持无缝升级的限制 | ✅ Fixed：README「升级与旧 Vault」与 CHANGELOG Known limitations 明确说明 |
 | 正式构建无测试命令 | **Pass** |
 | 全量测试 / UTC / validate / build | **Pass**：1368 tests（本地+UTC）、validate valid、build --dry-run 干净、正式构建成功 |
 
