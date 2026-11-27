@@ -77,16 +77,17 @@ test('postpone, schedule and setPriority confirm UI parameters before routing', 
   }
 });
 
-test('the default host mode remains legacy and unified has no authorization path', () => {
+test('the default host mode is Unified and authorization has no synthetic forge path', () => {
   assert.match(mainSource, /getMode: \(\) => this\._mfUs1EffectiveMode\(\)/);
   assert.match(mainSource, /_mfUs1NormalizeMode\(/);
   assert.equal(/issueSyntheticRuntimeAuthorization/.test(mainSource), false);
-  // P3-02A: a unified path now exists but is only reachable through the
-  // approval-gated activation coordinator; production has no approval provider.
+  // UX: fresh installs default to Unified and auto-connect on startup; the
+  // low-level activation coordinator is still the only place capabilities are
+  // minted, and no capability can be forged from settings.
   assert.match(mainSource, /mfUs1ActivateUnified\(/);
   assert.match(mainSource, /approvalProvider/);
-  assert.match(mainSource, /__mfUs1ActivationApproval/);
-  assert.match(mainSource, /mf_us1_mode: 'legacy'/);
+  assert.match(mainSource, /_mfUs1AutoStartRuntime\(/);
+  assert.match(mainSource, /mf_us1_mode: 'unified'/);
 });
 
 test('the legacy bodies are preserved behind distinct methods', () => {
