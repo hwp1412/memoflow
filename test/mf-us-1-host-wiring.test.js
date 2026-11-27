@@ -13,6 +13,17 @@ const mainSource = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const srcSource = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
 const baseSource = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
 
+test('creation entries bypass the scheduler host and use the creation writers', () => {
+  for (const [method, delegated] of [['newSource', '_newSourceLegacy'], ['_createExtract', '_createExtractLegacy']]) {
+    const start = mainSource.indexOf(`  async ${method}(`);
+    assert.ok(start >= 0, method);
+    const end = mainSource.indexOf('\n  async ', start + 10);
+    const body = mainSource.slice(start, end < 0 ? undefined : end);
+    assert.ok(body.includes(delegated), `${method} must call ${delegated} directly`);
+    assert.equal(/_mfUs1RunLegacy/.test(body), false, `${method} must not go through the scheduling host`);
+  }
+});
+
 test('every audited root entry delegates through the host scheduler service', () => {
   // HOST-ACTIONS-01: postpone/schedule/setPriority now share one authoritative
   // descriptor site (`*File`) so every UI surface goes through the same event.
@@ -34,8 +45,6 @@ test('every audited root entry delegates through the host scheduler service', ()
     ['resetCurrent', 'RESET_CURRENT'],
     ['dismiss', 'DISMISS'],
     ['postponeSubtree', 'POSTPONE_SUBTREE'],
-    ['_createExtract', 'CREATE_EXTRACT'],
-    ['newSource', 'CREATE_SOURCE'],
   ]) {
     const start = mainSource.indexOf(`  async ${method}(`);
     assert.ok(start >= 0, method);
