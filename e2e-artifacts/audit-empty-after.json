@@ -1,0 +1,39 @@
+{
+  "ok": true,
+  "vaultDir": "<E2E-Vault>",
+  "profile": "auto",
+  "checks": [
+    {
+      "level": "PASS",
+      "code": "PLUGIN_OK",
+      "message": "插件已安装：MemoFlow 0.1.0",
+      "extra": null
+    },
+    {
+      "level": "PASS",
+      "code": "LEDGER_READABLE",
+      "message": "Ledger 可读取：1 条记录",
+      "extra": null
+    },
+    {
+      "level": "PASS",
+      "code": "TOPICS_SCANNED",
+      "message": "Topic：Source 1 / Extract 0 / Card 0；旧格式 Topic 0",
+      "extra": null
+    },
+    {
+      "level": "PASS",
+      "code": "MIGRATION_NOT_REQUIRED",
+      "message": "迁移需求：全新库/无旧格式 Topic，activation 应为 migration-not-required",
+      "extra": null
+    }
+  ],
+  "changes": null,
+  "failures": [],
+  "counts": {
+    "sourceCount": 1,
+    "extractCount": 0,
+    "cardCount": 0,
+    "legacyTopicCount": 0
+  }
+}

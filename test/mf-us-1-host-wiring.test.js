@@ -78,7 +78,8 @@ test('postpone, schedule and setPriority confirm UI parameters before routing', 
 });
 
 test('the default host mode remains legacy and unified has no authorization path', () => {
-  assert.match(mainSource, /getMode: \(\) => \(this\.settings && this\.settings\.mf_us1_mode \? this\.settings\.mf_us1_mode : 'legacy'\)/);
+  assert.match(mainSource, /getMode: \(\) => this\._mfUs1EffectiveMode\(\)/);
+  assert.match(mainSource, /_mfUs1NormalizeMode\(/);
   assert.equal(/issueSyntheticRuntimeAuthorization/.test(mainSource), false);
   // P3-02A: a unified path now exists but is only reachable through the
   // approval-gated activation coordinator; production has no approval provider.

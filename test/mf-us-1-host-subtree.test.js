@@ -122,7 +122,10 @@ test('the result does not depend on file creation order', async () => {
   assert.equal(result.status, 'applied');
   assert.equal(result.counts.applied, 4);
   const ids = result.results.map(item => item.topicId);
-  assert.deepEqual(ids, [uuid(10), uuid(11), uuid(12), uuid(13)], 'nodes run in stable id order');
+  // Parents are written last so a child's parent-hash precondition stays valid
+  // (real-Obsidian E2E found root-first ordering caused E_SUBTREE_CHANGED).
+  assert.equal(ids[ids.length - 1], uuid(10), 'root is written last');
+  assert.deepEqual(ids.slice(0, 3).sort(), [uuid(11), uuid(12), uuid(13)].sort(), 'all descendants before root');
   for (const file of [source, first, second, third]) assert.ok(fmOf(app, file).mf_not_before);
 });
 
@@ -296,12 +299,14 @@ test('every node uses the same pinned today even if the clock crosses midnight',
 test('an identity change between planning and execution blocks that node', async () => {
   const { plugin, app } = await harness();
   const source = addSource(app, 'S', uuid(120));
-  const second = addExtract(app, 'E2', uuid(121), 'S');
+  const first = addExtract(app, 'E1', uuid(121), 'S');
+  const second = addExtract(app, 'E2', uuid(122), 'E1');
   const originalProcess = app.vault.process.bind(app.vault);
   app.vault.process = async (target, fn) => {
-    if (target.path === source.path) {
-      // Another writer swaps the identity of a not-yet-processed node.
-      const entry = app.vault.entries.get(second.path);
+    if (target.path === second.path) {
+      // Another writer swaps the identity of a not-yet-processed node (E1) while
+      // the deepest node (E2) is being written first.
+      const entry = app.vault.entries.get(first.path);
       entry.content = entry.content.replace(`mf_id: ${uuid(121)}`, `mf_id: ${uuid(129)}`);
       entry.frontmatter = { ...entry.frontmatter, mf_id: uuid(129) };
     }
@@ -309,7 +314,7 @@ test('an identity change between planning and execution blocks that node', async
   };
   const result = await plugin.postponeSubtreeHost(source, 2);
   app.vault.process = originalProcess;
-  assert.equal(result.counts.applied, 1);
+  assert.equal(result.counts.applied, 2, JSON.stringify(result.results));
   assert.equal(result.counts.blocked, 1);
   assert.equal(result.results.find(item => item.status === 'blocked').reason, 'E_TOPIC_IDENTITY_CHANGED');
 });

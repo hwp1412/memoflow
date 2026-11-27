@@ -236,3 +236,95 @@ test('resume reuses the planned event id and reconcile survives a final-save fai
   });
   assert.equal(recovered.batches[0].items[0].state, 'applied', 'reconcile recognises the original identity');
 });
+
+test('grading in unified mode uses an ISO today even with a DD-MM-YYYY setting', async () => {
+  const { plugin, app } = await harness();
+  plugin.settings.misc = { ...(plugin.settings.misc || {}), date_format: 'DD-MM-YYYY' };
+  const file = addTopic(app, 'Sources/G1.md', uuid(41));
+  app.activeFile = file;
+  const result = await plugin.endSession();
+  assert.ok(result, 'grading returned a host outcome');
+  const fm = fmOf(app, file);
+  assert.equal(Number(fm.mf_revision), 1, 'unified ADVANCED applied');
+  assert.ok(fm.mf_last_event_id && fm.mf_last_event_id !== 'null');
+  const ledger = Object.values(plugin.__ledger.store.dump());
+  assert.equal(ledger.length, 1);
+  assert.equal(String(fm.mf_interval_days) === String(fmOf(app, file).mf_interval_days), true);
+});
+
+test('host scheduling actions use ISO today under a DD-MM-YYYY setting', async () => {
+  const { plugin, app } = await harness();
+  plugin.settings.misc = { ...(plugin.settings.misc || {}), date_format: 'DD-MM-YYYY' };
+  const file = addTopic(app, 'Sources/G2.md', uuid(42));
+  app.activeFile = file;
+  await plugin.postponeFile(file, 3);
+  const fm = fmOf(app, file);
+  assert.equal(Number(fm.mf_revision), 1, 'postpone event applied');
+  assert.ok(fm.mf_not_before && fm.mf_not_before !== 'null');
+  assert.equal(Object.values(plugin.__ledger.store.dump()).length, 1);
+});
+
+test('boost refreshes a stale row cache before planning the subtree', async () => {
+  const { plugin, app } = await harness({ quality: 5 });
+  const root = addTopic(app, 'Sources/BS.md', uuid(51));
+  addTopic(app, 'Extracts/BE.md', uuid(52), { type: 'extract', source: '[[BS]]' });
+  app.activeFile = root;
+  plugin.irRowsCache = []; // simulate a stale cache right after file creation
+  plugin.treeIndexCache = null;
+  const outcome = await plugin.boost();
+  assert.ok(outcome && outcome.status !== 'blocked', JSON.stringify(outcome && outcome.status));
+  assert.equal(Number(fmOf(app, root).priority), 45);
+  assert.ok(Object.values(plugin.__ledger.store.dump()).length >= 1);
+});
+
+test('subtree postpone refreshes a stale row cache before planning', async () => {
+  const { plugin, app } = await harness();
+  const root = addTopic(app, 'Sources/PS.md', uuid(53));
+  const child = addTopic(app, 'Extracts/PE.md', uuid(54), { type: 'extract', source: '[[PS]]' });
+  app.activeFile = root;
+  plugin.irRowsCache = []; // stale
+  const outcome = await plugin.postponeSubtreeHost(root, 3);
+  assert.ok(outcome, 'subtree postpone returned an outcome');
+  for (const file of [root, child]) {
+    const fm = fmOf(app, file);
+    assert.ok(fm.mf_not_before && fm.mf_not_before !== 'null', `${file.path} postponed`);
+    assert.equal(Number(fm.mf_revision), 1);
+  }
+});
+
+test('batch planning waits for the IR index and blocks with a clear reason on timeout', async () => {
+  const { plugin, app } = await harness();
+  const root = addTopic(app, 'Sources/IX.md', uuid(61));
+  app.activeFile = root;
+  const realRows = plugin.getIRRows.bind(plugin);
+  const realGet = plugin.getIRRows;
+  // Delayed index: first two reads are empty, then the real rows appear.
+  let reads = 0;
+  plugin.getIRRows = () => { reads += 1; return reads <= 2 ? [] : realRows(); };
+  const delayed = await plugin._mfUs1WaitForIRIndex(root, { attempts: 10, interval: 10 });
+  assert.equal(delayed.found, true, 'retries until the root is indexed');
+  assert.ok(delayed.rows.some(row => row.tfile && row.tfile.path === root.path));
+
+  plugin.getIRRows = () => [];
+  const missing = await plugin._mfUs1WaitForIRIndex(root, { attempts: 3, interval: 10 });
+  assert.equal(missing.found, false);
+  plugin.getIRRows = realGet;
+
+  // Boost with an index that never contains the topic returns a clear blocked outcome.
+  plugin.getIRRows = () => [];
+  const blocked = await plugin.boost();
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(blocked.reason, 'E_INDEX_NOT_READY');
+  assert.equal(blocked.writesPerformed, false);
+  plugin.getIRRows = realGet;
+});
+
+test('a corrupted persisted mode is repaired instead of breaking lifecycle init', async () => {
+  const { plugin } = await harness();
+  plugin.settings.mf_us1_mode = new String('unified');
+  assert.equal(plugin._mfUs1EffectiveMode(), 'unified', 'String object normalised');
+  plugin.settings.mf_us1_mode = { 0: 's', 1: 'h', 2: 'a', 3: 'd', 4: 'o', 5: 'w' };
+  assert.equal(plugin._mfUs1EffectiveMode(), 'shadow', 'char-map object repaired');
+  plugin.settings.mf_us1_mode = 'not-a-mode';
+  assert.equal(plugin._mfUs1EffectiveMode(), 'legacy', 'unknown mode fails closed to legacy');
+});

@@ -33,12 +33,38 @@ function planIsComplete(plan) {
     && (summary.blocked || 0) === 0;
 }
 
-function deriveConditions(evidence = {}, { storageSupportsCas = true } = {}) {
+// A brand-new vault has nothing to migrate. That is a legitimate safe state,
+// not a missing prerequisite: no migration plan/backup may be required. If the
+// legacy topic count is unknown we stay conservative and require a complete
+// plan.
+function migrationRequirement(evidence = {}) {
+  if (evidence.indexComplete === false) {
+    // The vault scan could not prove the absence of legacy topics. Unknown must
+    // fail closed, never be treated as "nothing to migrate".
+    return { required: true, complete: false, notRequired: false, indexUnknown: true, legacyTopicCount: evidence.legacyTopicCount ?? null };
+  }
+  const legacyCount = Number.isInteger(evidence.legacyTopicCount) ? evidence.legacyTopicCount : null;
+  if (legacyCount === 0) {
+    return { required: false, complete: true, notRequired: true, legacyTopicCount: 0 };
+  }
   return {
-    migrationComplete: planIsComplete(evidence.migrationPlan),
+    required: true,
+    complete: planIsComplete(evidence.migrationPlan),
+    notRequired: false,
+    legacyTopicCount: legacyCount,
+  };
+}
+
+function deriveConditions(evidence = {}, { storageSupportsCas = true } = {}) {
+  const migration = migrationRequirement(evidence);
+  return {
+    migrationComplete: migration.complete,
+    migrationNotRequired: migration.notRequired,
     pendingRecovery: Array.isArray(evidence.pendingEvents) && evidence.pendingEvents.length > 0,
     singleWriterReady: evidence.singleWriterReady !== false,
-    backupVerified: evidence.backupVerified === true,
+    // No migration => no migration backup prerequisite; without it the
+    // requirement stays strict.
+    backupVerified: evidence.backupVerified === true || migration.notRequired,
     userConfirmed: evidence.userConfirmed === true,
     storageSupportsCas: storageSupportsCas === true,
   };
@@ -46,7 +72,10 @@ function deriveConditions(evidence = {}, { storageSupportsCas = true } = {}) {
 
 function blockersFor(evidence = {}, conditions) {
   const blockers = [];
-  if (!conditions.migrationComplete) blockers.push('MIGRATION_INCOMPLETE');
+  const migration = migrationRequirement(evidence);
+  if (migration.indexUnknown) blockers.push('MIGRATION_INDEX_UNKNOWN');
+  if (!conditions.migrationComplete && !migration.indexUnknown) blockers.push('MIGRATION_INCOMPLETE');
+  if (!migration.notRequired && !conditions.backupVerified) blockers.push('BACKUP_NOT_VERIFIED');
   if (conditions.pendingRecovery) blockers.push('PENDING_RECOVERY');
   if (evidence.recoveryHealthy === false) blockers.push('RECOVERY_UNHEALTHY');
   if (evidence.batchRecoveryError) blockers.push('BATCH_RECOVERY_UNKNOWN');
@@ -70,6 +99,7 @@ function createActivationCoordinator({ approvalProvider = null } = {}) {
       conditions,
       blockers,
       allowed: blockers.length === 0,
+      migration: migrationRequirement(evidence),
       runtimeConditions: CONDITION_KEYS.reduce((accumulator, key) => {
         accumulator[key] = conditions[key];
         return accumulator;
@@ -113,6 +143,7 @@ function createActivationCoordinator({ approvalProvider = null } = {}) {
 module.exports = {
   CONDITION_KEYS,
   planIsComplete,
+  migrationRequirement,
   deriveConditions,
   blockersFor,
   createActivationCoordinator,

@@ -23,6 +23,13 @@ function hasSyntheticHostAuthorization(token) {
   return Boolean(token && typeof token === 'object' && SYNTHETIC_HOST_AUTHORIZATIONS.has(token));
 }
 
+// Session-level invalidation: deleting the token from the module registry makes
+// ALREADY CAPTURED references fail every subsequent per-write check.
+function revokeSyntheticHostAuthorization(token) {
+  if (!token || typeof token !== 'object') return false;
+  return SYNTHETIC_HOST_AUTHORIZATIONS.delete(token);
+}
+
 function evaluateHostRuntime({ mode = 'legacy', conditions = {}, authorization = null } = {}) {
   const synthetic = hasSyntheticHostAuthorization(authorization);
   const runtimeConditions = {
@@ -233,6 +240,7 @@ function createHostRuntime({ mode = 'legacy', conditions = {}, authorization = n
 module.exports = {
   issueSyntheticHostAuthorization,
   hasSyntheticHostAuthorization,
+  revokeSyntheticHostAuthorization,
   evaluateHostRuntime,
   createHostRuntime,
   blockedTopicsFromLedger,

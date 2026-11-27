@@ -2877,6 +2877,8 @@ class IncrementalReadingPlugin extends Plugin {
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       this.settings[key] = Object.assign({}, DEFAULT_SETTINGS[key], this.settings[key] || {});
     }
+    // Repair any previously mis-serialised mode before anything reads it.
+    this.settings.mf_us1_mode = this._mfUs1NormalizeMode(this.settings.mf_us1_mode);
     this.settings.session.types = { ...(this.settings.session.types || {}) };
     this.settings.session.readPoints = { ...(this.settings.session.readPoints || {}) };
     this.cardDueCache = new Map();
@@ -2900,7 +2902,7 @@ class IncrementalReadingPlugin extends Plugin {
       const { initializeHostLifecycle } = require('./src/integration/host-lifecycle.js');
       this.mfUs1Lifecycle = await initializeHostLifecycle({
         plugin: this,
-        mode: this.settings.mf_us1_mode || 'legacy',
+        mode: this._mfUs1EffectiveMode(),
         conditions: {},
         // Ledger writes share the coordinator queue with settings/session.
         dataStore: this.pluginData.ledgerStore(),
@@ -3045,6 +3047,17 @@ class IncrementalReadingPlugin extends Plugin {
     cmd('current-actions',    'Current element actions…',         () => this.currentElementActions());
     cmd('open-toolkit-view',  'Open Toolkit view…',               () => this.openToolkitView());
     cmd('advanced-tools',     'Advanced tools…',                  () => this.advancedTools());
+    // E2E-only commands: compiled in ONLY for test builds (build flag
+    // `--e2e` defines __MF_E2E_TEST_BUILD__ = true). The production build has
+    // this constant false, so the commands do not exist there.
+    // <MF_E2E_START>
+    // Build strips this marker block in non-e2e builds; `define` also folds it.
+    if (__MF_E2E_TEST_BUILD__ === true) {
+      cmd('e2e-activate-unified', 'E2E: activate Unified (test build)', () => this.mfUs1E2EActivateUnified());
+      cmd('e2e-revoke-unified', 'E2E: revoke Unified authorization (test build)', () => this.mfUs1RevokeUnifiedAuthorization());
+      cmd('e2e-status', 'E2E: activation status (test build)', () => new Notice(this.mfUs1E2EStatusText(), 15000));
+    }
+    // <MF_E2E_END>
     this.app.workspace.onLayoutReady(() => {
       this._refreshExcerptViews();
       const count = this._legacyCardFiles().length;
@@ -3876,7 +3889,7 @@ class IncrementalReadingPlugin extends Plugin {
       file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
       fm = file && this.app.metadataCache ? (this.app.metadataCache.getFileCache(file) || {}).frontmatter : null;
     } catch (error) { file = null; fm = null; }
-    return this._mfUs1EventDescriptor(action, file, fm, this._todayKey ? this._todayKey() : null, payload);
+    return this._mfUs1EventDescriptor(action, file, fm, this._mfUs1IsoToday ? this._mfUs1IsoToday() : null, payload);
   }
 
   _mfUs1HostService() {
@@ -3887,7 +3900,7 @@ class IncrementalReadingPlugin extends Plugin {
       // runtime it points at re-checks its own authorization.
       const transport = this._mfUs1TransportInfo().transport;
       this._mfUs1HostInstance = createHostSchedulerService({
-        getMode: () => (this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy'),
+        getMode: () => this._mfUs1EffectiveMode(),
         unified: typeof transport === 'function'
           ? descriptor => {
             if (this.mfUs1Suspended) {
@@ -3933,8 +3946,27 @@ class IncrementalReadingPlugin extends Plugin {
   // SET_PRIORITY). These are the single authoritative places that build an
   // event descriptor. Every UI surface (menu, reading bar, popover, dashboard)
   // calls them, so no surface can write scheduling fields on its own.
+  // Unified events always use ISO YYYY-MM-DD, independent of the user's
+  // display date format (real-Obsidian E2E found DD-MM-YYYY leaking into the
+  // unified descriptor and failing "explicit valid today").
+  _mfUs1IsoToday() {
+    return dateCore.formatDate(new Date(), 'YYYY-MM-DD');
+  }
+
+  _mfUs1NormalizeMode(value) {
+    let raw = value;
+    if (raw instanceof String) raw = String(raw);
+    if (raw && typeof raw === 'object') {
+      // Repair a char-map object produced by a bad serialisation of a String.
+      const keys = Object.keys(raw).filter(key => /^\d+$/.test(key)).sort((a, b) => Number(a) - Number(b));
+      if (keys.length) raw = keys.map(key => raw[key]).join('');
+    }
+    const mode = typeof raw === 'string' ? raw : '';
+    return ['legacy', 'shadow', 'unified'].includes(mode) ? mode : 'legacy';
+  }
+
   _mfUs1EffectiveMode() {
-    return (this.settings && this.settings.mf_us1_mode) || 'legacy';
+    return this._mfUs1NormalizeMode(this.settings && this.settings.mf_us1_mode);
   }
 
   // Guard for residual direct writers that are not yet routed through the host.
@@ -3952,7 +3984,8 @@ class IncrementalReadingPlugin extends Plugin {
       `批次恢复：${this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && !this.mfUs1BatchRecovery.summary.error ? `检查 ${this.mfUs1BatchRecovery.summary.checked} · 需人工 ${this.mfUs1BatchRecovery.summary.manual}` : (this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error) || '未运行'}`,
       `Shadow 最近差异：${this.mfUs1ShadowLast ? `${this.mfUs1ShadowLast.action} · ${this.mfUs1ShadowLast.changes.length} 项 · ${this.mfUs1ShadowLast.status}` : '无'}`,
       `迁移预检：${this.mfUs1MigrationPreviewCache ? `共 ${this.mfUs1MigrationPreviewCache.summary.total} · 可迁移 ${this.mfUs1MigrationPreviewCache.summary.migratable} · 冲突 ${this.mfUs1MigrationPreviewCache.summary.conflict}` : '未运行'}`,
-      `激活状态：${(() => { try { const d = this.mfUs1ActivationDiagnostics(); return `transport=${d.transportSource} · runtime=${d.runtime.present ? (d.runtime.writeEnabled ? '已授权' : '未授权') : '无'} · blockers=${d.activationBlockers.join(',') || '无'}`; } catch (e) { return '未初始化'; } })()}`,
+      `迁移需求：${(() => { try { const s = this.mfUs1ActivationStatus(); return s.evaluation.migration && s.evaluation.migration.notRequired ? '全新库，无需迁移' : (this.mfUs1MigrationPreviewCache ? '需迁移（已预览）' : '需迁移（未预览）'); } catch (e) { return '未初始化'; } })()}`,
+      `激活状态：${(() => { try { const d = this.mfUs1ActivationDiagnostics(); const auth = d.authorized ? '已授权' : (d.suspended ? '已撤销/暂停' : '未授权'); return `授权=${auth} · transport=${d.transportSource} · runtime=${d.runtime.present ? (d.runtime.writeEnabled ? '可写' : '锁定') : '无'} · blockers=${d.activationBlockers.join(',') || '无'}`; } catch (e) { return '未初始化'; } })()}`,
     ];
     new Notice(lines.join('\n'), 12000);
     return lines.join('\n');
@@ -3989,7 +4022,7 @@ class IncrementalReadingPlugin extends Plugin {
       type: 'REACTIVATE',
       file: active,
       fm,
-      today: this._todayKey(),
+      today: this._mfUs1IsoToday(),
       payload: { idealDue },
       legacy,
     });
@@ -4018,7 +4051,7 @@ class IncrementalReadingPlugin extends Plugin {
         type: 'COMPLETE',
         file,
         fm: getFm(this.app, file),
-        today: this._todayKey(),
+        today: this._mfUs1IsoToday(),
       });
       if (['applied', 'duplicate', 'legacy', 'no-op'].includes(result.status)) applied += 1;
       else problems.push(`${file.basename}: ${result.status}${result.reason ? `/${result.reason}` : ''}`);
@@ -4039,7 +4072,7 @@ class IncrementalReadingPlugin extends Plugin {
       type: 'DISMISS',
       file,
       fm,
-      today: this._todayKey(),
+      today: this._mfUs1IsoToday(),
     });
     this._mfUs1ShowActionResult(result);
     return ['applied', 'duplicate', 'legacy'].includes(result.status);
@@ -4086,7 +4119,12 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async boostUnified() {
-    this._mfUs1RefreshRows();
+    const boostActive = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
+    const boostIndex = await this._mfUs1WaitForIRIndex(boostActive);
+    if (!boostIndex.found) {
+      new Notice('Boost 未执行：增量阅读索引尚未就绪（未读到当前 Topic），请稍后重试。', 10000);
+      return { status: 'blocked', reason: 'E_INDEX_NOT_READY', writesPerformed: false };
+    }
     const { planBoostBatch, applyBoostBatch, describeBoostOutcome } = require('./src/integration/boost-batch-host.js');
     if (!this.mfUs1BatchStore) { new Notice('MF-US-1 Boost 尚未初始化（缺少批次存储）。', 9000); return null; }
     const r = await resolveIRFromActive(this.app, this.settings, { allowCard: false, allowPdfFallback: true });
@@ -4116,7 +4154,7 @@ class IncrementalReadingPlugin extends Plugin {
           revision: projected.revision,
         };
       });
-      batch = planBoostBatch({ rows: items, rootTopicId: r.fm.mf_id, delta, today: this._todayKey() });
+      batch = planBoostBatch({ rows: items, rootTopicId: r.fm.mf_id, delta, today: this._mfUs1IsoToday() });
     } catch (error) {
       new Notice(`Boost 未执行：${error.message || error.code || '计划失败'}`, 9000);
       return null;
@@ -4126,7 +4164,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (!ok) return null;
     const rowsByPath = new Map(this.getIRRows().map(row => [row.tfile.path, row]));
     const eventById = new Map((batch.events || []).map(event => [event.topicId, event]));
-    const today = this._todayKey();
+    const today = this._mfUs1IsoTodayFrom(this._todayKey());
     const outcome = await applyBoostBatch({
       batch,
       getPriority: async node => Number((rowsByPath.get(node.path) || {}).fm?.priority) || 50,
@@ -4170,6 +4208,36 @@ class IncrementalReadingPlugin extends Plugin {
     // row would otherwise report the pre-write mf_not_before / priority.
     this.irFilesCache = null;
     this.irRowsCache = null;
+    this.treeIndexCache = null;
+    this.duePoolCache = null;
+  }
+
+  // Real Obsidian indexes new files asynchronously; getIRRows() can stay empty
+  // for a moment after vault.create(), so batch planning waits for the IR
+  // collection to actually contain the root instead of silently planning zero.
+  async _mfUs1WaitForIRIndex(file, { attempts = 30, interval = 150 } = {}) {
+    const targetPath = file && typeof file.path === 'string' ? file.path : null;
+    if (!targetPath) {
+      this._mfUs1RefreshRows();
+      return { found: false, rows: this.getIRRows() };
+    }
+    let rows = [];
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      this._mfUs1RefreshRows();
+      rows = this.getIRRows();
+      if (rows.some(row => row.tfile && row.tfile.path === targetPath)) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        this._mfUs1RefreshRows();
+        rows = this.getIRRows();
+        if (rows.some(row => row.tfile && row.tfile.path === targetPath)) return { found: true, rows };
+      }
+      await new Promise(resolve => setTimeout(resolve, interval));
+    }
+    return { found: false, rows };
+  }
+
+  async _mfUs1EnsureTopicIndexed(file) {
+    await this._mfUs1WaitForIRIndex(file);
   }
 
   // Read-only Shadow comparison: Legacy remains the only writer. This computes
@@ -4252,7 +4320,7 @@ class IncrementalReadingPlugin extends Plugin {
     }
     const chosenWindow = windowDays || await pickFromList(this.app, ['3 days', '7 days', '14 days', '30 days'], [3, 7, 14, 30], 'Mercy window');
     if (!chosenWindow) return null;
-    const today = this._todayKey();
+    const today = this._mfUs1IsoTodayFrom(this._todayKey());
     const rows = this.getIRRows();
     const projections = rows.map(row => projectTopic(row, { mode: this._mfUs1EffectiveMode() }));
     const topics = projections
@@ -4374,7 +4442,7 @@ class IncrementalReadingPlugin extends Plugin {
 
   async _mfUs1RebuildAsyncLifecycle({ storage = null, mode = null, conditions = {}, authorization = null, capability = null } = {}) {
     const { initializeAsyncHostLifecycle } = require('./src/integration/host-lifecycle.js');
-    const effectiveMode = mode || (this.settings && this.settings.mf_us1_mode) || 'legacy';
+    const effectiveMode = mode || this._mfUs1EffectiveMode();
     const activeStorage = storage || this.mfUs1HostStorage;
     this.mfUs1AsyncLifecycle = await initializeAsyncHostLifecycle({
       plugin: this,
@@ -4438,9 +4506,15 @@ class IncrementalReadingPlugin extends Plugin {
       const { createActivationCoordinator } = require('./src/integration/activation-coordinator.js');
       this.mfUs1Activation = createActivationCoordinator({
         // Production passes no approval provider: activation is always denied.
-        approvalProvider: evaluation => (typeof this.__mfUs1ActivationApproval === 'function'
-          ? this.__mfUs1ActivationApproval(evaluation) === true
-          : false),
+        approvalProvider: evaluation => {
+          if (typeof this.__mfUs1ActivationApproval === 'function' && this.__mfUs1ActivationApproval(evaluation) === true) {
+            return true;
+          }
+          // Test build only: the E2E activation command arms this flag for a
+          // single activation attempt. Production builds cannot reach it.
+          const e2eBuild = typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true;
+          return e2eBuild && this.__mfUs1E2EApprovalArmed === true;
+        },
       });
     }
     return this.mfUs1Activation;
@@ -4448,14 +4522,47 @@ class IncrementalReadingPlugin extends Plugin {
 
   _mfUs1ActivationEvidence() {
     const recovery = this.mfUs1Recovery || {};
-    const rows = this.getIRRows ? this.getIRRows() : [];
+    // A stale/empty IR cache must never be read as "no legacy topics". Scan the
+    // configured IR folders directly (never the whole vault) via metadataCache;
+    // files whose metadata is not ready make the scan incomplete and the
+    // activation fails closed.
+    const folders = [this.sourcesFolder(), this.extractsFolder(), this.cardsFolder()]
+      .filter(folder => typeof folder === 'string' && folder);
+    const irFiles = [];
+    let scanComplete = Boolean(this.app && this.app.metadataCache && typeof this.app.metadataCache.getFileCache === 'function');
+    const collect = node => {
+      if (!node) return;
+      if (node.children) {
+        for (const child of node.children) collect(child);
+        return;
+      }
+      if (node.extension === 'md') irFiles.push(node);
+    };
+    for (const folder of folders) {
+      try {
+        collect(this.app.vault.getAbstractFileByPath(folder));
+      } catch (error) {
+        scanComplete = false;
+      }
+    }
     const counts = new Map();
-    for (const row of rows) {
-      if (row.type !== undefined) continue;
-      const fm = row.fm || {};
-      if (fm.type === 'card') continue;
+    let topicCount = 0;
+    let legacyTopicCount = 0;
+    let unindexedFiles = 0;
+    for (const file of irFiles) {
+      const cache = scanComplete ? this.app.metadataCache.getFileCache(file) : null;
+      const fm = cache && cache.frontmatter;
+      if (!fm) {
+        unindexedFiles += 1;
+        continue;
+      }
+      if (fm.type !== 'source' && fm.type !== 'extract') continue;
+      topicCount += 1;
       const id = fm.mf_id;
-      if (typeof id !== 'string' || !id) continue;
+      if (typeof id !== 'string' || !id) {
+        legacyTopicCount += 1;
+        continue;
+      }
       const key = id.toLowerCase();
       counts.set(key, (counts.get(key) || 0) + 1);
     }
@@ -4469,6 +4576,10 @@ class IncrementalReadingPlugin extends Plugin {
         ? this.mfUs1BatchRecovery.summary.error
         : null,
       duplicateIds,
+      topicCount,
+      legacyTopicCount,
+      indexComplete: scanComplete && unindexedFiles === 0,
+      unindexedFiles,
       backupVerified: this.__mfUs1BackupVerified === true,
       userConfirmed: this.__mfUs1ActivationConfirmed === true,
       singleWriterReady: true,
@@ -4522,7 +4633,52 @@ class IncrementalReadingPlugin extends Plugin {
       batchRecoveryError: status.evidence.batchRecoveryError,
       duplicateIds: status.evidence.duplicateIds,
       blockedTopicIds: status.evidence.blockedTopicIds,
+      topicCount: status.evidence.topicCount,
+      legacyTopicCount: status.evidence.legacyTopicCount,
+      migrationNotRequired: Boolean(status.evaluation.migration && status.evaluation.migration.notRequired),
     };
+  }
+
+  // ---------------------------------------------------------------------
+  // E2E test-build activation entry (never present in production builds)
+  // ---------------------------------------------------------------------
+  mfUs1E2EStatusText() {
+    try {
+      const status = this.mfUs1ActivationStatus();
+      return [
+        `E2E 构建：${typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true ? '是' : '否'}`,
+        `模式：${this._mfUs1EffectiveMode()} · 已授权：${status.authorized ? '是' : '否'} · 暂停：${status.suspended ? '是' : '否'}`,
+        `Topic 数：${status.evidence.topicCount} · 旧格式：${status.evidence.legacyTopicCount} · 迁移：${status.evaluation.migration && status.evaluation.migration.notRequired ? '不需要' : '需要'}`,
+        `阻断项：${status.evaluation.blockers.join('、') || '无'}`,
+      ].join('\n');
+    } catch (error) {
+      return `诊断失败：${(error && error.message) || error}`;
+    }
+  }
+
+  async mfUs1E2EActivateUnified() {
+    if (!(typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true)) {
+      new Notice('E2E 激活命令仅存在于测试构建中。', 12000);
+      return { ok: false, reason: 'E_E2E_NOT_TEST_BUILD' };
+    }
+    const evidence = this._mfUs1ActivationEvidence();
+    const needsMigration = (evidence.legacyTopicCount || 0) > 0;
+    if (needsMigration) {
+      const backedUp = await confirmDialog(this.app, 'E2E：Vault 备份已确认？', '存在旧格式 Topic，需要迁移计划与已验证备份。仅在已备份的一次性测试 Vault 中继续。');
+      if (!backedUp) { new Notice('已取消：未确认备份。'); return { ok: false, reason: 'E_BACKUP_NOT_CONFIRMED' }; }
+      this.__mfUs1BackupVerified = true;
+    }
+    const ok = await confirmDialog(this.app, 'E2E：激活 Unified（测试构建）', '将执行全部真实激活门禁（恢复/批次/身份/CAS/用户确认）并签发会话级测试授权。仅在一次性测试 Vault 中使用。继续？');
+    if (!ok) { new Notice('已取消激活。'); return { ok: false, reason: 'E_CANCELLED' }; }
+    this.__mfUs1ActivationConfirmed = true;
+    this.__mfUs1E2EApprovalArmed = true;
+    try {
+      const result = await this.mfUs1ActivateUnified();
+      this.mfUs1E2ELastResult = result;
+      return result;
+    } finally {
+      this.__mfUs1E2EApprovalArmed = false;
+    }
   }
 
   async mfUs1ActivateUnified() {
@@ -4534,16 +4690,87 @@ class IncrementalReadingPlugin extends Plugin {
       return result;
     }
     const storage = this.mfUs1HostStorage || this._mfUs1EnsureStorageAndStores();
-    const { issueSyntheticUnifiedCapability } = require('./src/scheduling/index.js');
-    await this._mfUs1RebuildAsyncLifecycle({
-      storage,
-      mode: 'unified',
-      conditions: result.session.conditions,
-      authorization: result.authorization,
-      // Synthetic capability for the isolated harness only; production never
-      // reaches this branch because it has no approval provider.
-      capability: issueSyntheticUnifiedCapability(),
-    });
+    let creationAuthorization = null;
+    let resumeAuthorization = null;
+    let activationCapability = null;
+    const hadUnifiedAuthority = (Number(evidence.topicCount) - Number(evidence.legacyTopicCount || 0)) > 0;
+    try {
+      const { issueSyntheticUnifiedCapability } = require('./src/scheduling/index.js');
+      const { issueSyntheticCreationAuthorization } = require('./src/integration/topic-creation-host.js');
+      const { issueSyntheticBatchResumeAuthorization } = require('./src/integration/batch-resume.js');
+      const capability = issueSyntheticUnifiedCapability();
+      activationCapability = capability;
+      creationAuthorization = issueSyntheticCreationAuthorization();
+      resumeAuthorization = issueSyntheticBatchResumeAuthorization();
+      if (!capability || !creationAuthorization || !resumeAuthorization) {
+        throw Object.assign(new Error('activation capabilities were not all issued'), { code: 'E_ACTIVATION_CAPABILITY_INCOMPLETE' });
+      }
+      await this._mfUs1RebuildAsyncLifecycle({
+        storage,
+        mode: 'unified',
+        conditions: result.session.conditions,
+        authorization: result.authorization,
+        capability,
+      });
+      if (this.mfUs1HostStorage) {
+        const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
+        this.mfUs1AdminWriter = createProtectedAdminWriter({
+          storage: this.mfUs1HostStorage,
+          authorization: result.authorization,
+        });
+      }
+    } catch (error) {
+      // Never keep a partially authorized activation: revoke the session and
+      // drop every capability. If the vault already has Unified authority, do
+      // NOT fall back to legacy scheduling writes; stay paused and keep the
+      // scene instead.
+      coordinator.revoke();
+      this._mfUs1RevokeSessionCapabilities();
+      this.__mfUs1E2EApprovalArmed = false;
+      this._mfUs1HostInstance = null;
+      if (hadUnifiedAuthority) {
+        this.mfUs1Suspended = true;
+        this.settings.mf_us1_mode = 'unified';
+        this.__mfUs1SuspendedNotified = null;
+        try {
+          await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'unified', conditions: {}, authorization: null });
+        } catch (rebuildError) {
+          console.error('[IR] MF-US-1 could not rebuild a locked unified lifecycle', rebuildError);
+        }
+        if (typeof this.saveSettings === 'function') await this.saveSettings();
+        new Notice('Unified 激活失败：授权能力未全部就绪；已保持暂停并保留现场，Legacy 调度写入保持阻断。', 16000);
+        return {
+          ok: false,
+          reason: 'E_ACTIVATION_CAPABILITY_INCOMPLETE',
+          blockers: ['E_ACTIVATION_CAPABILITY_INCOMPLETE'],
+          suspended: true,
+          detail: String((error && (error.message || error)) || 'unknown'),
+        };
+      }
+      this.mfUs1Suspended = false;
+      this.settings.mf_us1_mode = 'legacy';
+      try {
+        await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'legacy', conditions: {}, authorization: null });
+      } catch (rebuildError) {
+        console.error('[IR] MF-US-1 could not roll back to a legacy lifecycle', rebuildError);
+      }
+      if (typeof this.saveSettings === 'function') await this.saveSettings();
+      new Notice(`Unified 激活失败：所需授权能力未全部就绪（${(error && (error.code || error.message)) || 'unknown'}），本次激活已撤销。`, 15000);
+      return {
+        ok: false,
+        reason: 'E_ACTIVATION_CAPABILITY_INCOMPLETE',
+        blockers: ['E_ACTIVATION_CAPABILITY_INCOMPLETE'],
+        detail: String((error && (error.message || error)) || 'unknown'),
+      };
+    }
+    this.__mfUs1CreationAuthorization = creationAuthorization;
+    this.__mfUs1ResumeAuthorization = resumeAuthorization;
+    this.mfUs1SessionCapabilities = {
+      host: result.authorization,
+      creation: creationAuthorization,
+      resume: resumeAuthorization,
+      capability: activationCapability,
+    };
     this.settings.mf_us1_mode = 'unified';
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
@@ -4566,12 +4793,40 @@ class IncrementalReadingPlugin extends Plugin {
     };
   }
 
+  _mfUs1RevokeSessionCapabilities() {
+    const session = this.mfUs1SessionCapabilities || null;
+    this.mfUs1SessionCapabilities = null;
+    this.__mfUs1CreationAuthorization = null;
+    this.__mfUs1ResumeAuthorization = null;
+    if (this.mfUs1HostStorage) {
+      const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
+      this.mfUs1AdminWriter = createProtectedAdminWriter({ storage: this.mfUs1HostStorage, authorization: null });
+    } else {
+      this.mfUs1AdminWriter = null;
+    }
+    if (!session) return { revoked: false };
+    try {
+      const { revokeSyntheticHostAuthorization } = require('./src/integration/host-runtime.js');
+      const { revokeSyntheticCreationAuthorization } = require('./src/integration/topic-creation-host.js');
+      const { revokeSyntheticBatchResumeAuthorization } = require('./src/integration/batch-resume.js');
+      const { revokeSyntheticUnifiedCapability } = require('./src/scheduling/index.js');
+      revokeSyntheticHostAuthorization(session.host);
+      revokeSyntheticCreationAuthorization(session.creation);
+      revokeSyntheticBatchResumeAuthorization(session.resume);
+      revokeSyntheticUnifiedCapability(session.capability);
+    } catch (error) {
+      console.error('[IR] MF-US-1 could not revoke a session capability', error);
+    }
+    return { revoked: true };
+  }
+
   // Emergency action #1: revoke the capability immediately. This only touches
   // in-memory authorization state: it never writes a Topic, the Ledger or a
   // Batch record.
   async mfUs1RevokeUnifiedAuthorization() {
     const coordinator = this._mfUs1ActivationCoordinator();
     const revoked = coordinator.revoke();
+    this._mfUs1RevokeSessionCapabilities();
     this.mfUs1Suspended = true;
     this._mfUs1HostInstance = null;
     new Notice('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
@@ -4596,6 +4851,7 @@ class IncrementalReadingPlugin extends Plugin {
     }
     const coordinator = this._mfUs1ActivationCoordinator();
     coordinator.revoke();
+    this._mfUs1RevokeSessionCapabilities();
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
     const storage = this.mfUs1HostStorage;
@@ -4715,8 +4971,8 @@ class IncrementalReadingPlugin extends Plugin {
               eventId: item.eventId,
               topicId: item.topicId,
               expectedRevision: Number.isInteger(item.expectedRevision) ? item.expectedRevision : null,
-              today: this._todayKey(),
-              calendarDate: this._todayKey(),
+              today: this._mfUs1IsoToday(),
+              calendarDate: this._mfUs1IsoToday(),
               payload: { priority: item.priority },
               path: row.tfile.path,
             });
@@ -4868,7 +5124,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
-      built.type, file, target.fm, today || this._todayKey(), built.payload
+      built.type, file, target.fm, today || this._mfUs1IsoToday(), built.payload
     );
     // Optional write-time preconditions (e.g. subtree membership) are carried
     // next to the event, not inside its validated payload.
@@ -4894,7 +5150,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
-      built.type, file, target.fm, this._todayKey(), built.payload
+      built.type, file, target.fm, this._mfUs1IsoToday(), built.payload
     );
     const legacyWrite = typeof legacy === 'function'
       ? legacy
@@ -4922,7 +5178,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { status: 'failed', message: built.message, reason: built.code };
     }
     const descriptor = this._mfUs1EventDescriptor(
-      built.type, file, target.fm, this._todayKey(), built.payload
+      built.type, file, target.fm, this._mfUs1IsoToday(), built.payload
     );
     const legacyWrite = typeof legacy === 'function'
       ? legacy
@@ -4998,7 +5254,7 @@ class IncrementalReadingPlugin extends Plugin {
       return { handled: false };
     }
     const { planTopicCreation, composeCreationContent, executeTopicCreation } = require('./src/integration/topic-creation-host.js');
-    const today = typeof this._todayKey === 'function' ? this._todayKey() : todayDateString(this.settings);
+    const today = typeof this._mfUs1IsoToday === 'function' ? this._mfUs1IsoToday() : todayDateString(this.settings);
 
     let parentId = null;
     let rootId = null;
@@ -5053,7 +5309,7 @@ class IncrementalReadingPlugin extends Plugin {
       topics,
       today,
       queueConfig: this.settings && this.settings.queueConfig ? this.settings.queueConfig : undefined,
-      mode: { mode: this.settings && this.settings.mf_us1_mode ? this.settings.mf_us1_mode : 'legacy' },
+      mode: { mode: this._mfUs1EffectiveMode() },
       dateFormat,
     });
   }
@@ -5070,9 +5326,19 @@ class IncrementalReadingPlugin extends Plugin {
     return { status: outcome.status || 'failed', reason: outcome.reason || outcome.status };
   }
 
+  _mfUs1IsoTodayFrom(value) {
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const parsed = value ? dateCore.parseDateExact(value, configuredDateFormat(this.settings)) : null;
+    return parsed ? dateCore.formatDate(parsed, 'YYYY-MM-DD') : this._mfUs1IsoToday();
+  }
+
   async _gradeTopic(file, fm, today) {
+    // Unified events require ISO `today` (MF-US-1 spec); the legacy path still
+    // needs the user-configured display date. `today` may arrive in display
+    // format from endSession (real-Obsidian E2E caught this for DD-MM-YYYY).
+    const unifiedToday = this._mfUs1IsoTodayFrom(today);
     return this._mfUs1RunLegacy(
-      this._mfUs1EventDescriptor('ADVANCED', file, fm, today),
+      this._mfUs1EventDescriptor('ADVANCED', file, fm, unifiedToday),
       () => this._gradeTopicLegacy(file, fm, today)
     );
   }
@@ -5962,8 +6228,13 @@ class IncrementalReadingPlugin extends Plugin {
       new Notice('子树延期未执行：根节点缺少持久 mf_id（不做隐式迁移）。', 10000);
       return { status: 'blocked', reason: 'E_ROOT_ID_REQUIRED' };
     }
+    const rootIndex = await this._mfUs1WaitForIRIndex(rootFile);
+    if (!rootIndex.found) {
+      new Notice('子树延期未执行：增量阅读索引尚未就绪，请稍后重试。', 10000);
+      return { status: 'blocked', reason: 'E_INDEX_NOT_READY', writesPerformed: false };
+    }
     // One date for the whole batch, even if the clock crosses midnight.
-    const today = this._todayKey();
+    const today = this._mfUs1IsoTodayFrom(this._todayKey());
     let subtree = null;
     try {
       subtree = walkSubtree(this.app, this.settings, rootFile.basename, rootFile.path, {
@@ -5974,8 +6245,40 @@ class IncrementalReadingPlugin extends Plugin {
       new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
       return { status: 'refused', reason: error.code || 'SUBTREE_RELATION' };
     }
-    const nodes = subtree.map(page => {
-      const nodeFm = page.fm || {};
+    // Children must be written before their parents: a child's CAS verifies the
+    // parent/source hash, and postponing the parent first invalidates that hash
+    // (real-Obsidian E2E: root applied, children E_SUBTREE_CHANGED). Compute the
+    // depth from mf_parent_id and write the deepest nodes first.
+    const decorated = (subtree || []).map(page => ({ page, nodeFm: page.fm || {} }));
+    const byTopicId = new Map();
+    const byBasename = new Map();
+    for (const item of decorated) {
+      const id = item.nodeFm.mf_id;
+      if (typeof id === 'string' && id) byTopicId.set(id.toLowerCase(), item);
+      if (item.page && item.page.tfile) byBasename.set(item.page.tfile.basename.toLowerCase(), item);
+    }
+    const parentOf = item => {
+      const mfParent = typeof item.nodeFm.mf_parent_id === 'string' ? item.nodeFm.mf_parent_id.toLowerCase() : null;
+      if (mfParent && byTopicId.has(mfParent)) return byTopicId.get(mfParent);
+      const raw = String(item.nodeFm.parent || item.nodeFm.source || '');
+      const name = raw.replace(/^\[\[/, '').replace(/\]\]$/, '').split('|')[0].trim().toLowerCase();
+      return name ? (byBasename.get(name) || null) : null;
+    };
+    const rootKey = String(fm.mf_id).toLowerCase();
+    const depthOf = (item, seen = new Set()) => {
+      const id = typeof item.nodeFm.mf_id === 'string' ? item.nodeFm.mf_id.toLowerCase() : null;
+      if (!id || id === rootKey) return 0;
+      if (seen.has(id)) return 0;
+      seen.add(id);
+      const parent = parentOf(item);
+      return parent && parent !== item ? 1 + depthOf(parent, seen) : 0;
+    };
+    let maxDepth = 0;
+    for (const item of decorated) item.depth = depthOf(item);
+    for (const item of decorated) maxDepth = Math.max(maxDepth, item.depth);
+    const nodes = decorated.map(item => {
+      const page = item.page;
+      const nodeFm = item.nodeFm;
       const topicId = typeof nodeFm.mf_id === 'string' && nodeFm.mf_id ? nodeFm.mf_id : null;
       return {
         path: page.tfile.path,
@@ -5985,6 +6288,7 @@ class IncrementalReadingPlugin extends Plugin {
         type: nodeFm.type,
         status: nodeFm.status,
         relationKey: `${nodeFm.parent ?? ''}|${nodeFm.source ?? ''}`,
+        order: maxDepth - item.depth,
       };
     });
     let plan;
@@ -5993,6 +6297,14 @@ class IncrementalReadingPlugin extends Plugin {
     } catch (error) {
       new Notice(`Subtree postpone refused before any write: ${error.message || 'unsafe subtree'}`, 10000);
       return { status: 'refused', reason: error.code || 'E_SUBTREE_PLAN' };
+    }
+    if (typeof __MF_E2E_TEST_BUILD__ !== 'undefined' && __MF_E2E_TEST_BUILD__ === true) {
+      // E2E-only diagnostic: expose the planned write order so a real-device run
+      // can prove whether the deepest-first ordering reached the runner.
+      this.mfUs1LastSubtreePlan = {
+        nodes: (plan.nodes || []).map(node => ({ basename: node.basename, topicId: node.topicId, order: node.order })),
+        skipped: (plan.skipped || []).map(node => node.basename),
+      };
     }
     const outcome = await runSubtreePostpone({
       plan,

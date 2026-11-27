@@ -20,7 +20,41 @@ const COMPLETE_EVIDENCE = {
   duplicateIds: [],
   backupVerified: true,
   userConfirmed: true,
+  // Mixed vault: two legacy topics require a complete migration plan.
+  legacyTopicCount: 2,
+  indexComplete: true,
 };
+
+test('a brand-new empty vault needs no migration plan or backup', () => {
+  const coordinator = createActivationCoordinator({ approvalProvider: () => true });
+  const empty = {
+    legacyTopicCount: 0,
+    topicCount: 0,
+    indexComplete: true,
+    pendingEvents: [],
+    recoveryHealthy: true,
+    blockedTopicIds: [],
+    batchRecoveryError: null,
+    duplicateIds: [],
+    backupVerified: false,
+    userConfirmed: true,
+  };
+  const evaluation = coordinator.evaluate(empty);
+  assert.equal(evaluation.migration.notRequired, true);
+  assert.equal(evaluation.allowed, true);
+  assert.equal(coordinator.authorize(empty).ok, true);
+  // The other safety gates still apply to an empty vault.
+  assert.ok(coordinator.evaluate({ ...empty, userConfirmed: false }).blockers.includes('USER_CONFIRMATION_REQUIRED'));
+  assert.ok(coordinator.evaluate({ ...empty, pendingEvents: ['x'] }).blockers.includes('PENDING_RECOVERY'));
+  assert.ok(coordinator.evaluate({ ...empty, recoveryHealthy: false }).blockers.includes('RECOVERY_UNHEALTHY'));
+  assert.ok(coordinator.evaluate({ ...empty, duplicateIds: ['id'] }).blockers.includes('TOPIC_ID_CONFLICT'));
+});
+
+test('an unknown legacy count stays conservative about migration', () => {
+  const coordinator = createActivationCoordinator({ approvalProvider: () => true });
+  const unknown = { ...COMPLETE_EVIDENCE, legacyTopicCount: undefined, migrationPlan: null };
+  assert.ok(coordinator.evaluate(unknown).blockers.includes('MIGRATION_INCOMPLETE'));
+});
 
 test('activation is denied without every evidence condition', () => {
   const coordinator = createActivationCoordinator({ approvalProvider: () => true });
@@ -241,4 +275,163 @@ test('the mode menu cannot bypass approval to issue synthetic capabilities', asy
   const menuBody = source.slice(source.indexOf('async mfUs1ModeMenu()'), source.indexOf('// G3: synthetic migration drill'));
   assert.equal(/issueSyntheticUnifiedCapability|issueSyntheticHostAuthorization/.test(menuBody), false);
   assert.equal(/__mfUs1ActivationApproval\s*=/.test(menuBody), false, 'menu never sets the approval provider itself');
+});
+
+
+test('an empty vault can activate without a migration preview or backup', async () => {
+  const { plugin } = setupPlugin();
+  plugin.mfUs1MigrationPreviewCache = null;
+  plugin.__mfUs1BackupVerified = false;
+  plugin.__mfUs1ActivationApproval = () => true;
+  const result = await plugin.mfUs1ActivateUnified();
+  assert.equal(result.ok, true, JSON.stringify(result.blockers || []));
+  const diagnostics = plugin.mfUs1ActivationDiagnostics();
+  assert.equal(diagnostics.legacyTopicCount, 0);
+  assert.equal(diagnostics.migrationNotRequired, true);
+  assert.equal(diagnostics.authorized, true);
+});
+
+test('a vault with legacy topics still requires a completed migration plan', async () => {
+  const { plugin, app } = setupPlugin();
+  plugin.mfUs1MigrationPreviewCache = null;
+  plugin.__mfUs1ActivationApproval = () => true;
+  makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, interval: 8, next_review: '2026-11-20' }, '# legacy\n');
+  const result = await plugin.mfUs1ActivateUnified();
+  assert.equal(result.ok, false);
+  assert.ok(result.blockers.includes('MIGRATION_INCOMPLETE'));
+  assert.equal(plugin.mfUs1ActivationDiagnostics().legacyTopicCount, 1);
+});
+
+test('activation grants creation and resume capabilities, revocation clears them', async () => {
+  const { plugin } = setupPlugin();
+  plugin.__mfUs1ActivationApproval = () => true;
+  await plugin.mfUs1ActivateUnified();
+  assert.ok(plugin.__mfUs1CreationAuthorization, 'creation capability issued on activation');
+  assert.ok(plugin.__mfUs1ResumeAuthorization, 'resume capability issued on activation');
+  await plugin.mfUs1RevokeUnifiedAuthorization();
+  assert.equal(plugin.__mfUs1CreationAuthorization, null);
+  assert.equal(plugin.__mfUs1ResumeAuthorization, null);
+});
+
+
+test('an incomplete vault index can never be read as "nothing to migrate"', () => {
+  const coordinator = createActivationCoordinator({ approvalProvider: () => true });
+  const unknownIndex = { ...COMPLETE_EVIDENCE, migrationPlan: null, legacyTopicCount: 0, indexComplete: false };
+  const evaluation = coordinator.evaluate(unknownIndex);
+  assert.ok(evaluation.blockers.includes('MIGRATION_INDEX_UNKNOWN'));
+  assert.equal(evaluation.allowed, false);
+  assert.equal(coordinator.authorize(unknownIndex).ok, false);
+});
+
+test('a vault with a real legacy topic cannot activate when getIRRows is empty', async () => {
+  const { plugin, app } = setupPlugin();
+  plugin.mfUs1MigrationPreviewCache = null;
+  plugin.__mfUs1ActivationApproval = () => true;
+  // Legacy topic exists on disk but the IR cache is (wrongly) empty.
+  makeFile(app, 'Sources/LegacyHidden.md', { type: 'source', status: 'active', priority: 50, interval: 8, next_review: '2026-11-20' }, '# legacy\n');
+  plugin.getIRRows = () => [];
+  const result = await plugin.mfUs1ActivateUnified();
+  assert.equal(result.ok, false);
+  assert.ok(result.blockers.includes('MIGRATION_INCOMPLETE'), JSON.stringify(result.blockers));
+  assert.notEqual(plugin.settings.mf_us1_mode, 'unified');
+});
+
+test('partial capability issuance aborts activation and leaves no authorization', async () => {
+  const { plugin } = setupPlugin();
+  plugin.__mfUs1ActivationApproval = () => true;
+  const creationHost = require('../src/integration/topic-creation-host.js');
+  const original = creationHost.issueSyntheticCreationAuthorization;
+  creationHost.issueSyntheticCreationAuthorization = () => { throw new Error('issuance failed'); };
+  try {
+    const result = await plugin.mfUs1ActivateUnified();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'E_ACTIVATION_CAPABILITY_INCOMPLETE');
+    assert.equal(plugin.settings.mf_us1_mode, 'legacy');
+    assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, false);
+    assert.equal(plugin.__mfUs1CreationAuthorization, null);
+    assert.equal(plugin.__mfUs1ResumeAuthorization, null);
+  } finally {
+    creationHost.issueSyntheticCreationAuthorization = original;
+  }
+});
+
+test('revocation invalidates captured writer/token references, not only fields', async () => {
+  const { plugin, app } = setupPlugin();
+  plugin.__mfUs1ActivationApproval = () => true;
+  const topic = makeFile(app, 'Sources/W.md', {
+    type: 'source', status: 'active', priority: 50, interval: 8,
+    mf_id: uuid(77), mf_revision: 0, mf_scheduler_version: 1,
+    mf_ideal_due: '2026-11-20', mf_not_before: 'null', mf_interval_days: 8, mf_last_event_id: 'null',
+  }, '# W\n');
+  const activated = await plugin.mfUs1ActivateUnified();
+  assert.equal(activated.ok, true);
+
+  // Capture the OLD references before revoking.
+  const oldWriter = plugin.mfUs1AdminWriter;
+  const oldCreation = plugin.__mfUs1CreationAuthorization;
+  const oldResume = plugin.__mfUs1ResumeAuthorization;
+  const session = plugin.mfUs1SessionCapabilities;
+  assert.ok(oldWriter && oldCreation && oldResume && session && session.host);
+
+  await plugin.mfUs1RevokeUnifiedAuthorization();
+
+  const { hasSyntheticHostAuthorization } = require('../src/integration/host-runtime.js');
+  const { hasSyntheticCreationAuthorization } = require('../src/integration/topic-creation-host.js');
+  const { hasBatchResumeAuthorization, resumeBatch } = require('../src/integration/batch-resume.js');
+  assert.equal(hasSyntheticHostAuthorization(session.host), false, 'captured session token invalidated');
+  assert.equal(hasSyntheticCreationAuthorization(oldCreation), false, 'captured creation token invalidated');
+  assert.equal(hasBatchResumeAuthorization(oldResume), false, 'captured resume token invalidated');
+
+  const before = app.vault.readContent(topic);
+  const oldWriterResult = await oldWriter.write({
+    topicId: uuid(77),
+    updates: { mf_not_before: '2026-12-12' },
+  });
+  assert.equal(oldWriterResult.status, 'blocked');
+  assert.equal(oldWriterResult.reason, 'E_UNIFIED_NOT_AUTHORIZED');
+  assert.equal(app.vault.readContent(topic), before, 'captured writer performs zero writes');
+
+  const capturedResume = await resumeBatch({
+    store: { async getBatch() { return { batchId: 'b1', kind: 'MERCY', status: 'prepared', items: [] }; } },
+    batchId: 'b1',
+    readTopic: async () => ({ entry: null }),
+    runItem: async () => ({ status: 'applied' }),
+    authorization: oldResume,
+  });
+  assert.equal(capturedResume.status, 'blocked');
+  assert.equal(capturedResume.reason, 'E_BATCH_RESUME_NOT_AUTHORIZED');
+
+  const creation = await plugin._mfUs1CreateTopicFromHost({
+    requestId: 'revoked-create', kind: 'source', priority: 50,
+    path: 'Sources/Revoked.md', content: '---\ntype: source\nstatus: active\n---\n',
+  });
+  assert.equal(creation.handled, true);
+  assert.equal(creation.outcome.status, 'blocked');
+  assert.equal(app.vault.getAbstractFileByPath('Sources/Revoked.md'), null);
+});
+
+test('activation failure keeps legacy writes blocked when Unified authority already exists', async () => {
+  const { plugin, app } = setupPlugin();
+  plugin.__mfUs1ActivationApproval = () => true;
+  // A migrated topic exists, so falling back to legacy writes would be unsafe.
+  makeFile(app, 'Sources/M.md', {
+    type: 'source', status: 'active', priority: 50, interval: 8,
+    mf_id: uuid(78), mf_revision: 1, mf_scheduler_version: 1,
+    mf_ideal_due: '2026-11-20', mf_not_before: 'null', mf_interval_days: 8, mf_last_event_id: 'null',
+  }, '# M\n');
+  const creationHost = require('../src/integration/topic-creation-host.js');
+  const original = creationHost.issueSyntheticCreationAuthorization;
+  creationHost.issueSyntheticCreationAuthorization = () => { throw new Error('issuance failed'); };
+  try {
+    const result = await plugin.mfUs1ActivateUnified();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'E_ACTIVATION_CAPABILITY_INCOMPLETE');
+    assert.equal(result.suspended, true);
+    const diagnostics = plugin.mfUs1ActivationDiagnostics();
+    assert.equal(diagnostics.authorized, false);
+    assert.equal(diagnostics.suspended, true);
+    assert.equal(plugin._mfUs1GuardLegacyWrite('legacy-write-probe'), true, 'legacy scheduling writes stay blocked');
+  } finally {
+    creationHost.issueSyntheticCreationAuthorization = original;
+  }
 });
