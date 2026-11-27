@@ -64,10 +64,21 @@
 
 ---
 
+## 4b. 正式构建批量流程复核（未完成）
+
+- 已在正式构建验证：激活、真实评阅、Card 隔离、撤销、撤销后拒写（§4）。
+- **未在正式构建复核**：Boost / Mercy Apply+Undo / Subtree Postpone / Postpone / Schedule / Priority / Dashboard / Queue / Session 同步。这些流程此前在 `--e2e` 测试构建中全部 Pass（见 P3-US1-OBSIDIAN-E2E-REPORT.md）。
+- 本轮尝试用正式构建复跑批量 Harness 未产出结果（脚本状态/重复创建冲突），已如实标记为未完成，不作为 Pass 证据；建议 RC 前用真实 UI 补一次。
+
 ## 5. Card / SR 验收状态
 
 - **Card 隔离：Pass**（正式构建真机验证：无 `mf_*`、不进入 MF-US-1）。
-- **真实 SR 复习交互：未验证（Blocked）**。本轮 E2E 使用的一次性库未安装 SR 插件；`MemoFlow-Test` 装有 SR 插件，但需另一次实机点击验收（SR 复习弹窗、评分、字段变化、Dashboard 来源）。已列入 RC 前剩余事项，不标记通过。
+- **真实 SR 复习交互：Pass（正式构建 + SR 1.15.4 环境）**（2026-11-27，`MemoFlow-Test`，先备份 45 文件）：
+  - 识别 Card：`type: card`，带 SR 备注；MF-US-1 诊断中 Card 不计入 Topic；
+  - 打开真实 SR 复习 UI（`srs-review-flashcards-in-note`，按钮「显示答案 / Again / 较难 / 记得」）；
+  - 点击评分后 Card 的 SR 备注由 `<!--SR:!2026-11-25,3,250-->` 更新为 `<!--SR:!2026-11-27,0,130-->`（due/interval/ease 真实变化）；
+  - Card 始终无 `mf_*` 字段，Ledger 0、Batch 0，未进入 MF-US-1 写入路径。
+  - 未验证项：Dashboard 中 SR 卡片统计来源的独立比对（Dashboard 本轮未在 SR 环境逐项截图），列入 RC 前 UI 验收。
 
 ---
 
@@ -82,7 +93,8 @@
 ## 7. 剩余 P0/P1 与 RC 前事项
 
 - P0：无（本轮未发现数据损坏级问题）。
-- P1：真实 SR 复习实机验收未完成（需 SR 测试环境一次点击验收）。
+- P1：无（SR 真实复习已在正式构建 + SR 1.15.4 环境通过）。
+- P2：正式构建下的 Boost/Mercy/Undo/Subtree/Postpone/Schedule 批量流程本轮仅用 `--e2e` 测试构建验证；正式构建仅复核了激活/评阅/Card/撤销链路（正式构建批量 Harness 复跑因自动化脚本状态问题未产出结果，未作为通过证据）。建议在正式构建上用真实 UI 再点一次批量流程作为 RC 前复核。
 - RC 前：UI/UX 整体审查与优化、旧库迁移适配器决策、发布说明与安装文档更新、正式 Release 产物重建与签名流程。
 
 ---
