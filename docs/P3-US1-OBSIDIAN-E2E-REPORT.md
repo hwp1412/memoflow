@@ -26,7 +26,7 @@
 
 | Vault | 状态 | 证据 |
 |---|---|---|
-| `MemoFlow-Test` | 存在，已备份，新构建已安装 | 路径 `/Users/Admin/Documents/插件开发/MemoFlow-Test`；45 个文件 / 15 MB；marker `vaultId 78896b66-c7a1-4e9d-a1aa-edba1b082dcb`；备份 `插件开发/backups/MemoFlow-Test-20261127-032549`（45 文件，备份与新文件 main.js 哈希一致）；安装后 `main.js` = 新构建哈希 `7192292a…`；`data.json` 时间戳未变（Nov 25），未被覆盖 |
+| `MemoFlow-Test` | 存在，已备份，新构建已安装 | 路径 `<MemoFlow-Test>`；45 个文件 / 15 MB；marker `vaultId 78896b66-c7a1-4e9d-a1aa-edba1b082dcb`；备份 `插件开发/backups/MemoFlow-Test-20261127-032549`（45 文件，备份与新文件 main.js 哈希一致）；安装后 `main.js` = 新构建哈希 `7192292a…`；`data.json` 时间戳未变（Nov 25），未被覆盖 |
 | `E2E-Phase2-Test-Vault`（旧格式副本） | 已就绪 | 从 MemoFlow-Test 备份完整复制（15 MB），安装 E2E 测试构建；用于迁移预览/回滚与 legacy 检查（16 个旧 Topic，Unified 激活会被 migration 门禁正确阻断） |
 | `E2E-Phase2-Unified-Vault`（新建空库） | 已就绪 | 空库 + E2E 测试构建，用于激活后的 Subtree/Boost/Mercy/恢复/故障注入；可随时删除重建 |
 | `phase2 test` | **未找到（Blocked；已用一次性副本替代执行渠道）** | `~/Library/Application Support/obsidian/obsidian.json` 仅注册 3 个 Vault：`HWP的知识仓库`、`supermemo`、`MemoFlow-Test`；`find /Users/Admin -maxdepth 6 -iname "*phase*test*"` 无匹配。**需要项目负责人提供实际路径** |
@@ -365,3 +365,20 @@ host getMode、lifecycle 初始化、dashboard 全部改用 `_mfUs1EffectiveMode
 与前一轮 Mercy Writer 同类问题：激活只签发 runtime token，`_mfUs1CreateTopicFromHost` 和批次 Resume 仍无授权。
 修复：`mfUs1ActivateUnified()` 同时签发 creation/resume 会话能力；撤销时一并清空。新增回归测试。
 真机验证：激活后 Source/Extract 创建均 applied；撤权后创建 fail-closed。
+
+
+## 26. 验收状态时间线（避免误读历史 Fail/Blocked）
+
+本报告的章节是**按执行顺序追加**的，早期章节中的 Blocked/Fail 是当时状态，不是最终结论。最终状态以本节为准：
+
+| 项 | 早期状态 | 最终状态 | 说明 |
+|---|---|---|---|
+| GUI 实机能力 | Blocked（无辅助功能权限） | 已用 in-vault Harness 绕过 | 全程未修改 macOS 权限 |
+| Boost / Mercy / Subtree | Fail/Blocked（Harness 路径、token、关系校验） | **Pass** | 修复见 §21–§23 |
+| 重启 lifecycle | Fail（mode 损坏） | **Pass** | §24 |
+| Shadow observer | 未记录 | **Pass** | §24 |
+| 创建网关 / Card 隔离 | 未测 | **Pass** | §25 |
+| 真实 SR 复习 | 未测 | 仍未验证 | 需 SR 插件环境 |
+| 真实 Vault 迁移 | 未执行（禁止） | 未执行 | 需独立授权与适配器 |
+
+> 早期“索引缓存陈旧”相关归因已在 §20 更正；以最终结论为准。

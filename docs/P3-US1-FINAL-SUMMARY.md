@@ -169,3 +169,8 @@ E2E 测试构建（--e2e）             含 3 个测试构建命令；正式构�
 | E2E Harness 与证据 | `e2e-artifacts/` |
 | Phase 2 计划与入口矩阵 | `docs/P2-US1-HOST-CLOSURE-PLAN.md`、`docs/P2-US1-HOST-CLOSURE-MATRIX.md` |
 | P3 就绪计划 | 分支 `docs/p3-us1-readiness`：`docs/P3-US1-READINESS-PLAN.md` |
+
+
+## 10. 状态时间线说明
+
+本报告汇总的是**最终状态**。开发过程中曾出现的 Blocked/Fail（GUI 权限、Harness 目录/引号错误、Mercy/创建 token 缺失、重启 mode 损坏、子树顺序）均已定位并修复，详见 `P3-US1-OBSIDIAN-E2E-REPORT.md` §20–§26；早期归因（如“索引缓存陈旧”）已在后续章节更正。最终 Pass 矩阵以本报告 §4 为准。

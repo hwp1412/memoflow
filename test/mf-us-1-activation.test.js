@@ -22,6 +22,7 @@ const COMPLETE_EVIDENCE = {
   userConfirmed: true,
   // Mixed vault: two legacy topics require a complete migration plan.
   legacyTopicCount: 2,
+  indexComplete: true,
 };
 
 test('a brand-new empty vault needs no migration plan or backup', () => {
@@ -29,6 +30,7 @@ test('a brand-new empty vault needs no migration plan or backup', () => {
   const empty = {
     legacyTopicCount: 0,
     topicCount: 0,
+    indexComplete: true,
     pendingEvents: [],
     recoveryHealthy: true,
     blockedTopicIds: [],
@@ -309,4 +311,76 @@ test('activation grants creation and resume capabilities, revocation clears them
   await plugin.mfUs1RevokeUnifiedAuthorization();
   assert.equal(plugin.__mfUs1CreationAuthorization, null);
   assert.equal(plugin.__mfUs1ResumeAuthorization, null);
+});
+
+
+test('an incomplete vault index can never be read as "nothing to migrate"', () => {
+  const coordinator = createActivationCoordinator({ approvalProvider: () => true });
+  const unknownIndex = { ...COMPLETE_EVIDENCE, migrationPlan: null, legacyTopicCount: 0, indexComplete: false };
+  const evaluation = coordinator.evaluate(unknownIndex);
+  assert.ok(evaluation.blockers.includes('MIGRATION_INDEX_UNKNOWN'));
+  assert.equal(evaluation.allowed, false);
+  assert.equal(coordinator.authorize(unknownIndex).ok, false);
+});
+
+test('a vault with a real legacy topic cannot activate when getIRRows is empty', async () => {
+  const { plugin, app } = setupPlugin();
+  plugin.mfUs1MigrationPreviewCache = null;
+  plugin.__mfUs1ActivationApproval = () => true;
+  // Legacy topic exists on disk but the IR cache is (wrongly) empty.
+  makeFile(app, 'Sources/LegacyHidden.md', { type: 'source', status: 'active', priority: 50, interval: 8, next_review: '2026-11-20' }, '# legacy\n');
+  plugin.getIRRows = () => [];
+  const result = await plugin.mfUs1ActivateUnified();
+  assert.equal(result.ok, false);
+  assert.ok(result.blockers.includes('MIGRATION_INCOMPLETE'), JSON.stringify(result.blockers));
+  assert.notEqual(plugin.settings.mf_us1_mode, 'unified');
+});
+
+test('partial capability issuance aborts activation and leaves no authorization', async () => {
+  const { plugin } = setupPlugin();
+  plugin.__mfUs1ActivationApproval = () => true;
+  const creationHost = require('../src/integration/topic-creation-host.js');
+  const original = creationHost.issueSyntheticCreationAuthorization;
+  creationHost.issueSyntheticCreationAuthorization = () => { throw new Error('issuance failed'); };
+  try {
+    const result = await plugin.mfUs1ActivateUnified();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'E_ACTIVATION_CAPABILITY_INCOMPLETE');
+    assert.equal(plugin.settings.mf_us1_mode, 'legacy');
+    assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, false);
+    assert.equal(plugin.__mfUs1CreationAuthorization, null);
+    assert.equal(plugin.__mfUs1ResumeAuthorization, null);
+  } finally {
+    creationHost.issueSyntheticCreationAuthorization = original;
+  }
+});
+
+test('revocation invalidates existing writers and creation behaviourally', async () => {
+  const { plugin, app } = setupPlugin();
+  plugin.__mfUs1ActivationApproval = () => true;
+  const topic = makeFile(app, 'Sources/W.md', {
+    type: 'source', status: 'active', priority: 50, interval: 8,
+    mf_id: uuid(77), mf_revision: 0, mf_scheduler_version: 1,
+    mf_ideal_due: '2026-11-20', mf_not_before: 'null', mf_interval_days: 8, mf_last_event_id: 'null',
+  }, '# W\n');
+  const activated = await plugin.mfUs1ActivateUnified();
+  assert.equal(activated.ok, true);
+  assert.ok(plugin.mfUs1AdminWriter);
+  await plugin.mfUs1RevokeUnifiedAuthorization();
+  const before = app.vault.readContent(topic);
+  const writerResult = await plugin.mfUs1AdminWriter.write({
+    topicId: uuid(77),
+    updates: { mf_not_before: '2026-12-12' },
+  });
+  assert.equal(writerResult.status, 'blocked');
+  assert.equal(writerResult.reason, 'E_UNIFIED_NOT_AUTHORIZED');
+  assert.equal(app.vault.readContent(topic), before, 'no unauthorised write');
+
+  const creation = await plugin._mfUs1CreateTopicFromHost({
+    requestId: 'revoked-create', kind: 'source', priority: 50,
+    path: 'Sources/Revoked.md', content: '---\ntype: source\nstatus: active\n---\n',
+  });
+  assert.equal(creation.handled, true);
+  assert.equal(creation.outcome.status, 'blocked');
+  assert.equal(app.vault.getAbstractFileByPath('Sources/Revoked.md'), null);
 });

@@ -30,7 +30,9 @@ const STATUS = Object.freeze({
 function compareNodes(left, right) {
   // Callers may pass an explicit `order` (post-order: descendants first) so a
   // child's parent-hash precondition is still valid when it is written.
-  if (typeof left.order === 'number' && typeof right.order === 'number') return left.order - right.order;
+  if (typeof left.order === 'number' && typeof right.order === 'number' && left.order !== right.order) {
+    return left.order - right.order;
+  }
   return String(left.stableId || left.path).localeCompare(String(right.stableId || right.path));
 }
 

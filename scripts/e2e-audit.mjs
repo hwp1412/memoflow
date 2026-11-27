@@ -103,9 +103,20 @@ function readPluginManifest(vaultDir) {
     .then(text => JSON.parse(text)).catch(() => null);
 }
 
-function readDataJson(vaultDir) {
-  return readFile(path.join(vaultDir, '.obsidian', 'plugins', 'memoflow', 'data.json'), 'utf8')
-    .then(text => JSON.parse(text)).catch(() => ({}));
+async function readDataJsonStrict(vaultDir) {
+  const target = path.join(vaultDir, '.obsidian', 'plugins', 'memoflow', 'data.json');
+  let text;
+  try {
+    text = await readFile(target, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return { ok: true, data: {} };
+    return { ok: false, code: 'DATA_JSON_UNREADABLE', message: String((error && error.message) || error) };
+  }
+  try {
+    return { ok: true, data: JSON.parse(text) };
+  } catch (error) {
+    return { ok: false, code: 'DATA_JSON_INVALID', message: String((error && error.message) || error) };
+  }
 }
 
 function check(checks, level, code, message, extra = null) {
@@ -130,6 +141,19 @@ export async function auditVault({ vaultDir, profile = 'auto', baseline = null, 
   if (!manifest) check(checks, 'FAIL', 'PLUGIN_MISSING', '插件 manifest 未找到（.obsidian/plugins/memoflow/manifest.json）');
   else if (manifest.id !== 'memoflow') check(checks, 'FAIL', 'PLUGIN_ID', `插件 id 非 memoflow：${manifest.id}`);
   else check(checks, 'PASS', 'PLUGIN_OK', `插件已安装：${manifest.name || 'MemoFlow'} ${manifest.version || ''}`.trim());
+
+  let pluginMainSha = null;
+  try {
+    pluginMainSha = sha256(await readFile(path.join(vaultDir, '.obsidian', 'plugins', 'memoflow', 'main.js'), 'utf8'));
+  } catch {
+    pluginMainSha = null;
+  }
+  if (!pluginMainSha && manifest) {
+    check(checks, 'FAIL', 'PLUGIN_MAIN_MISSING', '插件目录缺少 main.js（仅有 manifest）');
+  }
+  if (expectedMainSha !== null && pluginMainSha !== expectedMainSha) {
+    check(checks, 'FAIL', 'MAIN_SHA_MISMATCH', `插件 main.js 哈希与期望不符：${pluginMainSha} ≠ ${expectedMainSha}`);
+  }
 
   const files = {};
   for (const rel of await walkMarkdown(vaultDir, vaultDir)) {
@@ -211,10 +235,20 @@ export async function auditVault({ vaultDir, profile = 'auto', baseline = null, 
     if (topic.fm.type === 'extract' && !topic.fm.mf_parent_id) {
       check(checks, 'FAIL', 'EXTRACT_WITHOUT_PARENT', `Extract 缺少 mf_parent_id：${topic.basename}`);
     }
+    if (topic.fm.type === 'extract' && !topic.fm.mf_root_id) {
+      check(checks, 'FAIL', 'ROOT_MISSING', `Extract 缺少 mf_root_id：${topic.basename}`);
+    }
   }
 
   // Ledger consistency.
-  const data = await readDataJson(vaultDir);
+  const dataRead = await readDataJsonStrict(vaultDir);
+  if (!dataRead.ok) {
+    check(checks, 'FAIL', dataRead.code, `data.json 无法解析：${dataRead.message}`);
+  }
+  const data = dataRead.ok ? dataRead.data : {};
+  if (dataRead.ok) {
+    // A plugin data file that cannot be parsed must never be treated as empty.
+  }
   const ledger = data && data.mfUs1Ledger && typeof data.mfUs1Ledger === 'object' ? data.mfUs1Ledger : null;
   if (!ledger) {
     check(checks, 'WARN', 'LEDGER_ABSENT', 'data.json 中无 mfUs1Ledger（尚未有 Unified 事件时正常）');
@@ -301,10 +335,6 @@ export async function auditVault({ vaultDir, profile = 'auto', baseline = null, 
     } else {
       check(checks, 'PASS', 'NO_CHANGES', 'Vault 内容与基线完全一致');
     }
-  }
-
-  if (expectedMainSha && baseline && baseline.mainSha && expectedMainSha !== baseline.mainSha) {
-    check(checks, 'FAIL', 'MAIN_SHA_MISMATCH', `插件 main.js 哈希与期望不符：${baseline.mainSha} ≠ ${expectedMainSha}`);
   }
 
   const failures = checks.filter(item => item.level === 'FAIL');

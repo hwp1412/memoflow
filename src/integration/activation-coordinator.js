@@ -38,6 +38,11 @@ function planIsComplete(plan) {
 // legacy topic count is unknown we stay conservative and require a complete
 // plan.
 function migrationRequirement(evidence = {}) {
+  if (evidence.indexComplete === false) {
+    // The vault scan could not prove the absence of legacy topics. Unknown must
+    // fail closed, never be treated as "nothing to migrate".
+    return { required: true, complete: false, notRequired: false, indexUnknown: true, legacyTopicCount: evidence.legacyTopicCount ?? null };
+  }
   const legacyCount = Number.isInteger(evidence.legacyTopicCount) ? evidence.legacyTopicCount : null;
   if (legacyCount === 0) {
     return { required: false, complete: true, notRequired: true, legacyTopicCount: 0 };
@@ -68,7 +73,8 @@ function deriveConditions(evidence = {}, { storageSupportsCas = true } = {}) {
 function blockersFor(evidence = {}, conditions) {
   const blockers = [];
   const migration = migrationRequirement(evidence);
-  if (!conditions.migrationComplete) blockers.push('MIGRATION_INCOMPLETE');
+  if (migration.indexUnknown) blockers.push('MIGRATION_INDEX_UNKNOWN');
+  if (!conditions.migrationComplete && !migration.indexUnknown) blockers.push('MIGRATION_INCOMPLETE');
   if (!migration.notRequired && !conditions.backupVerified) blockers.push('BACKUP_NOT_VERIFIED');
   if (conditions.pendingRecovery) blockers.push('PENDING_RECOVERY');
   if (evidence.recoveryHealthy === false) blockers.push('RECOVERY_UNHEALTHY');

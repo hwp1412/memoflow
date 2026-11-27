@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "vaultDir": "/Users/Admin/Documents/插件开发/E2E-Empty-Vault",
+  "vaultDir": "<E2E-Vault>",
   "profile": "auto",
   "checks": [
     {

@@ -3985,7 +3985,7 @@ class IncrementalReadingPlugin extends Plugin {
       `Shadow 最近差异：${this.mfUs1ShadowLast ? `${this.mfUs1ShadowLast.action} · ${this.mfUs1ShadowLast.changes.length} 项 · ${this.mfUs1ShadowLast.status}` : '无'}`,
       `迁移预检：${this.mfUs1MigrationPreviewCache ? `共 ${this.mfUs1MigrationPreviewCache.summary.total} · 可迁移 ${this.mfUs1MigrationPreviewCache.summary.migratable} · 冲突 ${this.mfUs1MigrationPreviewCache.summary.conflict}` : '未运行'}`,
       `迁移需求：${(() => { try { const s = this.mfUs1ActivationStatus(); return s.evaluation.migration && s.evaluation.migration.notRequired ? '全新库，无需迁移' : (this.mfUs1MigrationPreviewCache ? '需迁移（已预览）' : '需迁移（未预览）'); } catch (e) { return '未初始化'; } })()}`,
-      `激活状态：${(() => { try { const d = this.mfUs1ActivationDiagnostics(); return `transport=${d.transportSource} · runtime=${d.runtime.present ? (d.runtime.writeEnabled ? '已授权' : '未授权') : '无'} · blockers=${d.activationBlockers.join(',') || '无'}`; } catch (e) { return '未初始化'; } })()}`,
+      `激活状态：${(() => { try { const d = this.mfUs1ActivationDiagnostics(); const auth = d.authorized ? '已授权' : (d.suspended ? '已撤销/暂停' : '未授权'); return `授权=${auth} · transport=${d.transportSource} · runtime=${d.runtime.present ? (d.runtime.writeEnabled ? '可写' : '锁定') : '无'} · blockers=${d.activationBlockers.join(',') || '无'}`; } catch (e) { return '未初始化'; } })()}`,
     ];
     new Notice(lines.join('\n'), 12000);
     return lines.join('\n');
@@ -4522,12 +4522,40 @@ class IncrementalReadingPlugin extends Plugin {
 
   _mfUs1ActivationEvidence() {
     const recovery = this.mfUs1Recovery || {};
-    const rows = this.getIRRows ? this.getIRRows() : [];
+    // A stale/empty IR cache must never be read as "no legacy topics". Scan the
+    // configured IR folders directly (never the whole vault) via metadataCache;
+    // files whose metadata is not ready make the scan incomplete and the
+    // activation fails closed.
+    const folders = [this.sourcesFolder(), this.extractsFolder(), this.cardsFolder()]
+      .filter(folder => typeof folder === 'string' && folder);
+    const irFiles = [];
+    let scanComplete = Boolean(this.app && this.app.metadataCache && typeof this.app.metadataCache.getFileCache === 'function');
+    const collect = node => {
+      if (!node) return;
+      if (node.children) {
+        for (const child of node.children) collect(child);
+        return;
+      }
+      if (node.extension === 'md') irFiles.push(node);
+    };
+    for (const folder of folders) {
+      try {
+        collect(this.app.vault.getAbstractFileByPath(folder));
+      } catch (error) {
+        scanComplete = false;
+      }
+    }
     const counts = new Map();
     let topicCount = 0;
     let legacyTopicCount = 0;
-    for (const row of rows) {
-      const fm = row.fm || {};
+    let unindexedFiles = 0;
+    for (const file of irFiles) {
+      const cache = scanComplete ? this.app.metadataCache.getFileCache(file) : null;
+      const fm = cache && cache.frontmatter;
+      if (!fm) {
+        unindexedFiles += 1;
+        continue;
+      }
       if (fm.type !== 'source' && fm.type !== 'extract') continue;
       topicCount += 1;
       const id = fm.mf_id;
@@ -4550,6 +4578,8 @@ class IncrementalReadingPlugin extends Plugin {
       duplicateIds,
       topicCount,
       legacyTopicCount,
+      indexComplete: scanComplete && unindexedFiles === 0,
+      unindexedFiles,
       backupVerified: this.__mfUs1BackupVerified === true,
       userConfirmed: this.__mfUs1ActivationConfirmed === true,
       singleWriterReady: true,
@@ -4660,38 +4690,60 @@ class IncrementalReadingPlugin extends Plugin {
       return result;
     }
     const storage = this.mfUs1HostStorage || this._mfUs1EnsureStorageAndStores();
-    const { issueSyntheticUnifiedCapability } = require('./src/scheduling/index.js');
-    await this._mfUs1RebuildAsyncLifecycle({
-      storage,
-      mode: 'unified',
-      conditions: result.session.conditions,
-      authorization: result.authorization,
-      // Synthetic capability for the isolated harness only; production never
-      // reaches this branch because it has no approval provider.
-      capability: issueSyntheticUnifiedCapability(),
-    });
-    // Mercy writes through the protected admin writer; the session activation
-    // token must be handed to it, otherwise Mercy is blocked in real Obsidian
-    // with E_UNIFIED_NOT_AUTHORIZED (real-device E2E finding).
-    if (this.mfUs1HostStorage) {
-      const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
-      this.mfUs1AdminWriter = createProtectedAdminWriter({
-        storage: this.mfUs1HostStorage,
-        authorization: result.authorization,
-      });
-    }
-    // The activation session also covers the other protected write paths:
-    // topic creation and batch resume. Without these an activated user could
-    // not create Sources/Extracts or finish a crashed batch (real-device E2E
-    // found Mercy/Writer needed the same treatment).
+    let creationAuthorization = null;
+    let resumeAuthorization = null;
     try {
+      const { issueSyntheticUnifiedCapability } = require('./src/scheduling/index.js');
       const { issueSyntheticCreationAuthorization } = require('./src/integration/topic-creation-host.js');
       const { issueSyntheticBatchResumeAuthorization } = require('./src/integration/batch-resume.js');
-      this.__mfUs1CreationAuthorization = issueSyntheticCreationAuthorization();
-      this.__mfUs1ResumeAuthorization = issueSyntheticBatchResumeAuthorization();
+      const capability = issueSyntheticUnifiedCapability();
+      creationAuthorization = issueSyntheticCreationAuthorization();
+      resumeAuthorization = issueSyntheticBatchResumeAuthorization();
+      if (!capability || !creationAuthorization || !resumeAuthorization) {
+        throw Object.assign(new Error('activation capabilities were not all issued'), { code: 'E_ACTIVATION_CAPABILITY_INCOMPLETE' });
+      }
+      await this._mfUs1RebuildAsyncLifecycle({
+        storage,
+        mode: 'unified',
+        conditions: result.session.conditions,
+        authorization: result.authorization,
+        capability,
+      });
+      if (this.mfUs1HostStorage) {
+        const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
+        this.mfUs1AdminWriter = createProtectedAdminWriter({
+          storage: this.mfUs1HostStorage,
+          authorization: result.authorization,
+        });
+      }
     } catch (error) {
-      console.error('[IR] MF-US-1 activation could not issue creation/resume capability', error);
+      // Never keep a partially authorized activation: revoke the session, drop
+      // every issued capability and rebuild a locked legacy runtime.
+      coordinator.revoke();
+      this.__mfUs1CreationAuthorization = null;
+      this.__mfUs1ResumeAuthorization = null;
+      this.__mfUs1CreationAuthorization = null;
+      this.__mfUs1E2EApprovalArmed = false;
+      this.mfUs1Suspended = false;
+      this._mfUs1HostInstance = null;
+      try {
+        await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'legacy', conditions: {}, authorization: null });
+      } catch (rebuildError) {
+        console.error('[IR] MF-US-1 could not roll back to a legacy lifecycle', rebuildError);
+      }
+      this.settings.mf_us1_mode = 'legacy';
+      this.mfUs1AdminWriter = null;
+      if (typeof this.saveSettings === 'function') await this.saveSettings();
+      new Notice(`Unified 激活失败：所需授权能力未全部就绪（${(error && (error.code || error.message)) || 'unknown'}），本次激活已撤销。`, 15000);
+      return {
+        ok: false,
+        reason: 'E_ACTIVATION_CAPABILITY_INCOMPLETE',
+        blockers: ['E_ACTIVATION_CAPABILITY_INCOMPLETE'],
+        detail: String((error && (error.message || error)) || 'unknown'),
+      };
     }
+    this.__mfUs1CreationAuthorization = creationAuthorization;
+    this.__mfUs1ResumeAuthorization = resumeAuthorization;
     this.settings.mf_us1_mode = 'unified';
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
@@ -4724,6 +4776,14 @@ class IncrementalReadingPlugin extends Plugin {
     this.__mfUs1ResumeAuthorization = null;
     this.mfUs1Suspended = true;
     this._mfUs1HostInstance = null;
+    // Drop the capability from EXISTING writer instances as well: tokens live in
+    // a module WeakSet, so a stale writer object would otherwise stay valid.
+    if (this.mfUs1HostStorage) {
+      const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
+      this.mfUs1AdminWriter = createProtectedAdminWriter({ storage: this.mfUs1HostStorage, authorization: null });
+    } else {
+      this.mfUs1AdminWriter = null;
+    }
     new Notice('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
     return { ok: true, tokenRevoked: true, hadSession: revoked.revoked, suspended: true };
   }
@@ -4748,6 +4808,12 @@ class IncrementalReadingPlugin extends Plugin {
     coordinator.revoke();
     this.__mfUs1CreationAuthorization = null;
     this.__mfUs1ResumeAuthorization = null;
+    if (this.mfUs1HostStorage) {
+      const { createProtectedAdminWriter } = require('./src/integration/protected-topic-writer.js');
+      this.mfUs1AdminWriter = createProtectedAdminWriter({ storage: this.mfUs1HostStorage, authorization: null });
+    } else {
+      this.mfUs1AdminWriter = null;
+    }
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
     const storage = this.mfUs1HostStorage;

@@ -185,3 +185,42 @@ test('empty profile rejects legacy topics; a legacy topic is reported as migrati
   assert.ok(codes(auto).includes('MIGRATION_REQUIRED'));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+
+test('invalid data.json fails the audit instead of passing', async () => {
+  const { auditVault } = await auditPromise;
+  const dir = makeVault({ sources: { 'A.md': validSource() } });
+  fs.writeFileSync(path.join(dir, '.obsidian', 'plugins', 'memoflow', 'data.json'), '{ this is not json');
+  const result = await auditVault({ vaultDir: dir });
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes('DATA_JSON_INVALID'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a mismatched expected main.js hash fails even without a baseline', async () => {
+  const { auditVault } = await auditPromise;
+  const dir = makeVault({ sources: { 'A.md': validSource() } });
+  const result = await auditVault({ vaultDir: dir, expectedMainSha: 'deadbeef' });
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes('MAIN_SHA_MISMATCH'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a plugin directory without main.js fails the audit', async () => {
+  const { auditVault } = await auditPromise;
+  const dir = makeVault({ sources: { 'A.md': validSource() } });
+  fs.rmSync(path.join(dir, '.obsidian', 'plugins', 'memoflow', 'main.js'));
+  const result = await auditVault({ vaultDir: dir });
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes('PLUGIN_MAIN_MISSING'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('an extract with a parent but no root id fails the audit', async () => {
+  const { auditVault } = await auditPromise;
+  const dir = makeVault({ extracts: { 'E.md': validExtract({ mf_root_id: undefined }) } });
+  const result = await auditVault({ vaultDir: dir });
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes('ROOT_MISSING'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
