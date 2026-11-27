@@ -43,6 +43,8 @@ class MemoFlowSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     this._about(containerEl);
+    this._schedulerMode(containerEl);
+    this._updateCheck(containerEl);
     this._scheduling(containerEl);
     this._queue(containerEl);
     this._inlineCards(containerEl);
@@ -94,6 +96,67 @@ class MemoFlowSettingTab extends PluginSettingTab {
         save();
       });
     });
+  }
+
+  _schedulerMode(root) {
+    const sec = root.createDiv({ cls: 'ir-settings-section' });
+    new Setting(sec).setName('调度算法').setHeading();
+    const plugin = this.plugin;
+    const current = plugin._mfUs1EffectiveMode();
+    let status = null;
+    try {
+      status = plugin.mfUs1ActivationDiagnostics();
+    } catch (error) {
+      status = null;
+    }
+    const authorized = Boolean(status && status.authorized);
+    const blockers = status && Array.isArray(status.activationBlockers) ? status.activationBlockers : [];
+    const lines = [current === 'unified' ? '当前使用新版 Unified 调度。' : (current === 'shadow' ? '当前使用 Shadow（高级诊断）。' : '当前使用旧版 Legacy 调度。')];
+    if (current === 'unified') {
+      lines.push(authorized ? '调度服务已就绪。' : '写入当前被阻断；请查看下方提示处理后再试。');
+      if (blockers.length) lines.push(`提示：${blockers.join('、')}`);
+    }
+    lines.push('切换后立即生效，并会在下次启动时继续使用；旧格式数据不会被自动迁移。');
+    new Setting(sec)
+      .setName('选择算法')
+      .setDesc(lines.join(' '))
+      .addDropdown(dropdown => dropdown
+        .addOption('unified', '新版 Unified（推荐）')
+        .addOption('legacy', '旧版 Legacy')
+        .addOption('shadow', 'Shadow（高级诊断）')
+        .setValue(current)
+        .onChange(async value => {
+          await this.plugin.setSchedulerMode(value);
+          this.display();
+        }));
+  }
+
+  _updateCheck(root) {
+    const sec = root.createDiv({ cls: 'ir-settings-section' });
+    new Setting(sec).setName('版本更新').setHeading();
+    const current = (this.plugin.manifest && this.plugin.manifest.version) || '0.0.0';
+    const state = this._updateState || null;
+    let description = `当前版本：${current}`;
+    if (state) {
+      if (state.state === 'update') description += ` · 最新版本：${state.latest} · 有可用更新`;
+      else if (state.state === 'latest') description += ' · 已是最新版本';
+      else if (state.state === 'no-release') description += ' · 尚未发布正式 Release';
+      else description += ` · 检查失败：${state.message || '未知错误'}`;
+    }
+    if (state && state.state === 'update' && state.notes) description += `\n更新说明：${state.notes.slice(0, 600)}`;
+    description += '\n更新通过 Obsidian 官方渠道或项目 GitHub Releases 页面完成，不会修改你的笔记或设置。';
+    const setting = new Setting(sec)
+      .setName('检查更新')
+      .setDesc(description)
+      .addButton(button => button.setButtonText('检查更新').onClick(async () => {
+        button.setDisabled(true);
+        button.setButtonText('检查中…');
+        this._updateState = await this.plugin.checkForUpdates();
+        this.display();
+      }));
+    if (state && state.state === 'update' && state.url) {
+      setting.addButton(button => button.setButtonText('打开发布页').onClick(() => window.open(state.url)));
+    }
   }
 
   _scheduling(root) {

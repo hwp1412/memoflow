@@ -35,25 +35,23 @@ test('migration preview is read-only and reports the legacy diff', async () => {
   assert.match(getNotices(app).join('\n'), /迁移预检（只读，未写入）/);
 });
 
-test('mode switch selects shadow and unified requires explicit confirmation', async () => {
+test('the algorithm selector switches shadow and Unified without extra dialogs', async () => {
   const { plugin, app } = setup();
+  plugin.pluginData = createPluginDataCoordinator({ plugin, reservedKeys: ['mfUs1Ledger', BATCH_KEY], notice: () => {} });
+  plugin.mfUs1Recovery = { healthy: true, recovered: [], blockedTopicIds: [] };
+  plugin.mfUs1BatchRecovery = { batches: [], blockedTopicIds: [], summary: { checked: 0, manual: 0, pending: 0 } };
+  plugin.__mfUs1BackupVerified = true;
   app.__promptState.quality = 'shadow';
   const switched = await plugin.mfUs1ModeMenu();
   assert.equal(switched.ok, true);
   assert.equal(plugin.settings.mf_us1_mode, 'shadow');
 
-  const before = plugin.settings.mf_us1_mode;
   app.__promptState.quality = 'unified';
   app.__promptState.confirm = false;
-  const cancelled = await plugin.mfUs1ModeMenu();
-  assert.equal(cancelled.ok, false);
-  assert.equal(cancelled.reason, 'E_CANCELLED');
-  assert.equal(plugin.settings.mf_us1_mode, before, 'cancel must not change the mode');
-
-  app.__promptState.confirm = true;
   const activated = await plugin.mfUs1ModeMenu();
   assert.equal(activated.ok, true, JSON.stringify(activated.blockers || []));
   assert.equal(plugin.settings.mf_us1_mode, 'unified');
+  assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, true);
 });
 
 test('diagnostics exposes shadow and migration state', () => {

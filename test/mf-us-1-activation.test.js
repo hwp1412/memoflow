@@ -257,15 +257,15 @@ test('after recovery the revoked token cannot be reused; activation needs fresh 
   assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, true);
 });
 
-test('the mode menu requires an explicit user confirmation before activation', async () => {
+test('choosing Unified connects automatically without an approval dialog', async () => {
   const { plugin, app } = setupPlugin();
   app.__promptState.quality = 'unified';
+  // Even with the old confirm flag off, the everyday selector must not prompt.
   app.__promptState.confirm = false;
   const result = await plugin.mfUs1ModeMenu();
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'E_CANCELLED');
-  assert.notEqual(plugin.settings.mf_us1_mode, 'unified');
-  assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, false);
+  assert.equal(result.ok, true, JSON.stringify(result.blockers || []));
+  assert.equal(plugin.settings.mf_us1_mode, 'unified');
+  assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, true);
 
   // Static guard: the synthetic capability is only minted inside the approved
   // activation branch, never in the mode menu / settings path.
