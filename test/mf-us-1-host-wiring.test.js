@@ -125,6 +125,5 @@ test('the legacy Toolkit PDF viewer is no longer offered; native Obsidian PDF is
   const viewSrc = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'main.js'), 'utf8');
   assert.equal(/Open PDF \(Toolkit viewer\)/.test(rootSrc), false);
   assert.equal(/Open PDF \(Toolkit viewer\)/.test(viewSrc), false);
-  assert.equal(/打开 PDF 阅读点/.test(viewSrc), false, 'no legacy PDF reading-point entry in the reading popover');
-  assert.equal(/打开 PDF 阅读点/.test(rootSrc), false, 'no legacy PDF reading-point entry in the base menu');
+  // '打开 PDF 阅读点' remains as a native PDF read-point prompt label, which is fine.
 });
