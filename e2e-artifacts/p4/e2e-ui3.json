@@ -1,0 +1,43 @@
+{
+  "activation": {
+    "ok": false,
+    "blockers": [
+      "USER_CONFIRMATION_REQUIRED"
+    ],
+    "evaluation": {
+      "conditions": {
+        "migrationComplete": true,
+        "migrationNotRequired": true,
+        "pendingRecovery": false,
+        "singleWriterReady": true,
+        "backupVerified": true,
+        "userConfirmed": false,
+        "storageSupportsCas": true
+      },
+      "blockers": [
+        "USER_CONFIRMATION_REQUIRED"
+      ],
+      "allowed": false,
+      "migration": {
+        "required": false,
+        "complete": true,
+        "notRequired": true,
+        "legacyTopicCount": 0
+      },
+      "runtimeConditions": {
+        "migrationComplete": true,
+        "pendingRecovery": false,
+        "singleWriterReady": true,
+        "backupVerified": true,
+        "userConfirmed": false,
+        "storageSupportsCas": true
+      }
+    }
+  },
+  "revoke": {
+    "ok": true,
+    "tokenRevoked": true,
+    "hadSession": false,
+    "suspended": true
+  }
+}

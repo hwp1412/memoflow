@@ -70,8 +70,24 @@ test('activation and revocation refresh open views so status is not stale', asyn
   assert.ok(tree >= 2, 'tree refreshed after revocation');
 });
 
-test('the mode menu labels Unified as requiring confirmation', () => {
+test('mode menu wording says Unified needs confirmation, not that it is settings-only', () => {
   assert.match(SOURCE, /Unified（需确认激活）/);
   const menu = slice('  advancedTools() {', '  sourcesFolder()');
-  assert.match(menu, /Unified 需在设置中确认激活/);
+  assert.match(menu, /Unified 需确认/);
+  assert.equal(/只能在设置|需在设置中确认激活/.test(menu), false);
+});
+
+test('the registered settings tab (src/views/settings-tab.js) exposes the same Unified section', () => {
+  const view = fs.readFileSync(path.join(__dirname, '..', 'src', 'views', 'settings-tab.js'), 'utf8');
+  assert.match(view, /this\._unifiedScheduler\(containerEl\)/);
+  assert.match(view, /Unified Scheduler \(MF-US-1\)/);
+  assert.match(view, /Unified 未授权（写入被阻断，需重新确认激活）/);
+  assert.match(view, /mfUs1ProductionActivate\(\)/);
+});
+
+test('settings distinguish unified-but-unauthorized from default legacy', () => {
+  const section = slice('  _unifiedScheduler(root) {', '  _numberSetting(');
+  assert.match(section, /Unified 未授权（写入被阻断，需重新确认激活）/);
+  assert.match(section, /默认 Legacy/);
+  assert.match(section, /mode === 'unified'/);
 });

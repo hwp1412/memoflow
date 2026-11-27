@@ -37,16 +37,34 @@
 | Mercy Apply | **Pass** | `mf_not_before=2026-11-28` |
 | Mercy Undo | **Pass** | Undo 后 `null` |
 | Subtree Postpone | **Pass** | S/E1/E2 均 2026-11-30 |
-| Queue 构建 | **Pass** | `buildSessionQueue` 返回 |
+| Queue 调用 | **Pass（仅调用成功）** | `buildSessionQueue` 返回对象；内容/排序未逐项核对 |
 | 重启后安全状态 | **Pass** | 重启后 `authorized=false`；Ledger 8、Batch 2 持久；评阅被拒绝（`async host runtime is not authorized`） |
+| Queue 内容与排序逐项核对 | **Not Tested** | 仅确认调用成功与返回对象，未核对条目/排序 |
+| Dashboard / Session 屏幕级同步 | **Not Tested** | 未逐项比对屏幕显示与数据；Dashboard 仅截图 |
 | Card/SR 真实复习 | **Pass（P3-03 已有证据，正式构建 + SR 1.15.4）** | 见 P3-03 报告 |
 | Dashboard/Queue/Session 同步视觉核对 | **Partially Verified**：队列构建与视图刷新已测；Dashboard 屏幕级视觉同步未逐项截图（Not Tested） |
 | Shadow / Legacy 不回归 | **Pass（既有自动化 + 本轮未改动调度语义）** |
 
+## 4b. 审查后 UI 截图验收（真实界面）
+
+| 状态 | 截图 | 结果 |
+|---|---|---|
+| 设置页·未授权 | `e2e-artifacts/p4/screenshots/p4-settings-unauthorized.png` | 已取得（显示 Unified 区、未授权） |
+| 设置页·存在阻断项 | `p4-settings-blocked.png` | 已取得（显示阻断项） |
+| 设置页·已授权 | Not Tested | 截图脚本注入 approval 后仍被 `USER_CONFIRMATION_REQUIRED` 拒绝（正式授权必须走确认弹窗），未取得已授权截图 |
+| 设置页·撤销后 | `p4-settings-revoked.png` | 已取得（暂停/撤销提示、按钮可用） |
+| 多级阅读树 | `p4-tree.png` | 已取得（三级 S→E1→E2 树） |
+| 队列视图 | `p4-queue.png` | 已取得（视图打开；条目排序未核对） |
+| Dashboard | `p4-dashboard.png` | 已取得（屏幕截图；统计来源未逐项对账） |
+| 移动端/窄屏 | Not Tested | 当前环境无法可靠调整窗口宽度；RC 步骤：设置窗口宽度 375px 后依次打开设置/队列/树/Dashboard，检查横向滚动与按钮可点性 |
+
+> 说明：截图使用正式构建；设置页最终截图验证的是 `src/views/settings-tab.js` 的真实 SettingTab（P4 首轮发现的重复类问题已修复）。
+
 ## 5. 遗留 / Release 阻塞
 
-1. 移动端布局与 Dashboard Card 统计未做真机逐项核对（P2，Not Tested）。
-2. 屏幕级截图证据缺失（本轮以 JSON + 命令返回值作为证据；如需 PR 附件可补截图）。
+1. 移动端/窄屏布局未验证（Not Tested，RC 步骤见 §4b）。
+2. Queue 条目/排序、Dashboard-Unified Topic 与 SR Card 统计来源未逐项对账（Not Tested）。
+3. 已授权状态截图未取得（截图脚本无法绕过正式确认；需人工点击一次确认后补图）。
 3. 旧库迁移适配器仍不在范围内（发布说明需明示）。
 4. 生产 Release 未发布、未访问真实用户 Vault、未执行真实迁移。
 

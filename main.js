@@ -1939,9 +1939,16 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
         return null;
       }
     })();
+    const sessionLabel = authorized
+      ? '本次会话：已授权 Unified 写入'
+      : (suspended
+        ? '本次会话：已暂停（写入被拒绝）'
+        : (mode === 'unified'
+          ? '本次会话：Unified 未授权（写入被阻断，需重新确认激活）'
+          : '本次会话：未授权（默认 Legacy）'));
     const describe = [
       `当前模式：${mode}`,
-      authorized ? '本次会话：已授权 Unified 写入' : (suspended ? '本次会话：已暂停（写入被拒绝）' : '本次会话：未授权（默认 Legacy）'),
+      sessionLabel,
       evidence ? `Topic：${evidence.topicCount}（旧格式 ${evidence.legacyTopicCount}；索引完整=${evidence.indexComplete ? '是' : '未知'}）` : null,
       blockers.length ? `阻断项：${blockers.join('、')}` : '阻断项：无',
     ].filter(Boolean).join(' · ');
@@ -3224,7 +3231,7 @@ class IncrementalReadingPlugin extends Plugin {
       { label: 'Undo last Mercy', run: () => this.mercyUndoLast() },
       { label: 'Resume pending batches…', run: () => this.resumePendingBatches() },
       { label: 'Migration preview (read-only)…', run: () => this.mfUs1MigrationPreview() },
-      { label: 'MF-US-1 模式切换…（Unified 需在设置中确认激活）', run: () => this.mfUs1ModeMenu() },
+      { label: 'MF-US-1 模式切换…（Unified 需确认）', run: () => this.mfUs1ModeMenu() },
     ]);
   }
 

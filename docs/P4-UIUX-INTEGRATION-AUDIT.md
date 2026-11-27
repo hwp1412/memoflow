@@ -41,3 +41,11 @@
 
 - `main.js`：设置页 `_unifiedScheduler`；`display()` 加入该区；Advanced tools 收敛；模式菜单文案；激活/撤销/模式切换后刷新视图。
 - `test/p4-uiux-integration.test.js`（新增 4 项）：设置页入口唯一性、菜单不重复、刷新行为、文案。
+
+
+## 4. 审查后补充修正（796fa15+）
+
+1. **设置页文案区分**：`mode=unified` 但 `authorized=false` 时显示「Unified 未授权（写入被阻断，需重新确认激活）」，不再误报「默认 Legacy」。实现位于 `src/views/settings-tab.js#_unifiedScheduler`（真实注册的 SettingTab）与 `main.js` 同名方法。
+2. **Advanced tools 文案**：改为「MF-US-1 模式切换…（Unified 需确认）」，不再声称只能在设置页激活（菜单选择 Unified 同样进入生产确认流程）。
+3. **真实注册的 SettingTab 修复**：此前 P4 首轮只改了 `main.js` 内旧 SettingTab，实际 UI 使用 `src/views/settings-tab.js` 的 `MemoFlowSettingTab`；已把 Unified 区补到真实类，并用截图验证。
+4. 新增回归测试：真实 SettingTab 暴露 Unified 区、未授权文案、菜单文案不误导。

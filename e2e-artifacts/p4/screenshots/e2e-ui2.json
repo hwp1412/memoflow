@@ -1,0 +1,16 @@
+{
+  "treeDom": "ExtractsscreenshotsSourcese2e-phase-adonee2e-restart-markertxte2e-uijsone2e-ui-steptxtREADME",
+  "queueResult": "object",
+  "queueDom": "ExtractsscreenshotsSourcese2e-phase-adonee2e-restart-markertxte2e-uijsone2e-ui-steptxte2e-ui2jsonREADME",
+  "dashboardDom": "ExtractsscreenshotsSourcese2e-phase-adonee2e-restart-markertxte2e-uijsone2e-ui-steptxte2e-ui2jsonREADME",
+  "counts": {
+    "unifiedTopics": 3,
+    "irRows": 4,
+    "srCards": null
+  },
+  "cardFm": {
+    "type": "card",
+    "status": "active",
+    "priority": 40
+  }
+}
