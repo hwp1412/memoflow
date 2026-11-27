@@ -4780,6 +4780,8 @@ class IncrementalReadingPlugin extends Plugin {
     this.mfUs1Suspended = false;
     this.__mfUs1SuspendedNotified = null;
     if (typeof this.saveSettings === 'function') await this.saveSettings();
+    this._refreshExcerptViews();
+    if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
     if (!this.mfUs1AutoStartBusy) new Notice('Unified 已激活（本次会话）；可在设置中切换算法。', 12000);
     return { ok: true, session: coordinator.currentSession() };
   }
@@ -4865,9 +4867,22 @@ class IncrementalReadingPlugin extends Plugin {
 
   async setSchedulerMode(mode) {
     if (!['legacy', 'shadow', 'unified'].includes(mode)) return { ok: false, reason: 'E_MODE_INVALID' };
+    if (mode !== 'unified') {
+      const state = this._mfUs1UnresolvedState();
+      if (state.unsafe) {
+        new Notice('存在未完成的恢复/批次操作，已阻止切换到 Legacy/Shadow；请先在 Advanced tools 中完成恢复核验。', 15000);
+        return { ok: false, reason: 'E_RECOVERY_PENDING', legacyWritesBlocked: true, state };
+      }
+    }
+    // Always drop the previous session first: switching away and back must not
+    // resurrect a coordinator session whose tokens were already revoked.
+    const coordinator = this._mfUs1ActivationCoordinator();
+    if (mode !== 'unified') coordinator.revoke();
     this.settings.mf_us1_mode = mode;
     if (typeof this.saveSettings === 'function') await this.saveSettings();
     if (mode === 'unified') {
+      if (coordinator.isAuthorized()) coordinator.revoke();
+      this.mfUs1Suspended = false;
       if (this.mfUs1HostStorage) {
         await this._mfUs1RebuildAsyncLifecycle({ storage: this.mfUs1HostStorage, mode: 'unified', conditions: {}, authorization: null });
       }
@@ -4961,6 +4976,8 @@ class IncrementalReadingPlugin extends Plugin {
     this._mfUs1RevokeSessionCapabilities();
     this.mfUs1Suspended = true;
     this._mfUs1HostInstance = null;
+    this._refreshExcerptViews();
+    if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
     new Notice('Unified 授权已立即撤销：后续 Unified 写入将被拒绝，现场保持不变。', 14000);
     return { ok: true, tokenRevoked: true, hadSession: revoked.revoked, suspended: true };
   }

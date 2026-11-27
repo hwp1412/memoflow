@@ -95,3 +95,39 @@ test('update check handles release, no-release and failure states', async () => 
   assert.equal(failure.state, 'error');
   assert.equal(plugin._compareVersions('0.10.0', '0.9.9'), 1);
 });
+
+test('Unified → Legacy → Unified actually grades/reviews again after the round trip', async () => {
+  const { plugin, app } = setup();
+  // A migrated topic that Unified grading can write.
+  const file = makeFile(app, 'Sources/Cycle.md', {
+    type: 'source', status: 'active', priority: 50, interval: 8, a_factor: 1.5,
+    review_count: 1, next_review: '2026-11-10', last_reviewed: '2026-10-01', date_added: '2026-10-01',
+    mf_id: uuid(901), mf_revision: 0, mf_scheduler_version: 1,
+    mf_ideal_due: '2026-11-10', mf_not_before: 'null', mf_interval_days: 8, mf_last_event_id: 'null',
+  }, '# Cycle\n');
+  const first = await plugin.setSchedulerMode('unified');
+  assert.equal(first.ok, true, JSON.stringify(first.blockers || []));
+  const toLegacy = await plugin.setSchedulerMode('legacy');
+  assert.equal(toLegacy.ok, true);
+  assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, false);
+  const back = await plugin.setSchedulerMode('unified');
+  assert.equal(back.ok, true, JSON.stringify(back.blockers || []));
+  assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, true);
+  app.activeFile = file;
+  app.__promptState.quality = 3;
+  app.__promptState.confirm = true;
+  const review = await plugin.endSession();
+  assert.ok(review, 'review returns a host outcome after switching back');
+  const fm = (app.metadataCache.getFileCache(file) || {}).frontmatter || {};
+  assert.equal(Number(fm.mf_revision), 1, 'Unified review write applied after the round trip');
+});
+
+test('switching away from Unified is blocked while unresolved recovery exists', async () => {
+  const { plugin } = setup();
+  await plugin.setSchedulerMode('unified');
+  plugin.mfUs1Recovery = { healthy: true, recovered: [{ eventId: 'pending' }], blockedTopicIds: [] };
+  const blocked = await plugin.setSchedulerMode('legacy');
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.reason, 'E_RECOVERY_PENDING');
+  assert.equal(plugin.settings.mf_us1_mode, 'unified', 'mode is preserved when the switch is unsafe');
+});

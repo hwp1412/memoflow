@@ -39,3 +39,30 @@
 - `src/views/settings-tab.js`：调度算法选择器 + 版本更新检查。
 - `test/ux-simple-mode.test.js`：新增回归。
 - 既有测试按新语义更新（默认模式、模式菜单不再要求确认）。
+
+
+## 6. 审查后整合与修正（整合分支）
+
+### 整合
+- 本分支 = P4（`bc94009`）与 UX 简化（`a4f6262`）整合：保留真实 `MemoFlowSettingTab` 的修复、激活/撤销后的视图刷新，以及 UX 的算法选择器与版本检查；移除 P4 中与“日常无需授权流程”冲突的授权面板（由算法选择器取代）。
+
+### 修正
+1. **Unified → Legacy → Unified 过期授权**：切换离开 Unified 时同时 `coordinator.revoke()`；切回 Unified 时若协调器仍有旧会话先撤销，再重新签发并初始化运行时。测试实际执行 `endSession()` 评阅写入（Revision 0→1 通过），不是只查字段。
+2. **未决事件/批次切换保护**：切换到 Legacy/Shadow 前执行 `_mfUs1UnresolvedState()`；存在 pendingEvents/pendingBatch/blockedTopics 时阻止切换、保持原模式并提示。
+
+### 正式构建实机验收（一次性合成 Vault）
+| 检查 | 结果 |
+|---|---|
+| 首次启动自动 Unified | **Pass**（进程启动后 `authorized=true`，无弹窗） |
+| 首次评阅 | **Pass**（`endSession` applied） |
+| 重启后自动继续 Unified | **Pass**（重启后 `authorized=true`） |
+| 重启后评阅 | **Pass**（`endSession` applied） |
+| 切换 Legacy → 切回 Unified | **Pass**（`ok=true`、模式正确、重新授权） |
+| 切回后评阅 | **Pass**（`endSession` applied，Revision 2→3） |
+| 真实点击「检查更新」 | **Partial**：实际发起 GitHub API 请求，返回 **HTTP 403**（未认证限流），UI 正确显示“检查失败”；`latest/update/no-release` 分支仅有单元测试覆盖，未在真实 API 验证成功路径 |
+
+证据：`e2e-artifacts/ux-integration.json`。
+
+### 尚未解决
+- GitHub API 未认证限流（403）：成功路径需在正常限流环境或加缓存/认证后复测；不影响“检查失败”提示正确性。
+- 版本更新仅支持检查与打开发布页，未做 GitHub 一键安装（待分发方式决定）。
