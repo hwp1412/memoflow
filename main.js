@@ -2879,11 +2879,7 @@ class IncrementalReadingPlugin extends Plugin {
     }
     // Old legacy/shadow preferences are converted (and saved) to MF-US-1 so no
     // later code path can resurrect an old algorithm.
-    const convertedMode = this._mfUs1NormalizeMode(this.settings.mf_us1_mode);
-    if (this.settings.mf_us1_mode !== convertedMode) {
-      this.settings.mf_us1_mode = convertedMode;
-      Promise.resolve().then(() => this.saveSettings && this.saveSettings()).catch(() => {});
-    }
+    this._mfUs1ConvertPersistedMode();
     this.settings.session.types = { ...(this.settings.session.types || {}) };
     this.settings.session.readPoints = { ...(this.settings.session.readPoints || {}) };
     this.cardDueCache = new Map();
@@ -3970,6 +3966,16 @@ class IncrementalReadingPlugin extends Plugin {
     return 'unified';
   }
 
+  _mfUs1ConvertPersistedMode() {
+    const converted = this._mfUs1NormalizeMode(this.settings && this.settings.mf_us1_mode);
+    if (this.settings.mf_us1_mode === converted) return converted;
+    this.settings.mf_us1_mode = converted;
+    if (typeof this.saveSettings === 'function') {
+      Promise.resolve().then(() => this.saveSettings()).catch(() => {});
+    }
+    return converted;
+  }
+
   _mfUs1EffectiveMode() {
     // MemoFlow 1.0 has exactly one scheduler: MF-US-1. There is no raw legacy or
     // shadow value left to return; old preferences are converted on load.
@@ -4870,7 +4876,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mfUs1ProductionRevoke() {
-    const confirmed = await confirmDialog(this.app, '暂停 Unified 写入授权', '将立即撤销本次会话的 Unified 写入授权，并保留现场（不自动回退 Legacy 写入）。继续？');
+    const confirmed = await confirmDialog(this.app, '暂停 Unified 写入授权', '将立即撤销本次会话的 Unified 写入授权，并保留现场（不会启动任何旧调度写入）。继续？');
     if (!confirmed) return { ok: false, reason: 'E_CANCELLED' };
     return this.mfUs1RevokeUnifiedAuthorization();
   }
@@ -5305,7 +5311,7 @@ class IncrementalReadingPlugin extends Plugin {
       if (!parentId) {
         // No persistent parent identity => no trustworthy mf_parent_id. Refuse
         // instead of silently writing an extract that Unified cannot schedule.
-        new Notice('MF-US-1：父级缺少持久 mf_id，已阻止 Unified 创建（未回退 Legacy）。', 9000);
+        new Notice('MF-US-1：父级缺少持久 mf_id，已阻止 Unified 创建（没有启用旧调度）。', 9000);
         return { handled: true, outcome: { status: 'blocked', reason: 'E_PARENT_REQUIRED_FOR_UNIFIED' } };
       }
     }

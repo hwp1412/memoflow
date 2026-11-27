@@ -35,8 +35,9 @@ test('the effective scheduler is always MF-US-1, even with old legacy/shadow pre
 });
 
 test('old legacy preference is converted and saved on load, not resurrected', () => {
-  assert.match(SOURCE, /const convertedMode = this\._mfUs1NormalizeMode\(this\.settings\.mf_us1_mode\)/);
-  assert.match(SOURCE, /this\.settings\.mf_us1_mode = convertedMode/);
+  assert.match(SOURCE, /this\._mfUs1ConvertPersistedMode\(\)/);
+  assert.match(SOURCE, /_mfUs1ConvertPersistedMode\(\) \{/);
+  assert.match(SOURCE, /this\.settings\.mf_us1_mode = converted/);
 });
 
 test('no runtime is ever built in legacy or shadow mode', () => {
@@ -74,4 +75,22 @@ test('retired algorithm selection is refused and never executed', async () => {
     assert.equal(result.reason, 'E_ALGORITHM_RETIRED');
   }
   assert.equal(plugin._mfUs1EffectiveMode(), 'unified');
+});
+
+test('old preferences are converted, saved and survive a restart as MF-US-1', async () => {
+  const { plugin } = setup('shadow');
+  let saves = 0;
+  plugin.saveSettings = async () => { saves += 1; };
+  assert.equal(plugin._mfUs1ConvertPersistedMode(), 'unified');
+  assert.equal(plugin.settings.mf_us1_mode, 'unified');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(saves >= 1, 'converted preference is persisted');
+
+  // restart: load the saved value into a new plugin instance
+  const restarted = setup(plugin.settings.mf_us1_mode);
+  restarted.plugin._mfUs1ConvertPersistedMode();
+  assert.equal(restarted.plugin.settings.mf_us1_mode, 'unified');
+  assert.equal(restarted.plugin._mfUs1EffectiveMode(), 'unified');
+  const auto = await restarted.plugin._mfUs1AutoStartRuntime();
+  assert.equal(auto.ok, true, JSON.stringify(auto.blockers || []));
 });
