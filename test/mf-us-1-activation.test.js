@@ -257,13 +257,15 @@ test('after recovery the revoked token cannot be reused; activation needs fresh 
   assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, true);
 });
 
-test('the mode menu cannot bypass approval to issue synthetic capabilities', async () => {
+test('the mode menu requires an explicit user confirmation before activation', async () => {
   const { plugin, app } = setupPlugin();
   app.__promptState.quality = 'unified';
+  app.__promptState.confirm = false;
   const result = await plugin.mfUs1ModeMenu();
   assert.equal(result.ok, false);
-  assert.ok(result.blockers.includes('ACTIVATION_NOT_APPROVED'));
+  assert.equal(result.reason, 'E_CANCELLED');
   assert.notEqual(plugin.settings.mf_us1_mode, 'unified');
+  assert.equal(plugin.mfUs1ActivationDiagnostics().authorized, false);
 
   // Static guard: the synthetic capability is only minted inside the approved
   // activation branch, never in the mode menu / settings path.

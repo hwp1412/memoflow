@@ -6,6 +6,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createPlugin, makeFile, makeSettings, getNotices } = require('./helpers/obsidian-mock.js');
 const { uuid } = require('./helpers/unified-fixtures.js');
+const { createPluginDataCoordinator } = require('../src/integration/plugin-data-coordinator.js');
+const { BATCH_KEY } = require('../src/integration/batch-store.js');
 
 function setup(mode = 'legacy') {
   if (!global.window) {
@@ -13,6 +15,9 @@ function setup(mode = 'legacy') {
   }
   const { plugin, app } = createPlugin({ settings: makeSettings() });
   plugin.settings.mf_us1_mode = mode;
+  plugin.pluginData = createPluginDataCoordinator({ plugin, reservedKeys: ['mfUs1Ledger', BATCH_KEY], notice: () => {} });
+  plugin.mfUs1Recovery = { healthy: true, recovered: [], blockedTopicIds: [] };
+  plugin.mfUs1BatchRecovery = { batches: [], blockedTopicIds: [], summary: { checked: 0, manual: 0, pending: 0 } };
   return { plugin, app };
 }
 
@@ -30,7 +35,7 @@ test('migration preview is read-only and reports the legacy diff', async () => {
   assert.match(getNotices(app).join('\n'), /迁移预检（只读，未写入）/);
 });
 
-test('mode switch can select shadow but never activates unified', async () => {
+test('mode switch selects shadow and unified requires explicit confirmation', async () => {
   const { plugin, app } = setup();
   app.__promptState.quality = 'shadow';
   const switched = await plugin.mfUs1ModeMenu();
@@ -39,11 +44,16 @@ test('mode switch can select shadow but never activates unified', async () => {
 
   const before = plugin.settings.mf_us1_mode;
   app.__promptState.quality = 'unified';
-  const refused = await plugin.mfUs1ModeMenu();
-  assert.equal(refused.ok, false);
-  assert.ok(refused.blockers.length > 0);
-  assert.equal(plugin.settings.mf_us1_mode, before, 'mode must not change when activation is blocked');
-  assert.match(getNotices(app).join('\n'), /Unified 不可激活/);
+  app.__promptState.confirm = false;
+  const cancelled = await plugin.mfUs1ModeMenu();
+  assert.equal(cancelled.ok, false);
+  assert.equal(cancelled.reason, 'E_CANCELLED');
+  assert.equal(plugin.settings.mf_us1_mode, before, 'cancel must not change the mode');
+
+  app.__promptState.confirm = true;
+  const activated = await plugin.mfUs1ModeMenu();
+  assert.equal(activated.ok, true, JSON.stringify(activated.blockers || []));
+  assert.equal(plugin.settings.mf_us1_mode, 'unified');
 });
 
 test('diagnostics exposes shadow and migration state', () => {

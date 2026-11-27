@@ -3181,6 +3181,8 @@ class IncrementalReadingPlugin extends Plugin {
       { label: 'Resume pending batches…', run: () => this.resumePendingBatches() },
       { label: 'Migration preview (read-only)…', run: () => this.mfUs1MigrationPreview() },
       { label: 'MF-US-1 mode…', run: () => this.mfUs1ModeMenu() },
+      { label: 'MF-US-1: 激活 Unified（需确认）…', run: () => this.mfUs1ProductionActivate() },
+      { label: 'MF-US-1: 暂停/撤销 Unified 授权…', run: () => this.mfUs1ProductionRevoke() },
     ]);
   }
 
@@ -4507,6 +4509,10 @@ class IncrementalReadingPlugin extends Plugin {
       this.mfUs1Activation = createActivationCoordinator({
         // Production passes no approval provider: activation is always denied.
         approvalProvider: evaluation => {
+          // Formal UI path: set by mfUs1ProductionActivate() only AFTER an
+          // explicit user confirmation dialog. Never persisted, never settable
+          // from settings or a private field by the user.
+          if (this.mfUs1ProductionApproval === true) return true;
           if (typeof this.__mfUs1ActivationApproval === 'function' && this.__mfUs1ActivationApproval(evaluation) === true) {
             return true;
           }
@@ -4581,7 +4587,7 @@ class IncrementalReadingPlugin extends Plugin {
       indexComplete: scanComplete && unindexedFiles === 0,
       unindexedFiles,
       backupVerified: this.__mfUs1BackupVerified === true,
-      userConfirmed: this.__mfUs1ActivationConfirmed === true,
+      userConfirmed: this.__mfUs1ActivationConfirmed === true || this.mfUs1ProductionApproval === true,
       singleWriterReady: true,
     };
   }
@@ -4793,6 +4799,42 @@ class IncrementalReadingPlugin extends Plugin {
     };
   }
 
+  async mfUs1ProductionActivate() {
+    const status = this.mfUs1ActivationStatus();
+    // USER_CONFIRMATION_REQUIRED is satisfied by this very dialog, so it is not
+    // a pre-condition failure for the formal entry.
+    const blockers = status.evaluation.blockers.filter(code => code !== 'USER_CONFIRMATION_REQUIRED');
+    const topicInfo = `Topic：${status.evidence.topicCount}（旧格式 ${status.evidence.legacyTopicCount}；索引完整=${status.evidence.indexComplete ? '是' : '未知'}）`;
+    const lines = [
+      `当前模式：${this._mfUs1EffectiveMode()}`,
+      topicInfo,
+      `恢复：${status.evidence.recoveryHealthy ? '健康' : '异常'} · 批次恢复：${status.evidence.batchRecoveryError ? '异常' : '正常'}`,
+      `阻断项：${blockers.length ? blockers.join('、') : '无'}`,
+    ];
+    const proceed = await confirmDialog(this.app, 'MF-US-1 激活检查', lines.join('\n') + '\n\n确认后将执行完整安全检查，并为本次会话签发 Unified 写入授权。');
+    if (!proceed) return { ok: false, reason: 'E_CANCELLED' };
+    if (blockers.length) {
+      new Notice(`Unified 不可激活：${blockers.join('、')}`, 15000);
+      return { ok: false, blockers, reason: blockers[0] };
+    }
+    this.mfUs1ProductionApproval = true;
+    try {
+      const result = await this.mfUs1ActivateUnified();
+      if (result && result.ok) {
+        new Notice('Unified 已激活（本次会话授权）。可在「暂停/撤销 Unified 授权」中立即撤销。', 12000);
+      }
+      return result;
+    } finally {
+      this.mfUs1ProductionApproval = false;
+    }
+  }
+
+  async mfUs1ProductionRevoke() {
+    const confirmed = await confirmDialog(this.app, '暂停 Unified 写入授权', '将立即撤销本次会话的 Unified 写入授权，并保留现场（不自动回退 Legacy 写入）。继续？');
+    if (!confirmed) return { ok: false, reason: 'E_CANCELLED' };
+    return this.mfUs1RevokeUnifiedAuthorization();
+  }
+
   _mfUs1RevokeSessionCapabilities() {
     const session = this.mfUs1SessionCapabilities || null;
     this.mfUs1SessionCapabilities = null;
@@ -4873,7 +4915,7 @@ class IncrementalReadingPlugin extends Plugin {
     const modes = await pickFromList(this.app, ['Legacy', 'Shadow', 'Unified（需要激活条件）'], ['legacy', 'shadow', 'unified'], 'MF-US-1 mode');
     if (!modes) return null;
     if (modes === 'unified') {
-      return this.mfUs1ActivateUnified();
+      return this.mfUs1ProductionActivate();
     }
     if (this.mfUs1Suspended) {
       const state = this._mfUs1UnresolvedState();
