@@ -3565,14 +3565,19 @@ class IncrementalReadingPlugin extends Plugin {
     const mode = this._mfUs1EffectiveMode();
     if (mode === 'unified') {
       // Unified pool: canonical mf_* projection only; cards keep their SR path.
+      // The projector expects an ISO date; the display format (e.g. DD-MM-YYYY)
+      // must never be passed here or every queue build fails with
+      // "MF-US-1 队列投影失败" (real-device finding).
       const { buildUnifiedQueue } = require('./src/integration/unified-queue-source.js');
       const rows = this.getIRRows();
+      const isoToday = this._mfUs1IsoToday();
       let source;
       try {
-        source = buildUnifiedQueue({ rows, mode, today: dateKey, config: this.settings.queueConfig || undefined });
+        source = buildUnifiedQueue({ rows, mode, today: isoToday, dateFormat: 'YYYY-MM-DD', config: this.settings.queueConfig || undefined });
       } catch (error) {
         console.error('[IR] unified queue source failed', error);
-        new Notice('MF-US-1 队列投影失败，本次不建立队列。', 9000);
+        const code = error && error.code ? `（${error.code}）` : '';
+        new Notice(`MF-US-1 队列投影失败${code}，本次不建立队列。请在诊断中查看日期/字段问题。`, 10000);
         return [];
       }
       if (source.diagnostics.length) this.mfUs1QueueDiagnostics = source.diagnostics;
