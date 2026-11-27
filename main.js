@@ -3162,7 +3162,6 @@ class IncrementalReadingPlugin extends Plugin {
       { label: 'Set priority', run: () => this.setPriority() },
       { label: 'Boost priority', run: () => this.boost() },
       { label: 'Open parent', run: () => this.openParent() },
-      { label: 'Open PDF (Toolkit viewer)', run: () => this.openPdf() },
       { label: 'Toggle read-point', run: () => this.toggleReadPoint() },
       { label: 'Jump to read-point', run: () => this.jumpToReadPoint() },
       { label: 'Add timeline checkpoint', run: () => this.addCheckpoint() },
@@ -6948,7 +6947,7 @@ ${body}
 
     let body = `\n# ${title}\n\n`;
     if (sourceType === 'book' || sourceType === 'pdf') {
-      body += `> [!tip] Open in viewer\n> Run **Incremental Reading Toolkit: Open PDF (Toolkit viewer)**. Vault and external PDFs are supported.\n\n`;
+      body += `> [!tip] 打开 PDF\n> 用 Obsidian 原生 PDF 阅读器打开此文件；MemoFlow 操作条会自动出现，可直接剪贴摘录。\n\n`;
     } else if (sourceType === 'youtube') {
       body += `<iframe width="640" height="360" src="https://www.youtube.com/embed/${video_id}?start=${read_point_seconds}" frameborder="0" allowfullscreen></iframe>\n\n`;
     } else if (sourceType === 'video') {
@@ -7170,7 +7169,7 @@ ${body}
     const fm = getFm(this.app, active);
     if (!fm || fm.type !== 'source') { notifyUser('Not an incremental reading source.'); return; }
     if (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path) {
-      notifyUser('PDF source — use Open PDF (Toolkit viewer).'); return;
+      notifyUser('PDF 来源——请用 Obsidian 原生 PDF 阅读器打开。'); return;
     }
     const editor = getEditorForFile(this.app, active);
     const cursor = editor?.getCursor?.();
@@ -7220,7 +7219,7 @@ ${body}
     const fm = getFm(this.app, active);
     if (!fm || fm.type !== 'source') { if (!silent) notifyUser('Not an incremental reading source.'); return; }
     if (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path) {
-      if (!silent) notifyUser('PDF — use Open PDF (Toolkit viewer).'); return;
+      if (!silent) notifyUser('PDF——请用 Obsidian 原生 PDF 阅读器打开。'); return;
     }
     const openEditor = getEditorForFile(this.app, active);
     let line = Math.max(0, (Number(fm.read_point_line) || 0) - 1);

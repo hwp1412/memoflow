@@ -167,7 +167,6 @@ class MemoFlowPlugin extends BasePlugin {
       { label: MENU_LABELS.current[5], run: () => this.setPriority() },
       { label: MENU_LABELS.current[6], run: () => this.boost() },
       { label: MENU_LABELS.current[7], run: () => this.openParent() },
-      { label: MENU_LABELS.current[8], run: () => this.openPdf() },
       { label: MENU_LABELS.current[9], run: () => this.toggleReadPoint() },
       { label: MENU_LABELS.current[10], run: () => this.jumpToReadPoint() },
       { label: MENU_LABELS.current[11], run: () => this.addCheckpoint() },
@@ -632,7 +631,6 @@ class MemoFlowPlugin extends BasePlugin {
       add('设置优先级…', 'priority');
       add('手动排期…', 'schedule');
       if (fm.type === 'source' && (fm.total_pages || fm.pdf_path || fm.pdf_vault_path || fm.sioyek_path)) {
-        add('打开 PDF 阅读点', 'open-pdf');
       }
       add('延后 1 天', 'postpone', { days: 1 });
       add('延后 3 天', 'postpone', { days: 3 });
