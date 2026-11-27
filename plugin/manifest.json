@@ -1,7 +1,7 @@
 {
   "id": "memoflow",
   "name": "MemoFlow",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.12.7",
   "description": "A paper-and-ink study console for incremental reading, priorities, and spaced repetition.",
   "author": "三斤的多多 / DeepSeek",

@@ -1,5 +1,12 @@
 # MemoFlow changelog
 
+## 1.0.2 — 2026-11-28
+
+### Fixed
+- 阅读条「剪贴摘录」失败（提示 `eventId must be a UUID`）：时间戳摘录不再经过调度 Host，直接走创建向导 + MF-US-1 创建网关。
+
+---
+
 ## 1.0.1 — 2026-11-28
 
 ### Fixed

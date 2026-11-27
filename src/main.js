@@ -1392,7 +1392,10 @@ class MemoFlowPlugin extends BasePlugin {
   }
 
   async createTimestampExtract(options = {}) {
-    return this._mfUs1RunLegacy({ action: 'CREATE_EXTRACT' }, () => this._createTimestampExtractLegacy(options));
+    // Creation has its own prompt flow and the writer below routes the write
+    // through the MF-US-1 creation gateway. Sending CREATE_EXTRACT through the
+    // scheduling host produced "eventId must be a UUID" on the reading bar.
+    return this._createTimestampExtractLegacy(options);
   }
 
   async _createTimestampExtractLegacy({ fromSelection = true, text = null, sourceFile = null, page = null, pageFallback = null, open = true } = {}) {

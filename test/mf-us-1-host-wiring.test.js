@@ -68,8 +68,11 @@ test('every audited root entry delegates through the host scheduler service', ()
   assert.match(mainSource, /schedulerDashboardModel\(/);
 });
 
-test('reading-page extraction and mercy routing delegate in src/main.js', () => {
-  assert.match(srcSource, /async createTimestampExtract\(options = \{\}\) \{[\s\S]{0,200}?_mfUs1RunLegacy\(\{ action: 'CREATE_EXTRACT' \}/);
+test('reading-page extraction bypasses the host while mercy still routes in src/main.js', () => {
+  // Creation has its own prompt flow + creation gateway; routing it through the
+  // scheduling host produced "eventId must be a UUID" in 1.0.1.
+  assert.match(srcSource, /async createTimestampExtract\(options = \{\}\) \{[\s\S]{0,400}?return this\._createTimestampExtractLegacy\(options\);/);
+  assert.equal(/async createTimestampExtract[\s\S]{0,400}?_mfUs1RunLegacy/.test(srcSource), false);
   assert.match(srcSource, /async spreadOverdue\(overdueRows, days\) \{[\s\S]{0,200}?_mfUs1RunLegacy\(\{ action: 'MERCY_APPLY' \}/);
 });
 
