@@ -1498,7 +1498,11 @@ class MemoFlowPlugin extends BasePlugin {
     let created = null;
     let bumpFailed = null;
     if (mfCreation.handled) {
-      if (mfCreation.outcome.status !== 'applied' && mfCreation.outcome.status !== 'duplicate') return null;
+      if (mfCreation.outcome.status !== 'applied' && mfCreation.outcome.status !== 'duplicate') {
+        console.error('[MemoFlow] timestamp extract creation failed', mfCreation.outcome);
+        new Notice(`摘录创建失败：${(mfCreation.outcome && mfCreation.outcome.reason) || mfCreation.outcome.status || '未知错误'}。详情见控制台。`, 9000);
+        return null;
+      }
       created = this.app.vault.getAbstractFileByPath(path);
       if (!created) {
         new Notice(`摘录创建结果未确认：${path}。请检查 Vault 后手动恢复。`, 9000);

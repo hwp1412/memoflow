@@ -6871,8 +6871,24 @@ ${body}
     let read_point_seconds = null, total_seconds = null;
 
     if (sourceType === 'book' || sourceType === 'pdf') {
-      pdf_path = await askText(this.app, 'PDF path (vault-relative or absolute)', '');
-      if (pdf_path) pdf_path = pdf_path.replace(/^['"]|['"]$/g, '');
+      // Prefer choosing a PDF from the vault; fall back to a manual path when the
+      // vault has none (or the picker is cancelled).
+      // Only the configured attachments folder is scanned (the release policy
+      // forbids enumerating the whole vault); other PDFs can be typed manually.
+      const vaultPdfs = filesInFolder(this.app, this.attachmentsFolder())
+        .filter(f => f.extension === 'pdf')
+        .sort((a, b) => a.path.localeCompare(b.path));
+      let chosenPath = null;
+      if (vaultPdfs.length) {
+        const picked = await pickFuzzy(this.app, vaultPdfs, f => f.path, '选择附件文件夹中的 PDF（取消可手动输入其他路径）');
+        if (picked) chosenPath = picked.path;
+      }
+      if (!chosenPath) {
+        const manual = await askText(this.app, 'PDF 路径（Vault 相对或绝对路径，可留空）', '');
+        if (manual === null) return;
+        chosenPath = manual.trim() ? manual.replace(/^['"]|['"]$/g, '') : null;
+      }
+      pdf_path = chosenPath;
       const pages = await askText(this.app, 'Total pages', '');
       if (pages === null) return;
       if (pages.trim() && !/^[1-9]\d*$/.test(pages.trim())) {
@@ -6972,9 +6988,13 @@ ${body}
       content: sourceContent,
     });
     if (mfCreation.handled) {
-      if (mfCreation.outcome.status === 'applied' || mfCreation.outcome.status === 'duplicate') {
+      const status = mfCreation.outcome && mfCreation.outcome.status;
+      if (status === 'applied' || status === 'duplicate') {
         const created = this.app.vault.getAbstractFileByPath(path);
         if (created) await this.app.workspace.getLeaf(false).openFile(created);
+      } else {
+        console.error('[MemoFlow] source creation failed', mfCreation.outcome);
+        notifyUser(`创建来源失败：${(mfCreation.outcome && mfCreation.outcome.reason) || status || '未知错误'}。详情见控制台。`);
       }
       return;
     }
