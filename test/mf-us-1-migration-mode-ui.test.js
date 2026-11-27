@@ -35,30 +35,4 @@ test('migration preview is read-only and reports the legacy diff', async () => {
   assert.match(getNotices(app).join('\n'), /迁移预检（只读，未写入）/);
 });
 
-test('mode switch selects shadow and unified requires explicit confirmation', async () => {
-  const { plugin, app } = setup();
-  app.__promptState.quality = 'shadow';
-  const switched = await plugin.mfUs1ModeMenu();
-  assert.equal(switched.ok, true);
-  assert.equal(plugin.settings.mf_us1_mode, 'shadow');
 
-  const before = plugin.settings.mf_us1_mode;
-  app.__promptState.quality = 'unified';
-  app.__promptState.confirm = false;
-  const cancelled = await plugin.mfUs1ModeMenu();
-  assert.equal(cancelled.ok, false);
-  assert.equal(cancelled.reason, 'E_CANCELLED');
-  assert.equal(plugin.settings.mf_us1_mode, before, 'cancel must not change the mode');
-
-  app.__promptState.confirm = true;
-  const activated = await plugin.mfUs1ModeMenu();
-  assert.equal(activated.ok, true, JSON.stringify(activated.blockers || []));
-  assert.equal(plugin.settings.mf_us1_mode, 'unified');
-});
-
-test('diagnostics exposes shadow and migration state', () => {
-  const { plugin } = setup('shadow');
-  const text = String(plugin.mfUs1Diagnostics());
-  assert.match(text, /Shadow 最近差异/);
-  assert.match(text, /迁移预检/);
-});

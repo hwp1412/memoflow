@@ -1,0 +1,232 @@
+{
+  "phase": 2,
+  "authorizedAfterRestart": true,
+  "review2": {
+    "status": "applied",
+    "duplicate": false,
+    "recovered": false,
+    "writesPerformed": true,
+    "record": {
+      "eventId": "00000000-0000-4000-8000-c57ee9d335a1",
+      "topicId": "00000000-0000-4000-8000-0000000000e1",
+      "fingerprint": "592d4617434930fe3b155a7cbbbf8e665fc8f16829407ef8da4b0184da7788e3",
+      "type": "ADVANCED",
+      "algorithmVersion": 1,
+      "expectedRevision": 1,
+      "today": "2026-11-27",
+      "eventDate": "2026-11-27",
+      "payload": null,
+      "status": "applied",
+      "beforeHash": "854baf58e88c064e9d65e8015ed8a09b094791771175de72e2ac6651a09eab74",
+      "expectedAfterHash": "95774569cd53567ffaf11b00b222a079a425858d24b38c6315436e83681b721c",
+      "afterHash": "95774569cd53567ffaf11b00b222a079a425858d24b38c6315436e83681b721c",
+      "actualRevision": 2,
+      "fields": {
+        "mf_revision": 2,
+        "mf_last_event_id": "00000000-0000-4000-8000-c57ee9d335a1",
+        "mf_interval_days": 18,
+        "mf_ideal_due": "2026-12-15",
+        "review_count": 3,
+        "next_review": "15-12-2026"
+      },
+      "audit": {
+        "eventId": "00000000-0000-4000-8000-c57ee9d335a1",
+        "topicId": "00000000-0000-4000-8000-0000000000e1",
+        "algorithmVersion": 1,
+        "type": "ADVANCED",
+        "today": "2026-11-27",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "before": {
+          "priority": 60,
+          "intervalDays": 12,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-09",
+          "notBefore": null,
+          "effectiveDue": "2026-12-09",
+          "reviewCount": 2,
+          "status": "active"
+        },
+        "after": {
+          "priority": 60,
+          "intervalDays": 18,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-15",
+          "notBefore": null,
+          "effectiveDue": "2026-12-15",
+          "reviewCount": 3,
+          "status": "active"
+        },
+        "writesPerformed": true,
+        "result": "applied",
+        "reason": null,
+        "requiresManualRecovery": false
+      },
+      "result": "applied",
+      "reason": null,
+      "writeAttempted": true,
+      "writesPerformed": true
+    },
+    "audit": {
+      "eventId": "00000000-0000-4000-8000-c57ee9d335a1",
+      "topicId": "00000000-0000-4000-8000-0000000000e1",
+      "algorithmVersion": 1,
+      "type": "ADVANCED",
+      "today": "2026-11-27",
+      "expectedRevision": 1,
+      "actualRevision": 2,
+      "before": {
+        "priority": 60,
+        "intervalDays": 12,
+        "aFactor": 1.5,
+        "idealDue": "2026-12-09",
+        "notBefore": null,
+        "effectiveDue": "2026-12-09",
+        "reviewCount": 2,
+        "status": "active"
+      },
+      "after": {
+        "priority": 60,
+        "intervalDays": 18,
+        "aFactor": 1.5,
+        "idealDue": "2026-12-15",
+        "notBefore": null,
+        "effectiveDue": "2026-12-15",
+        "reviewCount": 3,
+        "status": "active"
+      },
+      "writesPerformed": true,
+      "result": "applied",
+      "reason": null,
+      "requiresManualRecovery": false
+    }
+  },
+  "toLegacy": {
+    "ok": true,
+    "mode": "legacy"
+  },
+  "modeLegacy": "legacy",
+  "backUnified": {
+    "ok": true,
+    "session": {
+      "issuedAt": "2026-11-27T08:43:18.549Z",
+      "revoked": false,
+      "conditions": {
+        "migrationComplete": true,
+        "migrationNotRequired": true,
+        "pendingRecovery": false,
+        "singleWriterReady": true,
+        "backupVerified": true,
+        "userConfirmed": true,
+        "storageSupportsCas": true
+      }
+    }
+  },
+  "authorizedAfterCycle": true,
+  "review3": {
+    "status": "applied",
+    "duplicate": false,
+    "recovered": false,
+    "writesPerformed": true,
+    "record": {
+      "eventId": "00000000-0000-4000-8000-dfe20c7f7edb",
+      "topicId": "00000000-0000-4000-8000-0000000000e1",
+      "fingerprint": "1f342f04f67cf58886ee12fd0e5faa544c20f9c6eee2c432f1218d426f8bdc52",
+      "type": "ADVANCED",
+      "algorithmVersion": 1,
+      "expectedRevision": 2,
+      "today": "2026-11-27",
+      "eventDate": "2026-11-27",
+      "payload": null,
+      "status": "applied",
+      "beforeHash": "95774569cd53567ffaf11b00b222a079a425858d24b38c6315436e83681b721c",
+      "expectedAfterHash": "7e118927a9a086b53db546919a6f0c565f7860a01af7a9794610bb8047953c69",
+      "afterHash": "7e118927a9a086b53db546919a6f0c565f7860a01af7a9794610bb8047953c69",
+      "actualRevision": 3,
+      "fields": {
+        "mf_revision": 3,
+        "mf_last_event_id": "00000000-0000-4000-8000-dfe20c7f7edb",
+        "mf_interval_days": 27,
+        "mf_ideal_due": "2026-12-24",
+        "review_count": 4,
+        "next_review": "24-12-2026"
+      },
+      "audit": {
+        "eventId": "00000000-0000-4000-8000-dfe20c7f7edb",
+        "topicId": "00000000-0000-4000-8000-0000000000e1",
+        "algorithmVersion": 1,
+        "type": "ADVANCED",
+        "today": "2026-11-27",
+        "expectedRevision": 2,
+        "actualRevision": 3,
+        "before": {
+          "priority": 60,
+          "intervalDays": 18,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-15",
+          "notBefore": null,
+          "effectiveDue": "2026-12-15",
+          "reviewCount": 3,
+          "status": "active"
+        },
+        "after": {
+          "priority": 60,
+          "intervalDays": 27,
+          "aFactor": 1.5,
+          "idealDue": "2026-12-24",
+          "notBefore": null,
+          "effectiveDue": "2026-12-24",
+          "reviewCount": 4,
+          "status": "active"
+        },
+        "writesPerformed": true,
+        "result": "applied",
+        "reason": null,
+        "requiresManualRecovery": false
+      },
+      "result": "applied",
+      "reason": null,
+      "writeAttempted": true,
+      "writesPerformed": true
+    },
+    "audit": {
+      "eventId": "00000000-0000-4000-8000-dfe20c7f7edb",
+      "topicId": "00000000-0000-4000-8000-0000000000e1",
+      "algorithmVersion": 1,
+      "type": "ADVANCED",
+      "today": "2026-11-27",
+      "expectedRevision": 2,
+      "actualRevision": 3,
+      "before": {
+        "priority": 60,
+        "intervalDays": 18,
+        "aFactor": 1.5,
+        "idealDue": "2026-12-15",
+        "notBefore": null,
+        "effectiveDue": "2026-12-15",
+        "reviewCount": 3,
+        "status": "active"
+      },
+      "after": {
+        "priority": 60,
+        "intervalDays": 27,
+        "aFactor": 1.5,
+        "idealDue": "2026-12-24",
+        "notBefore": null,
+        "effectiveDue": "2026-12-24",
+        "reviewCount": 4,
+        "status": "active"
+      },
+      "writesPerformed": true,
+      "result": "applied",
+      "reason": null,
+      "requiresManualRecovery": false
+    }
+  },
+  "revAfterReview3": 3,
+  "update": {
+    "state": "error",
+    "current": "0.1.0",
+    "message": "Request failed, status 403"
+  }
+}

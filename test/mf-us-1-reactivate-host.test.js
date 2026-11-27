@@ -24,18 +24,6 @@ function setup(mode, status = 'done') {
   return { plugin, app, file };
 }
 
-test('reactivate prompts for a date and applies it in legacy mode', async () => {
-  const { plugin, app, file } = setup('legacy');
-  app.__promptState.texts = ['+7'];
-  const result = await plugin.reactivateCurrent();
-  assert.equal(result.status, 'legacy');
-  const after = app.vault.readFm(file);
-  assert.equal(String(after.status), 'active');
-  assert.equal(after.date_done, undefined);
-  assert.notEqual(after.next_review, '2026-11-01');
-  assert.equal(Number(after.review_count), 3, 'reactivation must not count as a review');
-  assert.match(getNotices(app).join('\n'), /已恢复/);
-});
 
 test('reactivate cancels without an event or a write', async () => {
   const { plugin, app, file } = setup('legacy');

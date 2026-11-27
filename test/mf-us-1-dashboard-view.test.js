@@ -97,13 +97,3 @@ test('a confirmed priority change is reflected by the next dashboard refresh', a
   assert.deepEqual(view.model.queue.map(item => item.path), ['Sources/A.md', 'Sources/B.md'], 'refresh follows the new priority');
 });
 
-test('legacy mode dashboard keeps the legacy queue', async () => {
-  const { plugin, app } = createPlugin({ settings: makeSettings() });
-  plugin.settings.mf_us1_mode = 'legacy';
-  makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, next_review: '2026-01-01' }, '# legacy\n');
-  const view = makeView(plugin, app);
-  await view.refresh();
-  assert.equal(view.model.mode, 'legacy');
-  assert.equal(view.model.unified, null);
-  assert.ok(view.model.queue.some(item => item.path === 'Sources/Legacy.md'));
-});

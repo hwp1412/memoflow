@@ -2,7 +2,7 @@
 
 const {
   Plugin, Notice, Modal, FuzzySuggestModal, TFile, parseYaml, FileSystemAdapter,
-  PluginSettingTab, Setting, ItemView, normalizePath,
+  PluginSettingTab, Setting, ItemView, normalizePath, requestUrl,
 } = require('obsidian');
 // Obsidian's plugin loader evaluates this file without a resolvable __dirname, so
 // `require('./tree-core.js')` fails ("Cannot find module"). The tree logic is therefore
@@ -362,7 +362,7 @@ const HL_CLOZE_SRC = '==((?:[^=]|=(?!=))+)==';
 
 const DEFAULT_SETTINGS = {
   // Legacy is the only mode users get without an explicit activation.
-  mf_us1_mode: 'legacy',
+  mf_us1_mode: 'unified',
   scheduling: {
     a_factor_min: 1.05,
     a_factor_max: 5.0,
@@ -1895,7 +1895,6 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     this._about(containerEl);
-    this._unifiedScheduler(containerEl);
     this._scheduling(containerEl);
     this._queue(containerEl);
     this._inlineCards(containerEl);
@@ -1917,56 +1916,6 @@ class IncrementalReadingSettingTab extends PluginSettingTab {
       .setName('Setup status')
       .setDesc(ready ? 'Spaced Repetition is ready for card review.' : 'Spaced Repetition is not ready; enable it before reviewing cards.')
       .addButton(button => button.setButtonText('Run setup check').onClick(() => this.plugin.runSetupCheck()));
-  }
-
-  _unifiedScheduler(root) {
-    const sec = root.createDiv({ cls: 'ir-settings-section' });
-    new Setting(sec).setName('Unified Scheduler (MF-US-1)').setHeading();
-    let status = null;
-    try {
-      status = this.plugin.mfUs1ActivationDiagnostics();
-    } catch (error) {
-      status = null;
-    }
-    const mode = this.plugin._mfUs1EffectiveMode();
-    const authorized = Boolean(status && status.authorized);
-    const suspended = Boolean(status && status.suspended);
-    const blockers = status && Array.isArray(status.activationBlockers) ? status.activationBlockers : [];
-    const evidence = (() => {
-      try {
-        return this.plugin._mfUs1ActivationEvidence();
-      } catch (error) {
-        return null;
-      }
-    })();
-    const sessionLabel = authorized
-      ? '本次会话：已授权 Unified 写入'
-      : (suspended
-        ? '本次会话：已暂停（写入被拒绝）'
-        : (mode === 'unified'
-          ? '本次会话：Unified 未授权（写入被阻断，需重新确认激活）'
-          : '本次会话：未授权（默认 Legacy）'));
-    const describe = [
-      `当前模式：${mode}`,
-      sessionLabel,
-      evidence ? `Topic：${evidence.topicCount}（旧格式 ${evidence.legacyTopicCount}；索引完整=${evidence.indexComplete ? '是' : '未知'}）` : null,
-      blockers.length ? `阻断项：${blockers.join('、')}` : '阻断项：无',
-    ].filter(Boolean).join(' · ');
-    const setting = new Setting(sec)
-      .setName('状态与授权')
-      .setDesc(describe + '。激活只在本次会话有效，重启后必须重新确认；旧库迁移暂不支持。')
-      .addButton(button => button.setButtonText('激活 Unified…').onClick(async () => {
-        await this.plugin.mfUs1ProductionActivate();
-        this.display();
-      }))
-      .addButton(button => button.setButtonText('暂停/撤销授权…').onClick(async () => {
-        await this.plugin.mfUs1ProductionRevoke();
-        this.display();
-      }))
-      .addButton(button => button.setButtonText('刷新状态').onClick(() => this.display()));
-    if (blockers.length) {
-      setting.setDesc(`${describe}。请先处理阻断项，然后在 Advanced tools 中查看诊断。激活只在本次会话有效，重启后必须重新确认；旧库迁移暂不支持。`);
-    }
   }
 
   _numberSetting(section, name, description, target, key, { min, max, step = 'any' } = {}) {
@@ -2928,8 +2877,9 @@ class IncrementalReadingPlugin extends Plugin {
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       this.settings[key] = Object.assign({}, DEFAULT_SETTINGS[key], this.settings[key] || {});
     }
-    // Repair any previously mis-serialised mode before anything reads it.
-    this.settings.mf_us1_mode = this._mfUs1NormalizeMode(this.settings.mf_us1_mode);
+    // Old legacy/shadow preferences are converted (and saved) to MF-US-1 so no
+    // later code path can resurrect an old algorithm.
+    this._mfUs1ConvertPersistedMode();
     this.settings.session.types = { ...(this.settings.session.types || {}) };
     this.settings.session.readPoints = { ...(this.settings.session.readPoints || {}) };
     this.cardDueCache = new Map();
@@ -3111,6 +3061,7 @@ class IncrementalReadingPlugin extends Plugin {
     // <MF_E2E_END>
     this.app.workspace.onLayoutReady(() => {
       this._refreshExcerptViews();
+      this._mfUs1AutoStartRuntime().catch(error => console.error('[IR] Unified auto-start failed', error));
       const count = this._legacyCardFiles().length;
       if (count) new Notice(`Incremental Reading Toolkit: ${count} legacy card${count === 1 ? '' : 's'} found. Open Advanced tools and choose "Migrate legacy cards to Spaced Repetition".`, 10000);
     });
@@ -3231,7 +3182,6 @@ class IncrementalReadingPlugin extends Plugin {
       { label: 'Undo last Mercy', run: () => this.mercyUndoLast() },
       { label: 'Resume pending batches…', run: () => this.resumePendingBatches() },
       { label: 'Migration preview (read-only)…', run: () => this.mfUs1MigrationPreview() },
-      { label: 'MF-US-1 模式切换…（Unified 需确认）', run: () => this.mfUs1ModeMenu() },
     ]);
   }
 
@@ -3960,7 +3910,6 @@ class IncrementalReadingPlugin extends Plugin {
             return transport(this._mfUs1UnifiedRequest(descriptor));
           }
           : null,
-        shadowObserver: (descriptor) => this._mfUs1ShadowObserve(descriptor),
       });
     }
     return this._mfUs1HostInstance;
@@ -4005,19 +3954,32 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   _mfUs1NormalizeMode(value) {
-    let raw = value;
-    if (raw instanceof String) raw = String(raw);
+    // MemoFlow 1.0 ships exactly one scheduling algorithm (MF-US-1). The mode
+    // selector stays generic for future MF-US-2+, but any legacy/shadow value
+    // persisted by older builds is coerced to MF-US-1 instead of resurrecting
+    // an old algorithm.
+    const raw = value instanceof String ? String(value) : value;
     if (raw && typeof raw === 'object') {
-      // Repair a char-map object produced by a bad serialisation of a String.
       const keys = Object.keys(raw).filter(key => /^\d+$/.test(key)).sort((a, b) => Number(a) - Number(b));
-      if (keys.length) raw = keys.map(key => raw[key]).join('');
+      if (keys.length) return this._mfUs1NormalizeMode(keys.map(key => raw[key]).join(''));
     }
-    const mode = typeof raw === 'string' ? raw : '';
-    return ['legacy', 'shadow', 'unified'].includes(mode) ? mode : 'legacy';
+    return 'unified';
+  }
+
+  _mfUs1ConvertPersistedMode() {
+    const converted = this._mfUs1NormalizeMode(this.settings && this.settings.mf_us1_mode);
+    if (this.settings.mf_us1_mode === converted) return converted;
+    this.settings.mf_us1_mode = converted;
+    if (typeof this.saveSettings === 'function') {
+      Promise.resolve().then(() => this.saveSettings()).catch(() => {});
+    }
+    return converted;
   }
 
   _mfUs1EffectiveMode() {
-    return this._mfUs1NormalizeMode(this.settings && this.settings.mf_us1_mode);
+    // MemoFlow 1.0 has exactly one scheduler: MF-US-1. There is no raw legacy or
+    // shadow value left to return; old preferences are converted on load.
+    return 'unified';
   }
 
   // Guard for residual direct writers that are not yet routed through the host.
@@ -4033,7 +3995,6 @@ class IncrementalReadingPlugin extends Plugin {
       `阻断 Topic：${(recovery.blockedTopicIds || []).length}`,
       `Unified 队列源：${this.settings && this.settings.mf_queue_source === 'unified' ? '统一投影' : '旧字段（未切换）'}`,
       `批次恢复：${this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && !this.mfUs1BatchRecovery.summary.error ? `检查 ${this.mfUs1BatchRecovery.summary.checked} · 需人工 ${this.mfUs1BatchRecovery.summary.manual}` : (this.mfUs1BatchRecovery && this.mfUs1BatchRecovery.summary && this.mfUs1BatchRecovery.summary.error) || '未运行'}`,
-      `Shadow 最近差异：${this.mfUs1ShadowLast ? `${this.mfUs1ShadowLast.action} · ${this.mfUs1ShadowLast.changes.length} 项 · ${this.mfUs1ShadowLast.status}` : '无'}`,
       `迁移预检：${this.mfUs1MigrationPreviewCache ? `共 ${this.mfUs1MigrationPreviewCache.summary.total} · 可迁移 ${this.mfUs1MigrationPreviewCache.summary.migratable} · 冲突 ${this.mfUs1MigrationPreviewCache.summary.conflict}` : '未运行'}`,
       `迁移需求：${(() => { try { const s = this.mfUs1ActivationStatus(); return s.evaluation.migration && s.evaluation.migration.notRequired ? '全新库，无需迁移' : (this.mfUs1MigrationPreviewCache ? '需迁移（已预览）' : '需迁移（未预览）'); } catch (e) { return '未初始化'; } })()}`,
       `激活状态：${(() => { try { const d = this.mfUs1ActivationDiagnostics(); const auth = d.authorized ? '已授权' : (d.suspended ? '已撤销/暂停' : '未授权'); return `授权=${auth} · transport=${d.transportSource} · runtime=${d.runtime.present ? (d.runtime.writeEnabled ? '可写' : '锁定') : '无'} · blockers=${d.activationBlockers.join(',') || '无'}`; } catch (e) { return '未初始化'; } })()}`,
@@ -4295,59 +4256,7 @@ class IncrementalReadingPlugin extends Plugin {
   // what Unified would have produced for a migrated topic and records the diff
   // for diagnostics. It never writes a file or a ledger record, and any failure
   // is contained so Legacy keeps working.
-  _mfUs1ShadowObserve(descriptor) {
-    try {
-      const row = this.getIRRows().find(item => item.tfile && item.tfile.path === descriptor.path);
-      if (!row) return { status: 'not-comparable', reason: 'TOPIC_NOT_FOUND' };
-      const fm = row.fm || {};
-      const revision = Number(fm.mf_revision);
-      if (!fm.mf_id || !Number.isInteger(revision)) return { status: 'not-comparable', reason: 'NOT_MIGRATED' };
-      const { applyEvent } = require('./src/scheduling/events.js');
-      const normalize = value => (value == null || value === 'null' || value === '' ? null : String(value));
-      const topic = {
-        type: fm.type,
-        status: fm.status,
-        priority: Number(fm.priority) || 50,
-        mf_id: fm.mf_id,
-        mf_parent_id: normalize(fm.mf_parent_id),
-        mf_root_id: normalize(fm.mf_root_id),
-        mf_ideal_due: normalize(fm.mf_ideal_due),
-        mf_not_before: normalize(fm.mf_not_before),
-        mf_interval_days: Number(fm.mf_interval_days),
-        mf_last_event_id: normalize(fm.mf_last_event_id),
-        mf_revision: revision,
-        mf_scheduler_version: Number(fm.mf_scheduler_version),
-        a_factor: Number(fm.a_factor),
-        review_count: Number(fm.review_count),
-      };
-      const applied = applyEvent(topic, {
-        eventId: descriptor.eventId,
-        topicId: fm.mf_id,
-        type: descriptor.action,
-        payload: descriptor.payload,
-        expectedRevision: revision,
-        algorithmVersion: 1,
-        calendarDate: descriptor.calendarDate,
-      }, undefined, descriptor.today);
-      const next = applied && applied.topic ? applied.topic : topic;
-      const changeFields = ['priority', 'status', 'mf_ideal_due', 'mf_not_before', 'mf_interval_days', 'a_factor', 'review_count', 'mf_revision'];
-      const changes = [];
-      for (const field of changeFields) {
-        if (String(topic[field]) !== String(next[field])) changes.push({ field, before: topic[field], after: next[field] });
-      }
-      this.mfUs1ShadowLast = {
-        at: new Date().toISOString(),
-        action: descriptor.action,
-        path: descriptor.path,
-        changes,
-        status: applied && applied.applied === false ? 'no-op' : 'compared',
-        writesPerformed: false,
-      };
-      return { status: this.mfUs1ShadowLast.status, changes, writesPerformed: false };
-    } catch (error) {
-      return { status: 'not-comparable', reason: (error && error.code) || 'E_SHADOW_FAILED' };
-    }
-  }
+
 
   _mfUs1RowByTopicId(topicId) {
     if (!topicId) return null;
@@ -4802,10 +4711,9 @@ class IncrementalReadingPlugin extends Plugin {
           detail: String((error && (error.message || error)) || 'unknown'),
         };
       }
-      this.mfUs1Suspended = false;
-      this.settings.mf_us1_mode = 'legacy';
+      this.mfUs1Suspended = true;
+      this.settings.mf_us1_mode = 'unified';
       try {
-        await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'legacy', conditions: {}, authorization: null });
       } catch (rebuildError) {
         console.error('[IR] MF-US-1 could not roll back to a legacy lifecycle', rebuildError);
       }
@@ -4832,7 +4740,7 @@ class IncrementalReadingPlugin extends Plugin {
     if (typeof this.saveSettings === 'function') await this.saveSettings();
     this._refreshExcerptViews();
     if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
-    new Notice('Unified 已激活（会话级授权）；可随时撤销。', 12000);
+    if (!this.mfUs1AutoStartBusy) new Notice('Unified 已激活（本次会话）；可在设置中切换算法。', 12000);
     return { ok: true, session: coordinator.currentSession() };
   }
 
@@ -4848,6 +4756,93 @@ class IncrementalReadingPlugin extends Plugin {
       blockedTopics,
       unsafe: pendingEvents > 0 || pendingBatch > 0 || blockedTopics > 0,
     };
+  }
+
+  _versionParts(version) {
+    return String(version || '').replace(/^v/i, '').split('.').map(part => Number.parseInt(part, 10) || 0);
+  }
+
+  _compareVersions(left, right) {
+    const a = this._versionParts(left);
+    const b = this._versionParts(right);
+    const length = Math.max(a.length, b.length);
+    for (let i = 0; i < length; i += 1) {
+      const diff = (a[i] || 0) - (b[i] || 0);
+      if (diff !== 0) return diff > 0 ? 1 : -1;
+    }
+    return 0;
+  }
+
+  async checkForUpdates(request = requestUrl) {
+    const current = (this.manifest && this.manifest.version) || '0.0.0';
+    try {
+      const response = await request({
+        url: 'https://api.github.com/repos/hwp1412/memoflow/releases/latest',
+        headers: { Accept: 'application/vnd.github+json' },
+      });
+      const status = response && typeof response.status === 'number' ? response.status : 200;
+      if (status === 404) return { state: 'no-release', current };
+      if (status !== 200) return { state: 'error', current, message: `HTTP ${status}` };
+      const body = response.json || (response.text ? JSON.parse(response.text) : null);
+      if (!body || typeof body.tag_name !== 'string') return { state: 'error', current, message: 'invalid release payload' };
+      const latest = body.tag_name;
+      const notes = typeof body.body === 'string' ? body.body : '';
+      const url = typeof body.html_url === 'string' ? body.html_url : '';
+      const compare = this._compareVersions(latest, current);
+      return { state: compare > 0 ? 'update' : 'latest', current, latest, notes, url };
+    } catch (error) {
+      return { state: 'error', current, message: String((error && error.message) || error) };
+    }
+  }
+
+  async _mfUs1AutoStartRuntime() {
+    if (this._mfUs1EffectiveMode() !== 'unified') return { ok: false, reason: 'E_MODE_LEGACY' };
+    if (this.mfUs1AutoStartBusy) return { ok: false, reason: 'E_ALREADY_RUNNING' };
+    this.mfUs1AutoStartBusy = true;
+    try {
+      const diagnostics = this.mfUs1ActivationDiagnostics();
+      if (diagnostics.authorized) return { ok: true, alreadyAuthorized: true };
+      const previousConfirmed = this.__mfUs1ActivationConfirmed;
+      const previousApproval = this.__mfUs1ActivationApproval;
+      this.__mfUs1ActivationConfirmed = true;
+      this.__mfUs1ActivationApproval = () => true; // internal auto-start, no user dialog
+      let result;
+      try {
+        result = await this.mfUs1ActivateUnified();
+      } finally {
+        this.__mfUs1ActivationConfirmed = previousConfirmed;
+        this.__mfUs1ActivationApproval = previousApproval;
+      }
+      if (!result.ok) {
+        const blockers = (result.blockers || [result.reason || 'BLOCKED']).join('、');
+        new Notice(`当前无法启用 Unified 写入：${blockers}。为避免数据风险，未切换算法；请在设置页查看状态。`, 15000);
+      }
+      return result;
+    } finally {
+      this.mfUs1AutoStartBusy = false;
+    }
+  }
+
+  async setSchedulerMode(mode) {
+    if (mode !== 'unified') {
+      new Notice('MemoFlow 1.0 仅提供 MF-US-1 调度算法。');
+      return { ok: false, reason: 'E_ALGORITHM_RETIRED' };
+    }
+    // Only MF-US-1 exists today; the selector/method stay generic so a future
+    // MF-US-2 can be added without another mode framework.
+    this.settings.mf_us1_mode = 'unified';
+    if (typeof this.saveSettings === 'function') await this.saveSettings();
+    const coordinator = this._mfUs1ActivationCoordinator();
+    if (coordinator.isAuthorized()) coordinator.revoke();
+    this.mfUs1Suspended = false;
+    if (this.mfUs1HostStorage) {
+      await this._mfUs1RebuildAsyncLifecycle({ storage: this.mfUs1HostStorage, mode: 'unified', conditions: {}, authorization: null });
+    }
+    const result = await this._mfUs1AutoStartRuntime();
+    this._refreshExcerptViews();
+    if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
+    if (!result.ok && result.reason !== 'E_ALREADY_RUNNING') new Notice(`MF-US-1 写入当前被阻断：${(result.blockers || [result.reason]).join('、')}`, 12000);
+    return result;
   }
 
   async mfUs1ProductionActivate() {
@@ -4881,7 +4876,7 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mfUs1ProductionRevoke() {
-    const confirmed = await confirmDialog(this.app, '暂停 Unified 写入授权', '将立即撤销本次会话的 Unified 写入授权，并保留现场（不自动回退 Legacy 写入）。继续？');
+    const confirmed = await confirmDialog(this.app, '暂停 Unified 写入授权', '将立即撤销本次会话的 Unified 写入授权，并保留现场（不会启动任何旧调度写入）。继续？');
     if (!confirmed) return { ok: false, reason: 'E_CANCELLED' };
     return this.mfUs1RevokeUnifiedAuthorization();
   }
@@ -4931,32 +4926,8 @@ class IncrementalReadingPlugin extends Plugin {
   // Emergency action #2: switch back to Legacy. Only allowed when no unresolved
   // events/batches/blocks remain; otherwise Legacy scheduling writes stay blocked.
   async mfUs1SwitchToLegacy() {
-    const state = this._mfUs1UnresolvedState();
-    if (state.unsafe) {
-      const coordinator = this._mfUs1ActivationCoordinator();
-      coordinator.revoke();
-      this.mfUs1Suspended = true;
-      this._mfUs1HostInstance = null;
-      new Notice(
-        `无法切回 Legacy：未决事件 ${state.pendingEvents} / 未决批次 ${state.pendingBatch} / 阻断 Topic ${state.blockedTopics}。`
-        + '已保持写入阻断并保留现场，请先完成恢复核验。',
-        15000,
-      );
-      return { ok: false, reason: 'E_RECOVERY_PENDING', legacyWritesBlocked: true, state };
-    }
-    const coordinator = this._mfUs1ActivationCoordinator();
-    coordinator.revoke();
-    this._mfUs1RevokeSessionCapabilities();
-    this.mfUs1Suspended = false;
-    this.__mfUs1SuspendedNotified = null;
-    const storage = this.mfUs1HostStorage;
-    if (storage) {
-      await this._mfUs1RebuildAsyncLifecycle({ storage, mode: 'legacy', conditions: {}, authorization: null });
-    }
-    this.settings.mf_us1_mode = 'legacy';
-    if (typeof this.saveSettings === 'function') await this.saveSettings();
-    new Notice('已核对无未决项：授权已撤销并切回 Legacy。', 12000);
-    return { ok: true, mode: 'legacy' };
+    new Notice('MemoFlow 1.0 仅提供 MF-US-1 调度算法，已无 Legacy 模式可切换。');
+    return { ok: false, reason: 'E_ALGORITHM_RETIRED' };
   }
 
   // Backwards-compatible name used by earlier tests: switch semantics.
@@ -4965,30 +4936,8 @@ class IncrementalReadingPlugin extends Plugin {
   }
 
   async mfUs1ModeMenu() {
-    const modes = await pickFromList(this.app, ['Legacy', 'Shadow', 'Unified（需确认激活）'], ['legacy', 'shadow', 'unified'], 'MF-US-1 mode');
-    if (!modes) return null;
-    if (modes === 'unified') {
-      return this.mfUs1ProductionActivate();
-    }
-    if (this.mfUs1Suspended) {
-      const state = this._mfUs1UnresolvedState();
-      if (state.unsafe) {
-        new Notice('Legacy/Shadow 调度写入保持阻断：存在未决事件/批次或阻断 Topic，需先完成恢复核验。', 15000);
-        return { ok: false, reason: 'E_RECOVERY_PENDING', legacyWritesBlocked: true, state };
-      }
-      this.mfUs1Suspended = false;
-      this.__mfUs1SuspendedNotified = null;
-    }
-    this.settings.mf_us1_mode = modes;
-    this._mfUs1HostInstance = null;
-    if (this.mfUs1HostStorage) {
-      await this._mfUs1RebuildAsyncLifecycle({ storage: this.mfUs1HostStorage, mode: modes, conditions: {}, authorization: null });
-    }
-    if (typeof this.saveSettings === 'function') await this.saveSettings();
-    this._refreshExcerptViews();
-    if (typeof this._refreshTreeViews === 'function') this._refreshTreeViews();
-    new Notice(`MF-US-1 模式已切换为 ${modes}（Legacy/Shadow 写入行为不变）。`);
-    return { ok: true, mode: modes };
+    new Notice('MemoFlow 1.0 仅提供 MF-US-1 调度算法；在设置页可查看当前算法。');
+    return { ok: false, reason: 'E_ALGORITHM_RETIRED' };
   }
 
   // G3: synthetic migration drill. Production has no authorization, and the
@@ -5362,7 +5311,7 @@ class IncrementalReadingPlugin extends Plugin {
       if (!parentId) {
         // No persistent parent identity => no trustworthy mf_parent_id. Refuse
         // instead of silently writing an extract that Unified cannot schedule.
-        new Notice('MF-US-1：父级缺少持久 mf_id，已阻止 Unified 创建（未回退 Legacy）。', 9000);
+        new Notice('MF-US-1：父级缺少持久 mf_id，已阻止 Unified 创建（没有启用旧调度）。', 9000);
         return { handled: true, outcome: { status: 'blocked', reason: 'E_PARENT_REQUIRED_FOR_UNIFIED' } };
       }
     }

@@ -319,12 +319,3 @@ test('batch planning waits for the IR index and blocks with a clear reason on ti
   plugin.getIRRows = realGet;
 });
 
-test('a corrupted persisted mode is repaired instead of breaking lifecycle init', async () => {
-  const { plugin } = await harness();
-  plugin.settings.mf_us1_mode = new String('unified');
-  assert.equal(plugin._mfUs1EffectiveMode(), 'unified', 'String object normalised');
-  plugin.settings.mf_us1_mode = { 0: 's', 1: 'h', 2: 'a', 3: 'd', 4: 'o', 5: 'w' };
-  assert.equal(plugin._mfUs1EffectiveMode(), 'shadow', 'char-map object repaired');
-  plugin.settings.mf_us1_mode = 'not-a-mode';
-  assert.equal(plugin._mfUs1EffectiveMode(), 'legacy', 'unknown mode fails closed to legacy');
-});

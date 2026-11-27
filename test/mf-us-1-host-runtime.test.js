@@ -284,14 +284,6 @@ test('a unified setting without an injected transport still refuses and never ru
 
 // ---- 8. legacy default unchanged ----------------------------------------
 
-test('the default legacy mode still routes through the legacy implementation', async () => {
-  const { plugin, app } = await harness({ mode: 'legacy' });
-  const file = addTopic(app, 'Sources/I.md', uuid(9));
-  let legacyCalls = 0;
-  plugin._gradeTopicLegacy = () => { legacyCalls += 1; return { ok: true }; };
-  await plugin._gradeTopic(file, fmOf(app, file), TODAY);
-  assert.equal(legacyCalls, 1);
-});
 
 // ---- 9. Card is not a scheduling object ----------------------------------
 

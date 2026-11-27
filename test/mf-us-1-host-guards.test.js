@@ -95,13 +95,6 @@ test('unified extraction fails closed without creation authorization; import/spl
   assert.equal(app.vault.createCalls.length, 0);
 });
 
-test('legacy mode keeps all of those writers working', async () => {
-  const { plugin, app } = setup('legacy');
-  const file = source(app);
-  await plugin.markPathsDone([file.path], { confirm: false });
-  assert.equal(String(app.vault.readFm(file).status), 'done', 'legacy writer still applies');
-  stopTimers(plugin);
-});
 
 test('every residual writer that can write scheduling fields is guarded in source', () => {
   const sourceText = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');

@@ -55,12 +55,3 @@ test('a not_before later than today keeps the topic out of the unified queue', a
   assert.deepEqual(model.queue.map(item => item.path), []);
 });
 
-test('legacy mode keeps the legacy selector queue and does not expose unified metadata', async () => {
-  const { plugin, app } = createPlugin({ settings: makeSettings() });
-  plugin.settings.mf_us1_mode = 'legacy';
-  const legacy = makeFile(app, 'Sources/Legacy.md', { type: 'source', status: 'active', priority: 50, next_review: PAST }, '# legacy\n');
-  const model = await buildModel({ plugin });
-  assert.equal(model.mode, 'legacy');
-  assert.equal(model.unified, null);
-  assert.ok(model.queue.some(item => item.path === legacy.path));
-});

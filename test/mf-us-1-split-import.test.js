@@ -70,17 +70,6 @@ test('running the split twice does not duplicate topics', async () => {
   assert.equal(app.vault.createCalls.length, creates, 'existing children are skipped by path');
 });
 
-test('legacy split keeps its previous behaviour', async () => {
-  const { plugin, app, file } = setup('legacy');
-  // Legacy source without any mf_* identity.
-  const legacy = makeFile(app, 'Sources/Legacy.md', LEGACY_FM, BODY);
-  legacy.parent = { path: 'Sources' };
-  app.activeFile = legacy;
-  await plugin.splitArticle();
-  assert.equal(app.vault.createCalls.length, 2);
-  const parentFm = app.vault.readFm(legacy);
-  assert.equal(parentFm.status, 'container');
-});
 
 test('importClipping in unified refuses to take over an existing note', async () => {
   const { plugin, app } = setup('unified');
